@@ -2,7 +2,7 @@
 
 ;;; File: "_env.scm"
 
-;;; Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 (include "fixnum.scm")
 
@@ -51,6 +51,11 @@
 
 (define empty-var '())
 
+(define (resize-var-list lst n)
+  (let loop ((lst lst) (n n))
+    (cond ((= n 0) lst)
+          ((< n 0) (loop (cdr lst) (+ n 1)))
+          (else    (loop (cons empty-var lst) (- n 1))))))
 
 ;; structure that represents environments:
 
@@ -75,24 +80,33 @@
   (let ((name* (or (and (not (full-name? name))
                         (env-namespace-lookup env name))
                    name)))
-    (vector (vector-ref env 0)
-            (cons (cons name* def) (env-macros-ref env))
-            (env-decl-ref env)
-            (env-namespace-ref env)
-            (env-parent-ref env))))
+    (env-macros-set env (cons (cons name* def) (env-macros-ref env)))))
+
+(define (env-macros-set env macro)
+  (vector (vector-ref env 0)
+          macro
+          (env-decl-ref env)
+          (env-namespace-ref env)
+          (env-parent-ref env)))
 
 (define (env-declare env d)
+  (env-decl-set env (cons d (env-decl-ref env))))
+
+(define (env-decl-set env decl)
   (vector (vector-ref env 0)
           (env-macros-ref env)
-          (cons d (env-decl-ref env))
+          decl
           (env-namespace-ref env)
           (env-parent-ref env)))
 
 (define (env-namespace env n)
+  (env-namespace-set env (cons n (env-namespace-ref env))))
+
+(define (env-namespace-set env namespace)
   (vector (vector-ref env 0)
           (env-macros-ref env)
           (env-decl-ref env)
-          (cons n (env-namespace-ref env))
+          namespace
           (env-parent-ref env)))
 
 (define (env-vars-ref env)       (car (vector-ref env 0)))
@@ -138,8 +152,9 @@
 
     (define (search-vars vars)
       (if (pair? vars)
-          (let ((v (car vars)))
-            (if (eq? (var-name v) name)
+          (let* ((v (car vars))
+                 (vn (var-name v)))
+            (if (eq? vn name)
                 (proc env name v)
                 (search-vars (cdr vars))))
           (let ((env* (env-parent-ref env)))
@@ -151,13 +166,13 @@
 
   (search env name (full-name? name)))
 
-(define (valid-prefix? str) ; non-null name followed by a "#" at end is
-  (let ((l (string-length str)))   ; valid as is the special prefix ""
-    (or (= l 0)
-        (and (>= l 2)
-             (char=? (string-ref str (- l 1)) #\#)))))
+(define (namespace-valid? str)     ;; non-null name followed by a "#" at end
+  (let ((len (string-length str))) ;; is valid as is the special prefix ""
+    (or (= len 0)
+        (and (>= len 2)
+             (char=? (string-ref str (- len 1)) #\#)))))
 
-(define (full-name? sym)              ; full name if it contains a "#"
+(define (full-name? sym)           ;; full name if it contains a "#"
   (let ((str (symbol->string sym)))
     (let loop ((i (- (string-length str) 1)))
       (if (< i 0)

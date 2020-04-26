@@ -1,6 +1,6 @@
-# makefile for Gambit-C documentation.
+# makefile for Gambit documentation.
 
-# Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+# Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 herefromroot = doc
 rootfromhere = ..
@@ -25,18 +25,20 @@ FLAGS_OBJ = @FLAGS_OBJ_MF@
 FLAGS_DYN = @FLAGS_DYN_MF@
 FLAGS_LIB = @FLAGS_LIB_MF@
 FLAGS_EXE = @FLAGS_EXE_MF@
+FLAGS_OPT = @FLAGS_OPT_MF@
+FLAGS_OPT_RTS = @FLAGS_OPT_RTS_MF@
 DEFS = @DEFS@
 LIBS = @LIBS@
 
-GAMBCLIB_DEFS = @GAMBCLIB_DEFS_MF@
+GAMBITLIB_DEFS = @GAMBITLIB_DEFS_MF@
 LIB_PREFIX = @LIB_PREFIX@
 LIB_VERSION_SUFFIX = @LIB_VERSION_SUFFIX@
 LIB_MAJOR_VERSION_SUFFIX = @LIB_MAJOR_VERSION_SUFFIX@
 
 LIB_EXTENSION = @LIB_EXTENSION@
-GAMBCLIB = @GAMBCLIB@
-GAMBCGSCLIB = @GAMBCGSCLIB@
-GAMBCGSILIB = @GAMBCGSILIB@
+GAMBITLIB = @GAMBITLIB@
+GAMBITGSCLIB = @GAMBITGSCLIB@
+GAMBITGSILIB = @GAMBITGSILIB@
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL_DATA@
 INSTALL_LIB = @INSTALL_LIB@
@@ -74,19 +76,19 @@ PDF2PS = pdf2ps
 .SUFFIXES:
 
 RCFILES = makefile.in \
-gambit-c.txi texinfo.tex texi2html \
-checkdoc.scm gambcini.scm square.scm bench.scm \
+gambit.txi texinfo.tex texi2html \
+checkdoc.scm gambini.scm square.scm bench.scm \
 m1.c m2.scm m3.scm m4.scm m5.scm m6.scm m7.scm x.c x.h h.scm w.six \
 test1.scm test2.scm test3.scm gsi.1
 
 GENDISTFILES = stamp.vti version.txi \
-gambit-c.pdf gambit-c*.html gambit-c.txt \
-gambit-c.info gambit-c.info-1 gambit-c.info-2 gambit-c.info-3
+gambit.pdf gambit*.html gambit.txt \
+gambit.info gambit.info-1 gambit.info-2 gambit.info-3
 
 DISTFILES = $(RCFILES) $(GENDISTFILES)
 
-INSTFILES_DOC = gambit-c.pdf gambit-c*.html gambit-c.txt
-INSTFILES_INFO = gambit-c.info*
+INSTFILES_DOC = gambit.pdf gambit*.html gambit.txt
+INSTFILES_INFO = gambit.info*
 INSTFILES_MAN = gsi.1
 
 all:
@@ -97,39 +99,39 @@ all-post:
 
 doc: info pdf html txt ps
 
-info: gambit-c.info
+info: gambit.info
 
-pdf: gambit-c.pdf
+pdf: gambit.pdf
 
-ps: gambit-c.ps
+ps: gambit.ps
 
-html: gambit-c.html
+html: gambit.html
 
-txt: gambit-c.txt
+txt: gambit.txt
 
-gambit-c.info: gambit-c.txi version.txi
-	(cd $(srcdir) && $(MAKEINFO) gambit-c.txi) || (echo "*** $@ could not be built (perhaps $(MAKEINFO) is not installed?)" > $@)
+gambit.info: gambit.txi version.txi
+	(cd $(srcdir) && $(MAKEINFO) gambit.txi) || (echo "*** $@ could not be built (perhaps $(MAKEINFO) is not installed?)" > $@)
 
-gambit-c.ps: gambit-c.pdf
-	(cd $(srcdir) && $(PDF2PS) gambit-c.pdf) || (echo "*** $@ could not be built (perhaps $(PDF2PS) is not installed?)" > $@)
+gambit.ps: gambit.pdf
+	(cd $(srcdir) && $(PDF2PS) gambit.pdf) || (echo "*** $@ could not be built (perhaps $(PDF2PS) is not installed?)" > $@)
 
-gambit-c.pdf: gambit-c.txi version.txi
-	(cd $(srcdir) && cd $(srcdir) && $(TEXI2DVI) -p gambit-c.txi) || (echo "*** $@ could not be built (perhaps $(TEXI2DVI) is not installed?)" > $@)
+gambit.pdf: gambit.txi version.txi
+	(cd $(srcdir) && cd $(srcdir) && $(TEXI2DVI) -p gambit.txi) || (echo "*** $@ could not be built (perhaps $(TEXI2DVI) is not installed?)" > $@)
 
-gambit-c.html: gambit-c.txi
-	(cd $(srcdir) && $(TEXI2HTML) -def-table gambit-c.txi) || (echo "*** $@ could not be built (perhaps $(TEXI2HTML) is not installed?)" > $@)
+gambit.html: gambit.txi
+	(cd $(srcdir) && $(TEXI2HTML) -def-table gambit.txi) || (echo "*** $@ could not be built (perhaps $(TEXI2HTML) is not installed?)" > $@)
 
-gambit-c.txt: gambit-c.txi
-	(cd $(srcdir) && $(MAKEINFO) --no-split --no-headers --output gambit-c.txt gambit-c.txi) || (echo "*** $@ could not be built (perhaps $(MAKEINFO) is not installed?)" > $@)
+gambit.txt: gambit.txi
+	(cd $(srcdir) && $(MAKEINFO) --no-split --no-headers --output gambit.txt gambit.txi) || (echo "*** $@ could not be built (perhaps $(MAKEINFO) is not installed?)" > $@)
 
 version.txi: stamp.vti
 
-stamp.vti: gambit-c.txi $(rootfromhere)/configure.ac
+stamp.vti: gambit.txi $(rootfromhere)/configure.ac
 	# we need this mess because "date" and "stat"
 	# don't behave the same on Linux and BSD
-	st_mtime="`stat -s gambit-c.txi | sed -e 's/.*st_mtime=//g' -e 's/ .*//g'`"; \
+	st_mtime="`stat -s gambit.txi | sed -e 's/.*st_mtime=//g' -e 's/ .*//g'`"; \
 	if [ "$$st_mtime" = "" ]; then \
-	  mtime="`date -r gambit-c.txi '+%B %d, %Y'`"; \
+	  mtime="`date -r gambit.txi '+%B %d, %Y'`"; \
 	else \
 	  mtime="`date -r $$st_mtime '+%B %d, %Y'`"; \
 	fi; \
@@ -143,8 +145,8 @@ stamp.vti: gambit-c.txi $(rootfromhere)/configure.ac
 checkdoc:
 	rm -f *.o[0123456789]* fifo
 	rm -rf newdir
-	@SETDLPATH@ $(rootfromhere)/gsi/gsi checkdoc.scm
-	diff gambit-c.txi gambit-c.txi-correct
+	@SETDLPATH@ $(rootfromhere)/gsi/gsi@exe@ checkdoc.scm
+	diff gambit.txi gambit.txi-correct
 
 bootstrap-pre:
 
@@ -153,48 +155,48 @@ bootstrap-post:
 install-pre:
 
 install-post: all doc
-	c_docdir=$(DESTDIR)$(prefix)/doc; \
-	i_docdir=$(DESTDIR)$(docdir); \
-	t_docdir=$$i_docdir; \
-	c_infodir=$(DESTDIR)$(prefix)/info; \
-	i_infodir=$(DESTDIR)$(infodir); \
-	t_infodir=$$i_infodir; \
-	c_mandir=$(DESTDIR)$(prefix)/doc/man/man1; \
-	i_mandir=$(DESTDIR)$(mandir)/man1; \
-	t_mandir=$$i_mandir; \
-	$(srcdirpfx)$(rootfromhere)/mkidirs $$i_docdir $$i_infodir $$i_mandir; \
+	c_docdir="$(DESTDIR)$(prefix)/doc"; \
+	i_docdir="$(DESTDIR)$(docdir)"; \
+	t_docdir="$$i_docdir"; \
+	c_infodir="$(DESTDIR)$(prefix)/info"; \
+	i_infodir="$(DESTDIR)$(infodir)"; \
+	t_infodir="$$i_infodir"; \
+	c_mandir="$(DESTDIR)$(prefix)/doc/man/man1"; \
+	i_mandir="$(DESTDIR)$(mandir)/man1"; \
+	t_mandir="$$i_mandir"; \
+	$(srcdirpfx)$(rootfromhere)/mkidirs "$$i_docdir" "$$i_infodir" "$$i_mandir"; \
 	if test "@ENABLE_SYMLINKS@" = "yes"; then \
-	  $(srcdirpfx)$(rootfromhere)/mkidirs $$c_docdir $$c_infodir $$c_mandir; \
-	  t_docdir=$$c_docdir; \
-	  t_infodir=$$c_infodir; \
-	  t_mandir=$$c_mandir; \
+	  $(srcdirpfx)$(rootfromhere)/mkidirs "$$c_docdir" "$$c_infodir" "$$c_mandir"; \
+	  t_docdir="$$c_docdir"; \
+	  t_infodir="$$c_infodir"; \
+	  t_mandir="$$c_mandir"; \
 	fi; \
 	for file in $(INSTFILES_DOC); do \
-	  $(INSTALL_DATA) $(srcdirpfx)$$file $$t_docdir/$$file; \
+	  $(INSTALL_DATA) "$(srcdirpfx)$$file" "$$t_docdir/$$file"; \
 	done; \
 	for file in $(INSTFILES_INFO); do \
-	  $(INSTALL_DATA) $(srcdirpfx)$$file $$t_infodir/$$file; \
+	  $(INSTALL_DATA) "$(srcdirpfx)$$file" "$$t_infodir/$$file"; \
 	done; \
 	for file in $(INSTFILES_MAN); do \
-	  $(INSTALL_DATA) $(srcdirpfx)$$file $$t_mandir/$$file; \
+	  $(INSTALL_DATA) "$(srcdirpfx)$$file" "$$t_mandir/$$file"; \
 	done; \
 	if test "@bat@" = ""; then \
 	  if test "$$t_docdir" != "$$i_docdir"; then \
 	    r_docdir=`$(rootfromhere)/relpath "$$t_docdir" "$$i_docdir" @ENABLE_MULTIPLE_VERSIONS@`; \
 	    for file in $(INSTFILES_DOC); do \
-	      (cd $$i_docdir && $(LN_S) $$r_docdir$$file $$file); \
+	      (cd "$$i_docdir" && $(LN_S) "$$r_docdir$$file" "$$file"); \
 	    done; \
 	  fi; \
 	  if test "$$t_infodir" != "$$i_infodir"; then \
 	    r_infodir=`$(rootfromhere)/relpath "$$t_infodir" "$$i_infodir" @ENABLE_MULTIPLE_VERSIONS@`; \
 	    for file in $(INSTFILES_INFO); do \
-	      (cd $$i_infodir && $(LN_S) $$r_infodir$$file $$file); \
+	      (cd "$$i_infodir" && $(LN_S) "$$r_infodir$$file" "$$file"); \
 	    done; \
 	  fi; \
 	  if test "$$t_mandir" != "$$i_mandir"; then \
 	    r_mandir=`$(rootfromhere)/relpath "$$t_mandir" "$$i_mandir" @ENABLE_MULTIPLE_VERSIONS@`; \
 	    for file in $(INSTFILES_MAN); do \
-	      (cd $$i_mandir && $(LN_S) $$r_mandir$$file $$file); \
+	      (cd "$$i_mandir" && $(LN_S) "$$r_mandir$$file" "$$file"); \
 	    done; \
 	  fi; \
 	fi
@@ -202,88 +204,88 @@ install-post: all doc
 uninstall-pre:
 
 uninstall-post:
-	c_docdir=$(DESTDIR)$(prefix)/doc; \
-	i_docdir=$(DESTDIR)$(docdir); \
-	t_docdir=$$i_docdir; \
-	c_infodir=$(DESTDIR)$(prefix)/info; \
-	i_infodir=$(DESTDIR)$(infodir); \
-	t_infodir=$$i_infodir; \
-	c_mandir=$(DESTDIR)$(prefix)/doc/man/man1; \
-	i_mandir=$(DESTDIR)$(mandir)/man1; \
-	t_mandir=$$i_mandir; \
+	c_docdir="$(DESTDIR)$(prefix)/doc"; \
+	i_docdir="$(DESTDIR)$(docdir)"; \
+	t_docdir="$$i_docdir"; \
+	c_infodir="$(DESTDIR)$(prefix)/info"; \
+	i_infodir="$(DESTDIR)$(infodir)"; \
+	t_infodir="$$i_infodir"; \
+	c_mandir="$(DESTDIR)$(prefix)/doc/man/man1"; \
+	i_mandir="$(DESTDIR)$(mandir)/man1"; \
+	t_mandir="$$i_mandir"; \
 	if test "@ENABLE_SYMLINKS@" = "yes"; then \
-	  t_docdir=$$c_docdir; \
-	  t_infodir=$$c_infodir; \
-	  t_mandir=$$c_mandir; \
+	  t_docdir="$$c_docdir"; \
+	  t_infodir="$$c_infodir"; \
+	  t_mandir="$$c_mandir"; \
 	fi; \
 	for file in $(INSTFILES_DOC); do \
-	  rm -f $$t_docdir/$$file; \
+	  rm -f "$$t_docdir/$$file"; \
 	done; \
 	for file in $(INSTFILES_INFO); do \
-	  rm -f $$t_infodir/$$file; \
+	  rm -f "$$t_infodir/$$file"; \
 	done; \
 	for file in $(INSTFILES_MAN); do \
-	  rm -f $$t_mandir/$$file; \
+	  rm -f "$$t_mandir/$$file"; \
 	done; \
 	if test "$$t_docdir" != "$$i_docdir"; then \
 	  for file in $(INSTFILES_DOC); do \
-	    rm -f $$i_docdir/$$file; \
+	    rm -f "$$i_docdir/$$file"; \
 	  done; \
 	fi; \
 	if test "$$t_infodir" != "$$i_infodir"; then \
 	  for file in $(INSTFILES_INFO); do \
-	    rm -f $$i_infodir/$$file; \
+	    rm -f "$$i_infodir/$$file"; \
 	  done; \
 	fi; \
 	if test "$$t_mandir" != "$$i_mandir"; then \
 	  for file in $(INSTFILES_MAN); do \
-	    rm -f $$i_mandir/$$file; \
+	    rm -f "$$i_mandir/$$file"; \
 	  done; \
 	fi; \
-	rmdir $$t_docdir 2> /dev/null; \
+	rmdir "$$t_docdir" 2> /dev/null; \
 	if test "$$t_docdir" != "$$i_docdir"; then \
-	  rmdir $$i_docdir 2> /dev/null; \
+	  rmdir "$$i_docdir" 2> /dev/null; \
 	fi; \
-	rmdir $$t_infodir 2> /dev/null; \
+	rmdir "$$t_infodir" 2> /dev/null; \
 	if test "$$t_infodir" != "$$i_infodir"; then \
 	  rmdir $$i_infodir 2> /dev/null; \
 	fi; \
-	rmdir $$t_mandir 2> /dev/null; \
+	rmdir "$$t_mandir" 2> /dev/null; \
 	if test "$$t_mandir" != "$$i_mandir"; then \
-	  rmdir $$i_mandir 2> /dev/null; \
+	  rmdir "$$i_mandir" 2> /dev/null; \
 	fi
 
 select-gen-for-commit-pre:
 
-select-gen-for-commit-post:
+select-gen-for-commit-post select-gen-for-commit-post-nonrec:
 
 deselect-gen-for-commit-pre:
 
-deselect-gen-for-commit-post:
+deselect-gen-for-commit-post deselect-gen-for-commit-post-nonrec:
 
 mostlyclean-pre:
 
-mostlyclean-post:
+mostlyclean-post mostlyclean-post-nonrec:
 
 clean-pre: mostlyclean-pre
 
-clean-post: mostlyclean-post
+clean-post clean-post-nonrec: mostlyclean-post-nonrec
 	rm -f *.aux *.cp *.cps *.dvi *.fn *.fns *.ky *.log *.pg \
-	  *.toc *.tp *.vr *.tmp
+	  *.toc *.tp *.vr *.cm *.fl *.op *.tmp
 
 distclean-pre: clean-pre
 
-distclean-post: clean-post
+distclean-post distclean-post-nonrec: clean-post-nonrec
 
 bootclean-pre: distclean-pre
 
-bootclean-post: distclean-post
+bootclean-post bootclean-post-nonrec: distclean-post-nonrec
 	rm -f stamp.vti version.txi \
-	  gambit-c.ps gambit-c.pdf gambit-c*.html gambit-c.txt gambit-c.info*
+	  gambit.ps gambit.pdf gambit*.html gambit.txt gambit.info*
 
 realclean-pre: bootclean-pre
 
-realclean-post: bootclean-post
+realclean-post realclean-post-nonrec: bootclean-post-nonrec
 	rm -f makefile
 
 rc-setup-pre:
@@ -340,43 +342,43 @@ select-gen-for-commit: select-gen-for-commit-post
 
 select-gen-for-commit-post: select-gen-for-commit-recursive
 
-select-gen-for-commit-recursive: select-gen-for-commit-pre
+select-gen-for-commit-post-nonrec select-gen-for-commit-recursive: select-gen-for-commit-pre
 
 deselect-gen-for-commit: deselect-gen-for-commit-post
 
 deselect-gen-for-commit-post: deselect-gen-for-commit-recursive
 
-deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
+deselect-gen-for-commit-post-nonrec deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
 
 mostlyclean: mostlyclean-post
 
 mostlyclean-post: mostlyclean-recursive
 
-mostlyclean-recursive: mostlyclean-pre
+mostlyclean-post-nonrec mostlyclean-recursive: mostlyclean-pre
 
 clean: clean-post
 
 clean-post: clean-recursive
 
-clean-recursive: clean-pre
+clean-post-nonrec clean-recursive: clean-pre
 
 distclean: distclean-post
 
 distclean-post: distclean-recursive
 
-distclean-recursive: distclean-pre
+distclean-post-nonrec distclean-recursive: distclean-pre
 
 bootclean: bootclean-post
 
 bootclean-post: bootclean-recursive
 
-bootclean-recursive: bootclean-pre
+bootclean-post-nonrec bootclean-recursive: bootclean-pre
 
 realclean: realclean-post
 
 realclean-post: realclean-recursive
 
-realclean-recursive: realclean-pre
+realclean-post-nonrec realclean-recursive: realclean-pre
 
 rc-setup: rc-setup-post
 

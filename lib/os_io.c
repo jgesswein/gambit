@@ -1,6 +1,6 @@
 /* File: "os_io.c" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 /*
  * This module implements the operating system specific routines
@@ -8,12 +8,15 @@
  */
 
 #define ___INCLUDED_FROM_OS_IO
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
+#include "os_setup.h"
+#include "os_thread.h"
 #include "os_base.h"
 #include "os_io.h"
 #include "os_tty.h"
+#include "os_shell.h"
 #include "os_files.h"
 #include "setup.h"
 #include "c_intf.h"
@@ -34,6 +37,124 @@ ___io_module ___io_mod =
 
 /*---------------------------------------------------------------------------*/
 
+#ifdef USE_POSIX
+
+___HIDDEN int ___fdset_realloc
+   ___P((___processor_state ___ps,
+         int newsize),
+        (___ps,
+         newsize)
+____processor_state ___ps;
+int newsize;)
+{
+  void *readfds = NULL;
+  void *writefds = NULL;
+  void *exceptfds = NULL;
+
+  if (newsize > 0)
+    {
+      int newbytes = ___CEILING_DIV(newsize,8);
+
+      readfds  = ___ALLOC_MEM(newbytes);
+      if (readfds == NULL)
+        goto error;
+
+      writefds = ___ALLOC_MEM(newbytes);
+      if (writefds == NULL)
+        goto error;
+
+#ifdef USE_exceptfds
+      exceptfds = ___ALLOC_MEM(newbytes);
+      if (exceptfds == NULL)
+        goto error;
+#endif
+    }
+
+  if (___ps->os.fdset.readfds != NULL)
+    ___FREE_MEM(___ps->os.fdset.readfds);
+
+  if (___ps->os.fdset.writefds != NULL)
+    ___FREE_MEM(___ps->os.fdset.writefds);
+
+#ifdef USE_exceptfds
+  if (___ps->os.fdset.exceptfds != NULL)
+    ___FREE_MEM(___ps->os.fdset.exceptfds);
+#endif
+
+  ___ps->os.fdset.readfds = readfds;
+  ___ps->os.fdset.writefds = writefds;
+  ___ps->os.fdset.exceptfds = exceptfds;
+  ___ps->os.fdset.size = newsize;
+
+  return 1;
+
+ error:
+  if (readfds != NULL)
+    ___FREE_MEM(readfds);
+  if (writefds != NULL)
+    ___FREE_MEM(writefds);
+  if (exceptfds != NULL)
+    ___FREE_MEM(exceptfds);
+
+  return 0;
+}
+
+___HIDDEN int ___fdset_init
+   ___P((___processor_state ___ps),
+        (ps)
+___processor_state ___ps;)
+{
+  int size = ___VMSTATE_FROM_PSTATE(___ps)->os.fdset.size;
+
+  ___ps->os.fdset.readfds = NULL;
+  ___ps->os.fdset.writefds = NULL;
+  ___ps->os.fdset.exceptfds = NULL;
+  ___ps->os.fdset.size = 0;
+
+  return ___fdset_realloc (___ps, size);
+}
+
+#endif
+
+#ifdef USE_FDSET_RESIZING
+
+void ___fdset_resize_pstate
+   ___P((___processor_state ___ps,
+         int maxfd),
+        (___ps,
+         maxfd)
+___processor_state ___ps;
+int maxfd;)
+{
+  ___virtual_machine_state ___vms = ___VMSTATE_FROM_PSTATE(___ps);
+  int newsize;
+
+  newsize = ___vms->os.fdset.size;
+  while (maxfd >= newsize)
+    newsize = ___CEILING_DIV(3 * newsize, 2);
+  /* align newsize to ___fdbits word boundaries */
+  newsize = (newsize + ___FDBITS - 1) & ~(___FDBITS - 1);
+
+  if (___PROCESSOR_ID(___ps, ___vms) == 0)
+    ___vms->os.fdset.overflow = 0;
+
+  BARRIER();
+
+  if (newsize > ___ps->os.fdset.size && !___fdset_realloc (___ps, newsize))
+    ___vms->os.fdset.overflow = 1;
+
+  BARRIER();
+
+  if (!___vms->os.fdset.overflow && ___PROCESSOR_ID(___ps, ___vms) == 0)
+    ___vms->os.fdset.size = newsize;
+
+}
+
+#endif
+
+
+/*---------------------------------------------------------------------------*/
+
 /* Device groups. */
 
 
@@ -46,7 +167,7 @@ ___device_group **dgroup;)
   ___device_group *g;
 
   g = ___CAST(___device_group*,
-              ___alloc_mem (sizeof (___device_group)));
+              ___ALLOC_MEM(sizeof (___device_group)));
 
   if (g == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -68,7 +189,7 @@ ___device_group *dgroup;)
     if (___device_cleanup (dgroup->list) != ___FIX(___NO_ERR))
       break;
 
-  ___free_mem (dgroup);
+  ___FREE_MEM(dgroup);
 }
 
 
@@ -150,7 +271,7 @@ int size;)
   HANDLE wevent;
 
   buffer = ___CAST(___U8*,
-                   ___alloc_mem (size));
+                   ___ALLOC_MEM(size));
 
   if (buffer == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -162,7 +283,7 @@ int size;)
   if (mutex == NULL)
     {
       ___SCMOBJ e = err_code_from_GetLastError ();
-      ___free_mem (buffer);
+      ___FREE_MEM(buffer);
       return e;
     }
 
@@ -175,7 +296,7 @@ int size;)
     {
       ___SCMOBJ e = err_code_from_GetLastError ();
       CloseHandle (mutex); /* ignore error */
-      ___free_mem (buffer);
+      ___FREE_MEM(buffer);
       return e;
     }
 
@@ -189,7 +310,7 @@ int size;)
       ___SCMOBJ e = err_code_from_GetLastError ();
       CloseHandle (revent); /* ignore error */
       CloseHandle (mutex); /* ignore error */
-      ___free_mem (buffer);
+      ___FREE_MEM(buffer);
       return e;
     }
 
@@ -215,7 +336,7 @@ ___nonblocking_pipe *pipe;)
   CloseHandle (pipe->wevent); /* ignore error */
   CloseHandle (pipe->revent); /* ignore error */
   CloseHandle (pipe->mutex); /* ignore error */
-  ___free_mem (pipe->buffer);
+  ___FREE_MEM(pipe->buffer);
 
   return ___FIX(___NO_ERR);
 }
@@ -647,233 +768,137 @@ ___stream_index *len_done;)
 
 /* Operations on I/O devices. */
 
-/* Miscellaneous utility functions. */
-
-#ifdef USE_POSIX
-
-
-#ifdef USE_sigaction
-typedef sigset_t sigset_type;
-#else
-typedef int sigset_type;
-#endif
-
-
-___HIDDEN sigset_type block_signal
-   ___P((int signum),
-        (signum)
-int signum;)
-{
-  sigset_type oldmask;
-
-#ifdef USE_sigaction
-
-  sigset_type toblock;
-
-  sigemptyset (&toblock);
-  sigaddset (&toblock, signum);
-  sigprocmask (SIG_BLOCK, &toblock, &oldmask);
-
-#endif
-
-#ifdef USE_signal
-
-  oldmask = sigblock (sigmask (signum));
-
-#endif
-
-  return oldmask;
-}
-
-
-___HIDDEN void restore_sigmask
-   ___P((sigset_type oldmask),
-        (oldmask)
-sigset_type oldmask;)
-{
-#ifdef USE_sigaction
-
-  sigprocmask (SIG_SETMASK, &oldmask, 0);
-
-#endif
-
-#ifdef USE_signal
-
-  sigsetmask (oldmask);
-
-#endif
-}
-
-
-/*
- * Some system calls can be interrupted by a signal and fail with
- * errno == EINTR.  The following functions are wrappers for system
- * calls which may be interrupted.  They simply ignore the EINTR and
- * retry the operation.
- *
- * TODO: add wrappers for all the system calls which can fail
- * with EINTR.  Also, move these functions to a central place.
- */
-
-pid_t waitpid_no_EINTR
-   ___P((pid_t pid,
-         int *stat_loc,
-         int options),
-        (pid,
-         stat_loc,
-         options)
-pid_t pid;
-int *stat_loc;
-int options;)
-{
-  pid_t result;
-
-  for (;;)
-    {
-      result = waitpid (pid, stat_loc, options);
-      if (result >= 0 || errno != EINTR)
-        break;
-    }
-
-  return result;
-}
-
-
-___SSIZE_T read_no_EINTR
-   ___P((int fd,
-         void *buf,
-         ___SIZE_T len),
-        (fd,
-         buf,
-         len)
-int fd;
-void *buf;
-___SIZE_T len;)
-{
-  char *p = ___CAST(char*,buf);
-  ___SSIZE_T result = 0;
-  int n;
-
-  while (result < len)
-    {
-      n = read (fd, p+result, len-result);
-      if (n > 0)
-        result += n;
-      else if (n == 0)
-        break;
-      else if (errno != EINTR)
-        return n; /* this forgets that some bytes were transferred */
-    }
-
-  return result;
-}
-
-
-int close_no_EINTR
-   ___P((int fd),
-        (fd)
-int fd;)
-{
-  int result;
-
-  for (;;)
-    {
-      result = close (fd);
-      if (result >= 0 || errno != EINTR)
-        break;
-    }
-
-  return result;
-}
-
-
-int dup_no_EINTR
-   ___P((int fd),
-        (fd)
-int fd;)
-{
-  int result;
-
-  for (;;)
-    {
-      result = dup (fd);
-      if (result >= 0 || errno != EINTR)
-        break;
-    }
-
-  return result;
-}
-
-
-int dup2_no_EINTR
-   ___P((int fd,
-         int fd2),
-        (fd,
-         fd2)
-int fd;
-int fd2;)
-{
-  int result;
-
-  for (;;)
-    {
-      result = dup2 (fd, fd2);
-      if (result >= 0 || errno != EINTR)
-        break;
-    }
-
-  return result;
-}
-
-
-int set_fd_blocking_mode
-   ___P((int fd,
-         ___BOOL blocking),
-        (fd,
-         blocking)
-int fd;
-___BOOL blocking;)
-{
-  int fl;
-
-#ifdef USE_fcntl
-
-  if ((fl = fcntl (fd, F_GETFL, 0)) >= 0)
-    fl = fcntl (fd,
-                F_SETFL,
-                blocking ? (fl & ~O_NONBLOCK) : (fl | O_NONBLOCK));
-
-#else
-
-  fl = 0;
-
-#endif
-
-  return fl;
-}
-
-#endif
-
-
-/*---------------------------------------------------------------------------*/
-
 /* Generic device operations. */
+
+void ___device_select_add_relative_timeout
+   ___P((___device_select_state *state,
+         int i,
+         ___F64 seconds),
+        (state,
+         i,
+         seconds)
+___device_select_state *state;
+int i;
+___F64 seconds;)
+{
+  if (seconds < state->relative_timeout)
+    state->relative_timeout = seconds;
+}
+
+
+void ___device_select_add_timeout
+   ___P((___device_select_state *state,
+         int i,
+         ___time timeout),
+        (state,
+         i,
+         timeout)
+___device_select_state *state;
+int i;
+___time timeout;)
+{
+  if (___time_less (timeout, state->timeout))
+    state->timeout = timeout;
+}
+
+
+#ifdef USE_select
+
+void ___device_select_add_fd
+   ___P((___device_select_state *state,
+         int fd,
+         int for_op),
+        (state,
+         fd,
+         for_op)
+___device_select_state *state;
+int fd;
+int for_op;)
+{
+  if (for_op == FOR_READING)
+    ___FD_SET(fd, state->readfds);
+  else
+    ___FD_SET(fd, state->writefds);
+
+  if (fd >= state->highest_fd_plus_1)
+    state->highest_fd_plus_1 = fd+1;
+}
+
+#endif
+
+#ifdef USE_poll
+
+void ___device_select_add_fd
+   ___P((___device_select_state *state,
+         int fd,
+         int for_op),
+        (state,
+         fd,
+         for_op)
+___device_select_state *state;
+int fd;
+int for_op;)
+{
+  state->pollfds[state->pollfd_count].fd = fd;
+
+  if (for_op == FOR_READING)
+    state->pollfds[state->pollfd_count].events = POLLIN;
+  else
+    state->pollfds[state->pollfd_count].events = POLLOUT;
+
+  ++state->pollfd_count;
+}
+
+#endif
+
+
+#ifdef USE_MsgWaitForMultipleObjects
+
+void ___device_select_add_wait_obj
+   ___P((___device_select_state *state,
+         int i,
+         HANDLE wait_obj),
+        (state,
+         i,
+         wait_obj)
+___device_select_state *state;
+int i;
+HANDLE wait_obj;)
+{
+  DWORD j = state->nb_wait_objs;
+
+  if (j < MAXIMUM_WAIT_OBJECTS)
+    {
+      state->wait_objs_buffer[j] = wait_obj;
+      state->wait_obj_to_dev_pos[j] = i;
+      state->nb_wait_objs = j+1;
+    }
+}
+
+#endif
+
 
 ___SCMOBJ ___device_select
    ___P((___device **devs,
          int nb_read_devs,
          int nb_write_devs,
+         int nb_event_devs,
          ___time timeout),
         (devs,
          nb_read_devs,
          nb_write_devs,
+         nb_event_devs,
          timeout)
 ___device **devs;
 int nb_read_devs;
 int nb_write_devs;
+int nb_event_devs;
 ___time timeout;)
 {
-  int nb_devs;
+  ___SCMOBJ e;
+  int event_pos = nb_event_devs;
+  int write_pos = event_pos + nb_write_devs;
+  int read_pos = write_pos + nb_read_devs;
   ___device_select_state state;
   int pass;
   int dev_list;
@@ -881,28 +906,57 @@ ___time timeout;)
   int prev;
   ___time delta;
 
-  nb_devs = nb_read_devs + nb_write_devs;
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+#ifdef USE_MsgWaitForMultipleObjects
+
+  ___BOOL aborted = 0;
+
+#endif
+#endif
 
   state.devs = devs;
 
   state.timeout = timeout;
   state.relative_timeout = POS_INFINITY;
 
+#ifdef USE_select_or_poll
+
 #ifdef USE_select
+  {
+    ___processor_state ___ps = ___PSTATE;
 
-  state.highest_fd_plus_1 = 0;
-
-  ___FD_ZERO(&state.readfds);
-  ___FD_ZERO(&state.writefds);
-  ___FD_ZERO(&state.exceptfds);
-
+    state.highest_fd_plus_1 = 0;
+    state.readfds = ___CAST(___fdbits*, ___ps->os.fdset.readfds);
+    state.writefds = ___CAST(___fdbits*, ___ps->os.fdset.writefds);
+    state.exceptfds = ___CAST(___fdbits*, ___ps->os.fdset.exceptfds);
+    ___FD_ZERO(state.readfds, ___ps->os.fdset.size);
+    ___FD_ZERO(state.writefds, ___ps->os.fdset.size);
+    if (state.exceptfds != NULL)
+      ___FD_ZERO(state.exceptfds, ___ps->os.fdset.size);
+  }
 #endif
 
 #ifdef USE_poll
+  {
+    ___processor_state ___ps = ___PSTATE;
 
-  state.pollfd_count = 0;
-  ___FD_ZERO (&state.readfds);
-  ___FD_ZERO (&state.writefds);
+    state.pollfd_count = 0;
+    state.readfds = ___CAST(___fdbits*, ___ps->os.fdset.readfds);
+    state.writefds = ___CAST(___fdbits*, ___ps->os.fdset.writefds);
+    ___FD_ZERO(state.readfds, ___ps->os.fdset.size);
+    ___FD_ZERO(state.writefds, ___ps->os.fdset.size);
+  }
+#endif
+
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+
+  /* monitor self-pipe for available data to read */
+
+  ___device_select_add_fd (&state,
+                           ___PSTATE->os.select_abort.reading_fd,
+                           FOR_READING);
+
+#endif
 
 #endif
 
@@ -911,18 +965,23 @@ ___time timeout;)
   state.message_queue_mask = 0;
   state.message_queue_dev_pos = -1;
 
-  state.wait_objs_buffer[0] = ___io_mod.abort_select;
-  state.wait_objs_buffer[1] = ___time_mod.heartbeat_thread;
+  state.nb_wait_objs = 0;
 
-  state.nb_wait_objs = 2;
+  state.wait_objs_buffer[state.nb_wait_objs++] = ___time_mod.heartbeat_thread;
+
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+
+  state.wait_objs_buffer[state.nb_wait_objs++] = ___PSTATE->os.select_abort;
 
 #endif
 
-  if (nb_devs > 0)
-    {
-      state.devs_next[nb_devs-1] = -1;
+#endif
 
-      for (i=nb_devs-2; i>=0; i--)
+  if (read_pos > 0)
+    {
+      state.devs_next[read_pos-1] = -1;
+
+      for (i=read_pos-2; i>=0; i--)
         state.devs_next[i] = i+1;
 
       dev_list = 0;
@@ -939,11 +998,12 @@ ___time timeout;)
 
       while (i != -1)
         {
-          ___SCMOBJ e;
           ___device *d = devs[i];
           if ((e = ___device_select_virt
                      (d,
-                      i>=nb_read_devs,
+                      i>=write_pos ? FOR_READING
+                                   : i>=event_pos ? FOR_WRITING
+                                                  : FOR_EVENT,
                       i,
                       pass,
                       &state))
@@ -974,13 +1034,19 @@ ___time timeout;)
 
   ___absolute_time_to_relative_time (state.timeout, &delta);
 
-  if (___time_less (state.relative_timeout, delta))
+  if (state.relative_timeout < ___time_to_seconds (delta))
     {
-      delta = state.relative_timeout;
+      ___time_from_seconds (&delta, state.relative_timeout);
       state.timeout = ___time_mod.time_neg_infinity;
     }
   else
     state.relative_timeout = NEG_INFINITY;
+
+  e = ___FIX(___NO_ERR);
+
+  ___ACTLOG_BEGIN(io_wait,darkgray);
+
+#ifdef USE_select_or_poll
 
 #ifdef USE_select
 
@@ -999,6 +1065,7 @@ ___time timeout;)
    */
 
   {
+    ___mask_heartbeat_interrupts_state heartbeat_interrupts;
     struct timeval delta_tv_struct;
     struct timeval *delta_tv = &delta_tv_struct;
     int result;
@@ -1029,10 +1096,10 @@ ___time timeout;)
 
             goto select_done;
           }
+#ifndef USE_ASYNC_DEVICE_SELECT_ABORT
 #ifdef USE_nanosleep
         else
           {
-
             /*
              * For better timeout resolution, the nanosleep function
              * is used instead of the select function.  On some
@@ -1040,38 +1107,45 @@ ___time timeout;)
              * function can be more expensive than a call to select,
              * but the better timeout resolution outweighs the run
              * time cost.
+             *
+             * This optimization is not used when it is necessary to
+             * abort ___device_select asynchronously.
              */
 
             struct timespec delta_ts_struct;
             delta_ts_struct.tv_sec = delta_tv->tv_sec;
             delta_ts_struct.tv_nsec = delta_tv->tv_usec * 1000;
 
-            ___disable_heartbeat_interrupts ();
+            ___mask_heartbeat_interrupts_begin (&heartbeat_interrupts);
 
             result = nanosleep (&delta_ts_struct, NULL);
 
-            ___enable_heartbeat_interrupts ();
+            if (result < 0)
+              e = err_code_from_errno ();
+
+            ___mask_heartbeat_interrupts_end (&heartbeat_interrupts);
 
             goto select_done;
           }
 #endif
+#endif
       }
 
-    ___disable_heartbeat_interrupts ();
+    ___mask_heartbeat_interrupts_begin (&heartbeat_interrupts);
 
     result =
       select (state.highest_fd_plus_1,
-              &state.readfds,
-              &state.writefds,
-              &state.exceptfds,
+              ___CAST(fd_set*, state.readfds),
+              ___CAST(fd_set*, state.writefds),
+              ___CAST(fd_set*, state.exceptfds),
               delta_tv);
 
-    ___enable_heartbeat_interrupts ();
+    if (result < 0)
+      e = err_code_from_errno ();
+
+    ___mask_heartbeat_interrupts_end (&heartbeat_interrupts);
 
   select_done:
-
-    if (result < 0)
-      return err_code_from_errno ();
 
     state.timeout_reached = (result == 0);
   }
@@ -1080,6 +1154,7 @@ ___time timeout;)
 
 #ifdef USE_poll
   {
+    ___mask_heartbeat_interrupts_state heartbeat_interrupts;
     struct timeval delta_tv_struct;
     struct timeval *delta_tv = &delta_tv_struct;
 
@@ -1094,7 +1169,8 @@ ___time timeout;)
     ___absolute_time_to_nonnegative_timeval_maybe_NULL (delta, &delta_tv);
 
     /* pure sleep optimizations */
-    if (state.pollfd_count == 0 && delta_tv != NULL)
+    if (delta_tv != NULL &&
+        state.pollfd_count == 0)
       {
         if (delta_tv->tv_sec < 0 ||
             (delta_tv->tv_sec == 0 &&
@@ -1103,6 +1179,7 @@ ___time timeout;)
             result = 0;
             goto poll_done;
           }
+#ifndef USE_ASYNC_DEVICE_SELECT_ABORT
 #ifdef USE_nanosleep
         else
           {
@@ -1110,14 +1187,18 @@ ___time timeout;)
             delta_ts_struct.tv_sec = delta_tv->tv_sec;
             delta_ts_struct.tv_nsec = delta_tv->tv_usec * 1000;
 
-            ___disable_heartbeat_interrupts ();
+            ___mask_heartbeat_interrupts_begin (&heartbeat_interrupts);
 
             result = nanosleep (&delta_ts_struct, NULL);
 
-            ___enable_heartbeat_interrupts ();
+            if (result < 0)
+              e = err_code_from_errno ();
+
+            ___mask_heartbeat_interrupts_end (&heartbeat_interrupts);
 
             goto poll_done;
           }
+#endif
 #endif
       }
 
@@ -1160,7 +1241,7 @@ ___time timeout;)
 #endif
 
     /* see comments on select above regarding heartbeat interrupts */
-    ___disable_heartbeat_interrupts ();
+    ___mask_heartbeat_interrupts_begin (&heartbeat_interrupts);
 
 #ifdef USE_ppoll
     result = ppoll (state.pollfds, state.pollfd_count, delta_ts, NULL);
@@ -1168,7 +1249,10 @@ ___time timeout;)
     result = poll (state.pollfds, state.pollfd_count, delta_msecs);
 #endif
 
-    ___enable_heartbeat_interrupts ();
+    if (result < 0)
+      e = err_code_from_errno ();
+
+    ___mask_heartbeat_interrupts_end (&heartbeat_interrupts);
 
     /* Set the active bitmaps */
     if (result > 0)
@@ -1184,13 +1268,13 @@ ___time timeout;)
                 if (state.pollfds[x].events & POLLIN)
                   {
                     if (state.pollfds[x].revents & (POLLIN | errmask))
-                      ___FD_SET (state.pollfds[x].fd, &state.readfds);
+                      ___FD_SET(state.pollfds[x].fd, state.readfds);
                   }
 
                 if (state.pollfds[x].events & POLLOUT)
                   {
                     if (state.pollfds[x].revents & (POLLOUT | errmask))
-                      ___FD_SET (state.pollfds[x].fd, &state.writefds);
+                      ___FD_SET(state.pollfds[x].fd, state.writefds);
                   }
 
                 --active;
@@ -1200,11 +1284,40 @@ ___time timeout;)
 
   poll_done:
 
-    if (result < 0)
-      return err_code_from_errno ();
-
     state.timeout_reached = (result == 0);
   }
+#endif
+
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+
+  if (___FD_ISSET(___PSTATE->os.select_abort.reading_fd, state.readfds))
+    {
+      /* self-pipe has available data to read, discard all of it */
+
+      e = ___FIX(___ERRNO_ERR(EINTR));
+
+      for (;;)
+        {
+          char buf[256];
+          int n = read (___PSTATE->os.select_abort.reading_fd, buf, sizeof(buf));
+
+          if (n < 0)
+            {
+              if (errno == EAGAIN)
+                break;
+              if (errno != EINTR)
+                {
+                  e = err_code_from_errno ();
+                  break;
+                }
+            }
+          else if (n < sizeof(buf))
+            break;
+        }
+    }
+
+#endif
+
 #endif
 
 #ifdef USE_MsgWaitForMultipleObjects
@@ -1229,7 +1342,10 @@ ___time timeout;)
                state.message_queue_mask);
 
         if (n == WAIT_FAILED)
-          return err_code_from_GetLastError ();
+          {
+            e = err_code_from_GetLastError ();
+            break;
+          }
 
         if ((n - WAIT_OBJECT_0) <= WAIT_OBJECT_0 + state.nb_wait_objs)
           n -= WAIT_OBJECT_0;
@@ -1276,19 +1392,6 @@ ___time timeout;)
         else if (n == 0)
           {
             /*
-             * The call to ___device_select must be aborted because the
-             * abort_select event is set.  This occurs when an interrupt
-             * (such as a CTRL-C user interrupt) needs to be serviced
-             * promptly by the main program.
-             */
-
-            ResetEvent (___io_mod.abort_select); /* ignore error */
-
-            return ___FIX(___ERRNO_ERR(EINTR));
-          }
-        else if (n == 1)
-          {
-            /*
              * The heartbeat thread has died.  This is normally due to
              * the program being terminated abruptly by the user (for
              * example by using the thread manager or the "shutdown"
@@ -1296,8 +1399,27 @@ ___time timeout;)
              * initiate a clean termination of the program.
              */
 
-            return ___FIX(___UNKNOWN_ERR);
+            e = ___FIX(___UNKNOWN_ERR);
+
+            break;
           }
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+        else if (n == 1)
+          {
+            /*
+             * The call to ___device_select must be aborted because the
+             * select_abort event is set.  This occurs when an interrupt
+             * (such as a CTRL-C user interrupt) needs to be serviced
+             * promptly by the main program. However, it is important
+             * to check if other devices are ready, to ensure
+             * that IO events are not ignored.
+             */
+
+            ResetEvent (___PSTATE->os.select_abort); /* ignore error */
+
+            aborted = 1;
+          }
+#endif
         else
           {
             /* Mark the appropriate device "ready". */
@@ -1324,131 +1446,95 @@ ___time timeout;)
 
 #endif
 
-  for (i=nb_devs-1; i>=0; i--)
+  ___ACTLOG_END();
+
+  if (e == ___FIX(___NO_ERR))
     {
-      ___SCMOBJ e;
-      ___device *d = devs[i];
-      if (d != NULL)
-        if ((e = ___device_select_virt
-                   (d,
-                    i>=nb_read_devs,
-                    i,
-                    ___SELECT_PASS_CHECK,
-                    &state))
-            != ___FIX(___NO_ERR))
-          return e;
+      for (i=read_pos-1; i>=0; i--)
+        {
+          ___device *d = devs[i];
+          if (d != NULL)
+            if ((e = ___device_select_virt
+                       (d,
+                        i>=write_pos ? FOR_READING
+                                     : i>=event_pos ? FOR_WRITING
+                                                    : FOR_EVENT,
+                        i,
+                        ___SELECT_PASS_CHECK,
+                        &state))
+                != ___FIX(___NO_ERR))
+              break;
+        }
     }
 
-  return ___FIX(___NO_ERR);
-}
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
 
+#ifdef USE_select_or_poll
 
-void ___device_select_add_relative_timeout
-   ___P((___device_select_state *state,
-         int i,
-         ___F64 seconds),
-        (state,
-         i,
-         seconds)
-___device_select_state *state;
-int i;
-___F64 seconds;)
-{
-  if (seconds < state->relative_timeout)
-    state->relative_timeout = seconds;
-}
+  if (___FD_ISSET(___PSTATE->os.select_abort.reading_fd, state.readfds))
+    {
+      /* self-pipe has available data to read, discard all of it */
 
+      e = ___FIX(___ERRNO_ERR(EINTR));
 
-void ___device_select_add_timeout
-   ___P((___device_select_state *state,
-         int i,
-         ___time timeout),
-        (state,
-         i,
-         timeout)
-___device_select_state *state;
-int i;
-___time timeout;)
-{
-  if (___time_less (timeout, state->timeout))
-    state->timeout = timeout;
-}
+      for (;;)
+        {
+          char buf[256];
+          int n = read (___PSTATE->os.select_abort.reading_fd, buf, sizeof(buf));
 
-
-#ifdef USE_select
-
-void ___device_select_add_fd
-   ___P((___device_select_state *state,
-         int fd,
-         ___BOOL for_writing),
-        (state,
-         fd,
-         for_writing)
-___device_select_state *state;
-int fd;
-___BOOL for_writing;)
-{
-  if (for_writing)
-    ___FD_SET(fd, &state->writefds);
-  else
-    ___FD_SET(fd, &state->readfds);
-
-  if (fd >= state->highest_fd_plus_1)
-    state->highest_fd_plus_1 = fd+1;
-}
+          if (n < 0)
+            {
+              if (errno == EAGAIN)
+                break;
+              if (errno != EINTR)
+                {
+                  e = err_code_from_errno ();
+                  break;
+                }
+            }
+          else if (n < sizeof(buf))
+            break;
+        }
+    }
 
 #endif
-
-#ifdef USE_poll
-
-void ___device_select_add_fd
-   ___P((___device_select_state *state,
-         int fd,
-         ___BOOL for_writing),
-        (state,
-         fd,
-         for_writing)
-___device_select_state *state;
-int fd;
-___BOOL for_writing;)
-{
-  state->pollfds[state->pollfd_count].fd = fd;
-
-  if (for_writing)
-    state->pollfds[state->pollfd_count].events = POLLOUT;
-  else
-    state->pollfds[state->pollfd_count].events = POLLIN;
-
-  ++state->pollfd_count;
-}
-
-#endif
-
 
 #ifdef USE_MsgWaitForMultipleObjects
 
-void ___device_select_add_wait_obj
-   ___P((___device_select_state *state,
-         int i,
-         HANDLE wait_obj),
-        (state,
-         i,
-         wait_obj)
-___device_select_state *state;
-int i;
-HANDLE wait_obj;)
-{
-  DWORD j = state->nb_wait_objs;
-
-  if (j < MAXIMUM_WAIT_OBJECTS)
-    {
-      state->wait_objs_buffer[j] = wait_obj;
-      state->wait_obj_to_dev_pos[j] = i;
-      state->nb_wait_objs = j+1;
-    }
-}
+  if (aborted)
+    e = ___FIX(___ERRNO_ERR(EINTR));
 
 #endif
+
+#endif
+
+  return e;
+}
+
+
+void ___device_select_abort
+   ___P((___processor_state ___ps),
+        (___ps)
+___processor_state ___ps;)
+{
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+
+#ifdef USE_POSIX
+
+  static char buf[] = { 0 };
+
+  write (___ps->os.select_abort.writing_fd, buf, 1); /* ignore error */
+
+#endif
+
+#ifdef USE_WIN32
+
+  SetEvent (___ps->os.select_abort); /* ignore error */
+
+#endif
+
+#endif
+}
 
 
 ___SCMOBJ ___device_force_output
@@ -1513,7 +1599,7 @@ ___device *self;)
       )
     {
       e = ___device_release_virt (self);
-      ___free_mem (self);
+      ___FREE_MEM(self);
     }
 
   return e;
@@ -1541,7 +1627,7 @@ ___device *self;)
         return e;
 
       devs[0] = self;
-      e = ___device_select (devs, 1, 0, ___time_mod.time_pos_infinity);
+      e = ___device_select (devs, 1, 0, 0, ___time_mod.time_pos_infinity);
       if (e != ___FIX(___NO_ERR))
         return e;
     }
@@ -1555,7 +1641,7 @@ ___device *self;)
         return e;
 
       devs[0] = self;
-      e = ___device_select (devs, 0, 1, ___time_mod.time_pos_infinity);
+      e = ___device_select (devs, 0, 1, 0, ___time_mod.time_pos_infinity);
       if (e != ___FIX(___NO_ERR))
         return e;
     }
@@ -1597,17 +1683,17 @@ ___device *self;)
 
 ___HIDDEN ___SCMOBJ device_timer_select_virt
    ___P((___device *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
@@ -1684,7 +1770,7 @@ ___device_group *dgroup;)
   ___device_timer *d;
 
   d = ___CAST(___device_timer*,
-              ___alloc_mem (sizeof (___device_timer)));
+              ___ALLOC_MEM(sizeof (___device_timer)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -1742,7 +1828,7 @@ LPVOID arg;)
   DWORD thread_id;
 
   p = ___CAST(___device_stream_pump*,
-              ___alloc_mem (sizeof (___device_stream_pump)));
+              ___ALLOC_MEM(sizeof (___device_stream_pump)));
 
   if (p == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -1751,7 +1837,7 @@ LPVOID arg;)
 
   if (e != ___FIX(___NO_ERR))
     {
-      ___free_mem (p);
+      ___FREE_MEM(p);
       return e;
     }
 
@@ -1770,7 +1856,7 @@ LPVOID arg;)
     {
       e = err_code_from_GetLastError ();
       ___nonblocking_pipe_cleanup (&p->pipe);
-      ___free_mem (p);
+      ___FREE_MEM(p);
       *pump = NULL; /* make sure caller does not think a pump was created */
       return e;
     }
@@ -1825,7 +1911,7 @@ ___device_stream_pump *pump;)
 {
   CloseHandle (pump->thread); /* ignore error */
   ___nonblocking_pipe_cleanup (&pump->pipe); /* ignore error */
-  ___free_mem (pump);
+  ___FREE_MEM(pump);
 
   return ___FIX(___NO_ERR);
 }
@@ -1834,17 +1920,17 @@ ___device_stream_pump *pump;)
 
 ___SCMOBJ ___device_stream_select_virt
    ___P((___device *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
@@ -1853,12 +1939,12 @@ ___device_select_state *state;)
 
 #ifdef USE_PUMPS
 
-  int stage = (for_writing
-               ? d->base.write_stage
-               : d->base.read_stage);
-  ___device_stream_pump *p = (for_writing
-                              ? d->write_pump
-                              : d->read_pump);
+  int stage = (for_op == FOR_READING
+               ? d->base.read_stage
+               : d->base.write_stage);
+  ___device_stream_pump *p = (for_op == FOR_READING
+                              ? d->read_pump
+                              : d->write_pump);
 
   if (p != NULL)
     {
@@ -1870,10 +1956,10 @@ ___device_select_state *state;)
             wait_obj = p->thread;
           else
             {
-              if (for_writing)
-                wait_obj = p->pipe.wevent;
-              else
+              if (for_op == FOR_READING)
                 wait_obj = p->pipe.revent;
+              else
+                wait_obj = p->pipe.wevent;
             }
 
           ___device_select_add_wait_obj (state, i, wait_obj);
@@ -1898,7 +1984,7 @@ ___device_select_state *state;)
 
   return ___device_stream_select_raw_virt
            (d,
-            for_writing,
+            for_op,
             i,
             pass,
             state);
@@ -2255,7 +2341,7 @@ LPVOID param;)
                 case OOB_FORCE_OUTPUT1:
                 case OOB_FORCE_OUTPUT2:
                 case OOB_FORCE_OUTPUT3:
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
                   ___printf ("***** got OOB_FORCE_OUTPUT%d\n",
                              oob_msg.op - OOB_FORCE_OUTPUT0);
 #endif
@@ -2264,7 +2350,7 @@ LPVOID param;)
                 case OOB_SEEK_ABS:
                 case OOB_SEEK_REL:
                 case OOB_SEEK_REL_END:
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
                   ___printf ("***** got OOB_SEEK %d %d\n",
                              oob_msg.stream_index_param,
                              oob_msg.op - OOB_SEEK_ABS);
@@ -2275,7 +2361,7 @@ LPVOID param;)
                          oob_msg.op - OOB_SEEK_ABS);
                   break;
                 case OOB_EOS:
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
                   ___printf ("***** got OOB_EOS\n");
 #endif
                   break;
@@ -2461,25 +2547,25 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_serial_select_raw_virt
    ___P((___device_stream *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device_stream *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
   ___device_serial *d = ___CAST(___device_serial*,self);
-  int stage = (for_writing
-               ? d->base.base.write_stage
-               : d->base.base.read_stage);
+  int stage = (for_op == FOR_READING
+               ? d->base.base.read_stage
+               : d->base.base.write_stage);
 
   if (pass == ___SELECT_PASS_1)
     {
@@ -2633,7 +2719,7 @@ ___HIDDEN ___SCMOBJ ___device_serial_default_options_virt
 ___device_stream *self;)
 {
   int char_encoding_errors = ___CHAR_ENCODING_ERRORS_ON;
-  int char_encoding = ___CHAR_ENCODING_ISO_8859_1;
+  int char_encoding = ___CHAR_ENCODING_ASCII;
   int eol_encoding = ___EOL_ENCODING_LF;
   int buffering = ___FULL_BUFFERING;
 
@@ -2723,7 +2809,7 @@ int direction;)
   COMMTIMEOUTS cto;
 
   d = ___CAST(___device_serial*,
-              ___alloc_mem (sizeof (___device_serial)));
+              ___ALLOC_MEM(sizeof (___device_serial)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -2737,7 +2823,7 @@ int direction;)
 
   if (e != ___FIX(___NO_ERR))
     {
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -2759,7 +2845,7 @@ int direction;)
      )
     {
       e = err_code_from_GetLastError ();
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -2789,6 +2875,7 @@ typedef struct ___device_pipe_struct
 #ifdef USE_POSIX
     int fd_wr;  /* file descriptor for "write" pipe (-1 if none) */
     int fd_rd;  /* file descriptor for "read" pipe (-1 if none) */
+    int poll_interval_nsecs;  /* interval between read attempts */
 #endif
 
 #ifdef USE_WIN32
@@ -2853,7 +2940,7 @@ int direction;)
 #ifdef USE_POSIX
           if (d->fd_rd >= 0 &&
               d->fd_rd != d->fd_wr &&
-              close_no_EINTR (d->fd_rd) < 0)
+              ___close_no_EINTR (d->fd_rd) < 0)
             return err_code_from_errno ();
 #endif
 
@@ -2876,7 +2963,7 @@ int direction;)
         {
 #ifdef USE_POSIX
           if (d->fd_wr >= 0 &&
-              close_no_EINTR (d->fd_wr) < 0)
+              ___close_no_EINTR (d->fd_wr) < 0)
             return err_code_from_errno ();
 #endif
 
@@ -2892,25 +2979,25 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_pipe_select_raw_virt
    ___P((___device_stream *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device_stream *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
   ___device_pipe *d = ___CAST(___device_pipe*,self);
-  int stage = (for_writing
-               ? d->base.base.write_stage
-               : d->base.base.read_stage);
+  int stage = (for_op == FOR_READING
+               ? d->base.base.read_stage
+               : d->base.base.write_stage);
 
   if (pass == ___SELECT_PASS_1)
     {
@@ -2919,25 +3006,30 @@ ___device_select_state *state;)
       else
         {
 #ifdef USE_POSIX
-          if (for_writing)
+          if (for_op == FOR_READING)
             {
-              if (d->fd_wr >= 0)
-                ___device_select_add_fd (state, d->fd_wr, 1);
+              if (d->fd_rd >= 0)
+                ___device_select_add_fd (state, d->fd_rd, for_op);
+              if (d->poll_interval_nsecs > 0)
+                {
+                  int interval = d->poll_interval_nsecs * 6 / 5;
+                  if (interval < 1000000)
+                    interval = 1000000; /* min interval = 0.001 secs */
+                  else if (interval > 200000000)
+                    interval = 200000000; /* max interval = 0.2 sec */
+                  d->poll_interval_nsecs = interval;
+                  ___device_select_add_relative_timeout (state, i, interval * 1e-9);
+                }
             }
           else
             {
-              if (d->fd_rd >= 0)
-                ___device_select_add_fd (state, d->fd_rd, 0);
+              if (d->fd_wr >= 0)
+                ___device_select_add_fd (state, d->fd_wr, for_op);
             }
 #endif
 
 #ifdef USE_WIN32
-          if (for_writing)
-            {
-              if (d->h_wr != NULL)
-                ___device_select_add_wait_obj (state, i, d->h_wr);
-            }
-          else
+          if (for_op == FOR_READING)
             {
               if (d->h_rd != NULL)
                 {
@@ -2949,6 +3041,11 @@ ___device_select_state *state;)
                   d->poll_interval_nsecs = interval;
                   ___device_select_add_relative_timeout (state, i, interval * 1e-9);
                 }
+            }
+          else
+            {
+              if (d->h_wr != NULL)
+                ___device_select_add_wait_obj (state, i, d->h_wr);
             }
 #endif
         }
@@ -2963,14 +3060,16 @@ ___device_select_state *state;)
     {
 #ifdef USE_POSIX
 
-      if (for_writing)
+      if (for_op == FOR_READING)
         {
-          if (d->fd_wr < 0 || ___FD_ISSET(d->fd_wr, &state->writefds))
+          if (d->fd_rd < 0 ||
+              d->poll_interval_nsecs > 0 ||
+              ___FD_ISSET(d->fd_rd, state->readfds))
             state->devs[i] = NULL;
         }
       else
         {
-          if (d->fd_rd < 0 || ___FD_ISSET(d->fd_rd, &state->readfds))
+          if (d->fd_wr < 0 || ___FD_ISSET(d->fd_wr, state->writefds))
             state->devs[i] = NULL;
         }
 
@@ -2978,14 +3077,14 @@ ___device_select_state *state;)
 
 #ifdef USE_WIN32
 
-      if (for_writing)
+      if (for_op == FOR_READING)
         {
-          if (d->h_wr != NULL && state->devs_next[i] != -1)
+          if (d->h_rd != NULL)
             state->devs[i] = NULL;
         }
       else
         {
-          if (d->h_rd != NULL)
+          if (d->h_wr != NULL && state->devs_next[i] != -1)
             state->devs[i] = NULL;
         }
 
@@ -3056,16 +3155,29 @@ ___stream_index *len_done;)
     {
       int n = 0;
 
-      if ((n = read (d->fd_rd, buf, len)) < 0)
+      if ((n = read (d->fd_rd, buf, len)) == 0)
         {
+          if (d->poll_interval_nsecs > 0)
+            {
+              errno = EAGAIN;
+              e = err_code_from_errno ();
+            }
+
+        }
+      else
+        {
+          d->poll_interval_nsecs = 0;
+          if (n < 0)
+            {
 #if 0
-          if (errno == EIO) errno = EAGAIN;
+              if (errno == EIO) errno = EAGAIN;
 #else
-          if (errno == EIO) /* on linux, treating EIO as EAGAIN gives an infinite loop */
-            n = 0;
-          else
+              if (errno == EIO) /* on linux, treating EIO as EAGAIN gives an infinite loop */
+                n = 0;
+              else
 #endif
-            e = err_code_from_errno ();
+                e = err_code_from_errno ();
+            }
         }
 
       *len_done = n;
@@ -3175,9 +3287,13 @@ ___HIDDEN ___SCMOBJ ___device_pipe_default_options_virt
 ___device_stream *self;)
 {
   int char_encoding_errors = ___CHAR_ENCODING_ERRORS_ON;
-  int char_encoding = ___CHAR_ENCODING_ISO_8859_1;
+  int char_encoding = ___CHAR_ENCODING_ASCII;
   int eol_encoding = ___EOL_ENCODING_LF;
+#ifdef USE_WIN32
+  int buffering = ___NO_BUFFERING;
+#else
   int buffering = ___FULL_BUFFERING;
+#endif
 
   return ___FIX(___STREAM_OPTIONS(char_encoding_errors,
                                   char_encoding,
@@ -3247,15 +3363,23 @@ int direction;)
 {
   ___device_pipe *d;
 
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (fd_rd, fd_wr))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
   d = ___CAST(___device_pipe*,
-              ___alloc_mem (sizeof (___device_pipe)));
+              ___ALLOC_MEM(sizeof (___device_pipe)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
 
   d->base.base.vtbl = &___device_pipe_table;
-  d->fd_rd = fd_rd;
-  d->fd_wr = fd_wr;
+  d->fd_rd = (direction & ___DIRECTION_RD) ? fd_rd : -1;
+  d->fd_wr = (direction & ___DIRECTION_WR) ? fd_wr : -1;
+  d->poll_interval_nsecs = 1; /* wait until writing end is opened */
 
   *dev = d;
 
@@ -3294,7 +3418,7 @@ int pumps_on;)
   ___device_pipe *d;
 
   d = ___CAST(___device_pipe*,
-              ___alloc_mem (sizeof (___device_pipe)));
+              ___ALLOC_MEM(sizeof (___device_pipe)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -3335,6 +3459,7 @@ typedef struct ___device_process_struct
     int status;          /* process status */
     ___BOOL got_status;  /* was the status retrieved? */
     ___BOOL cleanuped;   /* has process been cleaned-up? */
+    int event_check_interval_nsecs;  /* interval between event checks */
   } ___device_process;
 
 typedef struct ___device_process_vtbl_struct
@@ -3450,22 +3575,49 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_process_select_raw_virt
    ___P((___device_stream *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device_stream *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
-  return ___device_pipe_select_raw_virt (self, for_writing, i, pass, state);
+  ___device_process *d = ___CAST(___device_process*,self);
+
+  if (for_op != FOR_EVENT)
+    return ___device_pipe_select_raw_virt (self, for_op, i, pass, state);
+
+  if (pass == ___SELECT_PASS_1)
+    {
+      if (d->got_status)
+        state->timeout = ___time_mod.time_neg_infinity;
+      else
+        {
+          int interval = d->event_check_interval_nsecs * 6 / 5;
+          if (interval < 1000000)
+            interval = 1000000; /* min interval = 0.001 secs */
+          else if (interval > 200000000)
+            interval = 200000000; /* max interval = 0.2 sec */
+          d->event_check_interval_nsecs = interval;
+          ___device_select_add_relative_timeout (state, i, interval * 1e-9);
+        }
+      return ___FIX(___SELECT_SETUP_DONE);
+    }
+
+  /* pass == ___SELECT_PASS_CHECK */
+
+  if (d->got_status)
+    state->devs[i] = NULL;
+
+  return ___FIX(___NO_ERR);
 }
 
 ___HIDDEN ___SCMOBJ ___device_process_release_raw_virt
@@ -3616,8 +3768,15 @@ int direction;)
 {
   ___device_process *d;
 
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (fd_stdin, fd_stdout))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
   d = ___CAST(___device_process*,
-              ___alloc_mem (sizeof (___device_process)));
+              ___ALLOC_MEM(sizeof (___device_process)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -3628,23 +3787,25 @@ int direction;)
 
   if ((fd_stdout >= 0 &&
        (direction & ___DIRECTION_RD) &&
-       (set_fd_blocking_mode (fd_stdout, 0) < 0)) ||
+       (___set_fd_blocking_mode (fd_stdout, 0) < 0)) ||
       (fd_stdin >= 0 &&
        (direction & ___DIRECTION_WR) &&
-       (set_fd_blocking_mode (fd_stdin, 0) < 0)))
+       (___set_fd_blocking_mode (fd_stdin, 0) < 0)))
     {
       ___SCMOBJ e = err_code_from_errno ();
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
   d->base.base.base.vtbl = &___device_process_table;
   d->base.fd_rd = fd_stdout;
   d->base.fd_wr = fd_stdin;
+  d->base.poll_interval_nsecs = 0; /* writing end already opened */
   d->pid = pid;
   d->status = -1;
   d->got_status = 0;
   d->cleanuped = 0;
+  d->event_check_interval_nsecs = 0;
 
   *dev = d;
 
@@ -3682,7 +3843,7 @@ int direction;)
   ___device_process *d;
 
   d = ___CAST(___device_process*,
-              ___alloc_mem (sizeof (___device_process)));
+              ___ALLOC_MEM(sizeof (___device_process)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -3694,6 +3855,7 @@ int direction;)
   d->status = -1;
   d->got_status = 0;
   d->cleanuped = 0;
+  d->event_check_interval_nsecs = 0;
 
   *dev = d;
 
@@ -3711,55 +3873,825 @@ int direction;)
 
 #ifdef USE_NETWORKING
 
-/* Socket utilities */
+/* TLS support */
 
-#ifdef USE_POSIX
-#define SOCKET_TYPE int
-#define SOCKET_CALL_ERROR(s) ((s) < 0)
-#define SOCKET_CALL_ERROR2(s) ((s) < 0)
-#define CONNECT_IN_PROGRESS (errno == EINPROGRESS)
-#define CONNECT_WOULD_BLOCK (errno == EAGAIN)
-#define NOT_CONNECTED(e) ((e) == ___FIX(___ERRNO_ERR(ENOTCONN)))
-#define CLOSE_SOCKET(s) close_no_EINTR (s)
-#define ERR_CODE_FROM_SOCKET_CALL err_code_from_errno ()
-#define IOCTL_SOCKET(s,cmd,argp) ioctl (s,cmd,argp)
-#define SOCKET_LEN_TYPE socklen_t
+#ifdef USE_OPENSSL
+
+___HIDDEN int openssl_initialized = 0;
+
+
+/* TLS context */
+
+typedef struct ___tls_context_t
+{
+  /* TLS protocol options */
+  ___U16 min_tls_version;
+  ___U16 options;
+
+  /* Client and Server options */
+  char *certificate_path;
+  char *private_key_path;
+
+  /* Server-only options */
+  char *dh_params_path;
+  char *elliptic_curve_name;
+  char *client_ca_path;
+
+  /* OpenSSL context */
+  SSL_CTX *tls_ctx;
+} ___tls_context;
+
+___SCMOBJ ___release_rc_tls_context
+   ___P((void *x),
+        (x)
+void *x;)
+{
+  ___tls_context *c = ___CAST(___tls_context*, x);
+
+  if (c->certificate_path != NULL)
+    ___release_string (c->certificate_path);
+  if (c->private_key_path != NULL)
+    ___release_string (c->private_key_path);
+  if (c->dh_params_path != NULL)
+    ___release_string (c->dh_params_path);
+  if (c->elliptic_curve_name != NULL)
+    ___release_string (c->elliptic_curve_name);
+  if (c->client_ca_path != NULL)
+    ___release_string (c->client_ca_path);
+
+  if (c->tls_ctx != NULL)
+    SSL_CTX_free (c->tls_ctx);
+
+  ___release_rc(c);
+
+  return ___FIX(___NO_ERR);
+}
+
+/* Fix for vulnerability http://www.cvedetails.com/cve/CVE-2009-3555/ */
+#if OPENSSL_VERSION_NUMBER < 0x009080cfL
+
+___HIDDEN void server_tls_info_callback
+   ___P((const SSL *tls, int where, int ret),
+        (tls, where, ret)
+const SSL *tls;
+int where;
+int ret;)
+{
+  if (0 != (where & SSL_CB_HANDSHAKE_START))
+    {
+      ___device_tcp_client *dev = SSL_get_app_data(tls);
+      ++dev->renegotiations;
+    }
+}
+
 #endif
+
+#ifndef OPENSSL_NO_DH
+
+/* 1024-bit MODP Group with 160-bit prime order subgroup (RFC5114)
+ * -----BEGIN DH PARAMETERS-----
+ * MIIBDAKBgQCxC4+WoIDgHd6S3l6uXVTsUsmfvPsGo8aaap3KUtI7YWBz4oZ1oj0Y
+ * mDjvHi7mUsAT7LSuqQYRIySXXDzUm4O/rMvdfZDEvXCYSI6cIZpzck7/1vrlZEc4
+ * +qMaT/VbzMChUa9fDci0vUW/N982XBpl5oz9p21NpwjfH7K8LkpDcQKBgQCk0cvV
+ * w/00EmdlpELvuZkF+BBN0lisUH/WQGz/FCZtMSZv6h5cQVZLd35pD1UE8hMWAhe0
+ * sBuIal6RVH+eJ0n01/vX07mpLuGQnQ0iY/gKdqaiTAh6CR9THb8KAWm2oorWYqTR
+ * jnOvoy13nVkY0IvIhY9Nzvl8KiSFXm7rIrOy5QICAKA=
+ * -----END DH PARAMETERS-----
+ */
+___HIDDEN const unsigned char dh1024_p[]={
+  0xB1,0x0B,0x8F,0x96,0xA0,0x80,0xE0,0x1D,0xDE,0x92,0xDE,0x5E,
+  0xAE,0x5D,0x54,0xEC,0x52,0xC9,0x9F,0xBC,0xFB,0x06,0xA3,0xC6,
+  0x9A,0x6A,0x9D,0xCA,0x52,0xD2,0x3B,0x61,0x60,0x73,0xE2,0x86,
+  0x75,0xA2,0x3D,0x18,0x98,0x38,0xEF,0x1E,0x2E,0xE6,0x52,0xC0,
+  0x13,0xEC,0xB4,0xAE,0xA9,0x06,0x11,0x23,0x24,0x97,0x5C,0x3C,
+  0xD4,0x9B,0x83,0xBF,0xAC,0xCB,0xDD,0x7D,0x90,0xC4,0xBD,0x70,
+  0x98,0x48,0x8E,0x9C,0x21,0x9A,0x73,0x72,0x4E,0xFF,0xD6,0xFA,
+  0xE5,0x64,0x47,0x38,0xFA,0xA3,0x1A,0x4F,0xF5,0x5B,0xCC,0xC0,
+  0xA1,0x51,0xAF,0x5F,0x0D,0xC8,0xB4,0xBD,0x45,0xBF,0x37,0xDF,
+  0x36,0x5C,0x1A,0x65,0xE6,0x8C,0xFD,0xA7,0x6D,0x4D,0xA7,0x08,
+  0xDF,0x1F,0xB2,0xBC,0x2E,0x4A,0x43,0x71,
+};
+
+___HIDDEN const unsigned char dh1024_g[]={
+  0xA4,0xD1,0xCB,0xD5,0xC3,0xFD,0x34,0x12,0x67,0x65,0xA4,0x42,
+  0xEF,0xB9,0x99,0x05,0xF8,0x10,0x4D,0xD2,0x58,0xAC,0x50,0x7F,
+  0xD6,0x40,0x6C,0xFF,0x14,0x26,0x6D,0x31,0x26,0x6F,0xEA,0x1E,
+  0x5C,0x41,0x56,0x4B,0x77,0x7E,0x69,0x0F,0x55,0x04,0xF2,0x13,
+  0x16,0x02,0x17,0xB4,0xB0,0x1B,0x88,0x6A,0x5E,0x91,0x54,0x7F,
+  0x9E,0x27,0x49,0xF4,0xD7,0xFB,0xD7,0xD3,0xB9,0xA9,0x2E,0xE1,
+  0x90,0x9D,0x0D,0x22,0x63,0xF8,0x0A,0x76,0xA6,0xA2,0x4C,0x08,
+  0x7A,0x09,0x1F,0x53,0x1D,0xBF,0x0A,0x01,0x69,0xB6,0xA2,0x8A,
+  0xD6,0x62,0xA4,0xD1,0x8E,0x73,0xAF,0xA3,0x2D,0x77,0x9D,0x59,
+  0x18,0xD0,0x8B,0xC8,0x85,0x8F,0x4D,0xCE,0xF9,0x7C,0x2A,0x24,
+  0x85,0x5E,0x6E,0xEB,0x22,0xB3,0xB2,0xE5,
+};
+
+#endif
+
+/* This option was introduced in OpenSSL v0.9.9 */
+#if OPENSSL_VERSION_NUMBER >= 0x00909000L && !defined SSL_OP_NO_COMPRESSION
+#define SSL_OP_NO_COMPRESSION 0
+#endif
+
 
 #ifdef USE_WIN32
-#define SOCKET_TYPE SOCKET
-#define SOCKET_CALL_ERROR(s) ((s) == SOCKET_ERROR)
-#define SOCKET_CALL_ERROR2(s) ((s) == INVALID_SOCKET)
-#define CONNECT_IN_PROGRESS ((WSAGetLastError () == WSAEALREADY) || \
-(WSAGetLastError () == WSAEISCONN))
-#define CONNECT_WOULD_BLOCK ((WSAGetLastError () == WSAEWOULDBLOCK) || \
-(WSAGetLastError () == WSAEINVAL))
-#define NOT_CONNECTED(e) ((e) == ___FIX(___WIN32_ERR(WSAENOTCONN)))
-#define CLOSE_SOCKET(s) closesocket (s)
-#define ERR_CODE_FROM_SOCKET_CALL err_code_from_WSAGetLastError ()
-#define IOCTL_SOCKET(s,cmd,argp) ioctlsocket (s,cmd,argp)
-#define SOCKET_LEN_TYPE int
+
+#define ___OPENSSL_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) utf8
+
+#else
+
+#define ___OPENSSL_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) \
+___PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native)
+
 #endif
 
-#ifdef SHUT_RD
-#define SHUTDOWN_RD SHUT_RD
+
+___SCMOBJ ___os_make_tls_context
+   ___P((___SCMOBJ min_tls_version,
+         ___SCMOBJ options,
+         ___SCMOBJ certificate_path,
+         ___SCMOBJ private_key_path,
+         ___SCMOBJ dh_params_path,
+         ___SCMOBJ elliptic_curve_name,
+         ___SCMOBJ client_ca_path),
+        (min_tls_version,
+         options,
+         certificate_path,
+         private_key_path,
+         dh_params_path,
+         elliptic_curve_name,
+         client_ca_path)
+___SCMOBJ min_tls_version;
+___SCMOBJ options;
+___SCMOBJ certificate_path;
+___SCMOBJ private_key_path;
+___SCMOBJ dh_params_path;
+___SCMOBJ elliptic_curve_name;
+___SCMOBJ client_ca_path;)
+{
+  ___SCMOBJ scm_e;
+  ___SCMOBJ scm_ctx;
+  int err;
+  long tls_options;
+  long openssl_version = 0;
+
+  /* Server mode parameters */
+#ifndef OPENSSL_NO_DH
+
+  DH *dh;
+  BIGNUM *bp, *bg;
+
+#endif
+
+#if OPENSSL_VERSION_NUMBER >= 0x0090800fL && !defined OPENSSL_NO_ECDH
+
+  EC_KEY *ecdh;
+  int nid;
+
+#endif
+
+  STACK_OF(X509_NAME) *client_ca_list = NULL;
+
+#define OPENSSL_CHECK_ERROR(ret) \
+  do {                                  \
+    if ((ret) == 0)                     \
+      {                                 \
+        return ___FIX(___TLS_ERR(ret)); \
+      }                                 \
+  } while (0)
+
+  /* TLS library Initialization */
+  /* Reference for TLS initialization:
+     https://github.com/lighttpd/lighttpd1.4/blob/master/src/network.c */
+  if (openssl_initialized == 0)
+    {
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+      if (!OPENSSL_init_ssl(0, NULL))
+        return ___FIX(___TLS_LIBRARY_INIT_ERR);
 #else
-#ifdef SD_RECEIVE
-#define SHUTDOWN_RD SD_RECEIVE
+      if (!SSL_library_init())
+        return ___FIX(___TLS_LIBRARY_INIT_ERR);
+
+      SSL_load_error_strings();
+      OpenSSL_add_all_algorithms();
+#endif
+
+
+      /* OpenSSL version format after 0.9.3:
+         MMNNFFPPS: major minor fix patch status
+         The status nibble has one of the values 0 for development, 1 to e for
+         betas; 1 to 14, and f for release.
+         The loaded OpenSSL library must be equal or newer than the one used
+         during compilation. Also, it needs to have the same Major, Minor and
+         Fix parts. */
+      openssl_version = SSLeay();
+      if (openssl_version < OPENSSL_VERSION_NUMBER ||
+          (openssl_version>>12) != (OPENSSL_VERSION_NUMBER>>12) )
+        return ___FIX(___TLS_LIBRARY_VERSION_ERR);
+
+      openssl_initialized = 1;
+    }
+  /* Check Entropy */
+  if (RAND_status() == 0)
+    return ___FIX(___TLS_NOT_ENOUGH_ENTROPY_ERR);
+
+  /* Context initialization */
+  ___tls_context *c = ___CAST(___tls_context*,
+                              ___alloc_rc ( ___PSA(___PSTATE)
+                                           sizeof (___tls_context)));
+
+  if (c == NULL)
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+  c->min_tls_version = ___INT(min_tls_version);
+  c->options = ___INT(options);
+
+  c->certificate_path = NULL;
+  c->private_key_path = NULL;
+  c->dh_params_path = NULL;
+  c->elliptic_curve_name = NULL;
+  c->client_ca_path = NULL;
+  c->tls_ctx = NULL;
+
+  if ((scm_e = ___SCMOBJ_to_STRING
+                 (___PSA(___PSTATE)
+                  certificate_path,
+                  ___CAST(void**,&c->certificate_path),
+                  3,
+                  ___CE(___OPENSSL_PATH_CE_SELECT),
+                  0)
+       != ___FIX(___NO_ERR)) ||
+      (scm_e = ___SCMOBJ_to_STRING
+                 (___PSA(___PSTATE)
+                  private_key_path,
+                  ___CAST(void**,&c->private_key_path),
+                  4,
+                  ___CE(___OPENSSL_PATH_CE_SELECT),
+                  0)
+       != ___FIX(___NO_ERR)) ||
+      (scm_e = ___SCMOBJ_to_STRING
+                 (___PSA(___PSTATE)
+                  dh_params_path,
+                  ___CAST(void**,&c->dh_params_path),
+                  5,
+                  ___CE(___OPENSSL_PATH_CE_SELECT),
+                  0)
+       != ___FIX(___NO_ERR)) ||
+      (scm_e = ___SCMOBJ_to_CHARSTRING
+                 (___PSA(___PSTATE)
+                  elliptic_curve_name,
+                  &c->elliptic_curve_name,
+                  6)
+       != ___FIX(___NO_ERR)) ||
+      (scm_e = ___SCMOBJ_to_STRING
+                 (___PSA(___PSTATE)
+                  client_ca_path,
+                  ___CAST(void**,&c->client_ca_path),
+                  7,
+                  ___CE(___OPENSSL_PATH_CE_SELECT),
+                  0)
+       != ___FIX(___NO_ERR)))
+    {
+      ___release_rc_tls_context (c);
+      return scm_e;
+    }
+
+  /* TLS Context */
+
+  /* Server mode */
+  if (c->options & ___TLS_OPTION_SERVER_MODE)
+    {
+      /* References for server setup:
+         https://github.com/lighttpd/lighttpd1.4/blob/master/src/network.c
+         https://github.com/git-mirror/nginx/commit/10e9cec1feca191ea0b00ca729be534e372bdd66#diff-0584d16332cf0d6dd9adb990a3c76a0cR566 */
+
+      /* TLS protocol bugs: workaround options
+         Ref: https://www.openssl.org/docs/ssl/SSL_CTX_set_options.html */
+      tls_options =
+        SSL_OP_ALL
+        /* Fix for http://www.cvedetails.com/cve/CVE-2009-3555/ (use in all versions) */
+        | SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION
+        /* Fix against CRIME attack */
+        | SSL_OP_NO_COMPRESSION;
+
+      c->tls_ctx = SSL_CTX_new (SSLv23_server_method());
+      OPENSSL_CHECK_ERROR (___CAST(___UWORD,c->tls_ctx));
+
+      /* Required identifier for client certificate verification to work with sessions */
+      OPENSSL_CHECK_ERROR (SSL_CTX_set_session_id_context
+                           (c->tls_ctx,
+                            ___CAST(const unsigned char*,"gambit"),
+                            6));
+
+      /* OPTION: re-activate empty fragments countermeasure against BEAST attack.
+         The countermeasure breaks some TLS implementations, so it is deactivated by
+         default by SSL_OP_ALL */
+      if (c->options & ___TLS_OPTION_INSERT_EMPTY_FRAGMENTS)
+        {
+#ifdef SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS
+
+        tls_options &= ~SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS;
+
 #else
-#define SHUTDOWN_RD 0
+
+        ___release_rc_tls_context (c);
+        return ___FIX(___TLS_UNSUPPORTED_EMPTY_FRAGS_ERR);
+
+#endif
+        }
+
+      OPENSSL_CHECK_ERROR (tls_options &
+                           SSL_CTX_set_options (c->tls_ctx, tls_options));
+
+      switch (c->min_tls_version)
+        {
+        case 0x0303:
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_TLSv1_1 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_TLSv1_1)));
+        case 0x302:
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_TLSv1 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_TLSv1)));
+        case 0x301:
+#ifndef OPENSSL_NO_SSL3
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_SSLv3 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_SSLv3)));
+        case 0x300:
+#ifndef OPENSSL_NO_SSL2
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_SSLv2 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_SSLv2)));
+        case 0x200:
+#endif
+#endif
+          break;
+        default:
+          return ___FIX(___TLS_WRONG_TLS_VERSION_ERR);
+        }
+
+      /* OPTION: Diffie-Hellman key exchange algorithm support */
+      if (c->options & ___TLS_OPTION_USE_DIFFIE_HELLMAN)
+        {
+#ifndef OPENSSL_NO_DH
+          /* OPTION: Provided DH parameters file */
+          if (c->dh_params_path != NULL)
+            {
+              /* DH parameters from file */
+              FILE *dh_fp;
+              int err;
+              dh_fp = fopen (c->dh_params_path, "r");
+              if (dh_fp == NULL)
+                {
+                  ___release_rc_tls_context (c);
+                  return ___FIX(___TLS_READ_DH_PARAMS_ERR);
+                }
+              dh = PEM_read_DHparams (dh_fp, NULL, NULL, NULL);
+              fclose (dh_fp);
+              if (dh == NULL)
+                {
+                  ___release_rc_tls_context (c);
+                  return ___FIX(___TLS_READ_DH_PARAMS_ERR);
+                }
+              DH_check (dh, &err);
+              if (err != 0)
+                {
+                  ___release_rc_tls_context (c);
+                  return ___FIX(___TLS_READ_DH_PARAMS_ERR);
+                }
+            }
+          else
+            {
+              /* Default DH parameters from RFC5114 */
+              dh = DH_new();
+              if (dh == NULL)
+                {
+                  ___release_rc_tls_context (c);
+                  return ___FIX(___TLS_DH_PARAMS_ERR);
+                }
+              bp = BN_bin2bn (dh1024_p, sizeof(dh1024_p), NULL);
+              bg = BN_bin2bn (dh1024_g, sizeof(dh1024_g), NULL);
+              if (bp == NULL || bg == NULL)
+                {
+                  BN_free(bp);
+                  BN_free(bg);
+                  DH_free (dh);
+                  ___release_rc_tls_context (c);
+                  return ___FIX(___TLS_DH_PARAMS_ERR);
+                }
+            }
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+          DH_set0_pqg(dh,bp,NULL,bg);
+#else
+          dh->p=bp;
+          dh->g=bg;
+#endif
+          SSL_CTX_set_tmp_dh (c->tls_ctx, dh);
+          OPENSSL_CHECK_ERROR (SSL_OP_SINGLE_DH_USE &
+                               SSL_CTX_set_options (c->tls_ctx,
+                                                    SSL_OP_SINGLE_DH_USE));
+          if (dh != NULL)
+            DH_free (dh);
+#else
+
+          ___release_rc_tls_context (c);
+          return ___FIX(___TLS_UNSUPPORTED_DH_ERR);
+
+#endif
+        }
+
+      /* OPTION: Use Elliptic-Curve Diffie-Hellman key exchange */
+      if ((c->options & ___TLS_OPTION_USE_ELLIPTIC_CURVES) &&
+          (c->options & ___TLS_OPTION_USE_DIFFIE_HELLMAN))
+        {
+#if OPENSSL_VERSION_NUMBER >= 0x0090800fL && !defined OPENSSL_NO_ECDH
+
+          if (c->elliptic_curve_name != NULL)
+            {
+              /* OpenSSL only supports the "named curves" from RFC 4492,
+                 section 5.1.1. */
+              nid = OBJ_sn2nid (c->elliptic_curve_name);
+              if (nid == 0)
+                {
+                  ___release_rc_tls_context (c);
+                  return ___FIX(___TLS_UNKNOWN_ELLIPTIC_CURVE_ERR);
+                }
+            }
+          else
+            {
+              nid = OBJ_sn2nid("prime256v1");
+            }
+          ecdh = EC_KEY_new_by_curve_name(nid);
+          if (ecdh == NULL)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_ELLIPTIC_CURVE_ERR);
+            }
+          SSL_CTX_set_tmp_ecdh (c->tls_ctx,ecdh);
+          OPENSSL_CHECK_ERROR (SSL_OP_SINGLE_ECDH_USE &
+                               SSL_CTX_set_options (c->tls_ctx,
+                                                    SSL_OP_SINGLE_ECDH_USE));
+          EC_KEY_free (ecdh);
+
+#else
+
+          ___release_rc_tls_context (c);
+          return ___FIX(___TLS_UNSUPPORTED_ELLIPTIC_CURVES_ERR);
+
+#endif
+        }
+
+      /* OPTION: Authenticate client. This requires a PEM file with accepted CAs */
+      if ((c->options & ___TLS_OPTION_REQUEST_CLIENT_AUTHENTICATION) &&
+          (c->client_ca_path != NULL))
+        {
+          client_ca_list = SSL_load_client_CA_file (c->client_ca_path);
+          if (client_ca_list == NULL)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_READ_CA_FILE_ERR);
+            }
+          SSL_CTX_set_client_CA_list(c->tls_ctx, client_ca_list);
+          SSL_CTX_set_verify (c->tls_ctx,
+                              SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                              NULL);
+        }
+
+      /* OPTION: Public certificate and private key files and verification */
+      if ((c->certificate_path != NULL) &&
+          (c->private_key_path != NULL))
+        {
+          if (SSL_CTX_use_certificate_file (c->tls_ctx,
+                                            c->certificate_path,
+                                            SSL_FILETYPE_PEM) <= 0)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_CERTIFICATE_FILE_ERR);
+            }
+          if (SSL_CTX_use_PrivateKey_file
+              (c->tls_ctx, c->private_key_path, SSL_FILETYPE_PEM) <= 0)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_PRIVATE_KEY_FILE_ERR);
+            }
+          if (SSL_CTX_check_private_key (c->tls_ctx) <= 0)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_PRIVATE_KEY_CERT_MISMATCH_ERR);
+            }
+        }
+
+      SSL_CTX_set_mode (c->tls_ctx,
+                        SSL_MODE_ENABLE_PARTIAL_WRITE
+                        | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER
+#ifdef SSL_MODE_RELEASE_BUFFERS
+                        | SSL_MODE_RELEASE_BUFFERS
+#endif
+                        );
+
+#if OPENSSL_VERSION_NUMBER < 0x009080cfL
+
+      /* Link back device state to TLS state (used in info callback)
+         Fix for vulnerability http://www.cvedetails.com/cve/CVE-2009-3555/ */
+      SSL_set_app_data (c->tls, dev);
+      SSL_CTX_set_info_callback (c->tls_ctx, server_tls_info_callback);
+
+#endif
+    }
+  /* Client mode */
+  else
+    {
+      /* TLS protocol bugs: workaround options
+         Ref: https://www.openssl.org/docs/ssl/SSL_CTX_set_options.html */
+      tls_options =
+        SSL_OP_ALL |
+        SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION |
+        SSL_OP_NO_COMPRESSION;
+
+      c->tls_ctx = SSL_CTX_new (SSLv23_client_method());
+      OPENSSL_CHECK_ERROR (___CAST(___UWORD,c->tls_ctx));
+
+      /* Required identifier for client certificate verification to work with
+         sessions. */
+      /* TODO: should this ID be unique per Gambit instance? */
+      OPENSSL_CHECK_ERROR (SSL_CTX_set_session_id_context
+                           (c->tls_ctx,
+                            ___CAST(const unsigned char*,"gambit"),
+                            6));
+
+      /* OPTION: re-activate empty fragments (countermeasure against BEAST
+         attack). The countermeasure breaks some TLS implementations, so it is
+         deactivated by default by the SSL_OP_ALL flag */
+      if (c->options & ___TLS_OPTION_INSERT_EMPTY_FRAGMENTS)
+        {
+#ifdef SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS
+
+          tls_options &= ~SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS;
+
+#else
+
+          ___release_rc_tls_context (c);
+          return ___FIX(___TLS_UNSUPPORTED_EMPTY_FRAGS_ERR);
+
+#endif
+        }
+
+      OPENSSL_CHECK_ERROR (tls_options &
+                           SSL_CTX_set_options (c->tls_ctx, tls_options));
+
+      switch (c->min_tls_version)
+        {
+        case 0x0303:
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_TLSv1_1 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_TLSv1_1)));
+        case 0x302:
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_TLSv1 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_TLSv1)));
+        case 0x301:
+#ifndef OPENSSL_NO_SSL3
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_SSLv3 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_SSLv3)));
+        case 0x300:
+#ifndef OPENSSL_NO_SSL2
+          OPENSSL_CHECK_ERROR ((SSL_OP_NO_SSLv2 &
+                                SSL_CTX_set_options (c->tls_ctx,
+                                                     SSL_OP_NO_SSLv2)));
+        case 0x200:
+#endif
+#endif
+          break;
+        default:
+          ___release_rc_tls_context (c);
+          return ___FIX(___TLS_WRONG_TLS_VERSION_ERR);
+        }
+
+      /* OPTION: Public certificate and private key files and verification */
+      if ((c->certificate_path != NULL) &&
+          (c->private_key_path != NULL))
+        {
+          if (SSL_CTX_use_certificate_file (c->tls_ctx,
+                                            c->certificate_path,
+                                            SSL_FILETYPE_PEM) <= 0)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_CERTIFICATE_FILE_ERR);
+            }
+          if (SSL_CTX_use_PrivateKey_file (c->tls_ctx,
+                                           c->private_key_path,
+                                           SSL_FILETYPE_PEM) <= 0)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_PRIVATE_KEY_FILE_ERR);
+            }
+          if (SSL_CTX_check_private_key (c->tls_ctx) <= 0)
+            {
+              ___release_rc_tls_context (c);
+              return ___FIX(___TLS_PRIVATE_KEY_CERT_MISMATCH_ERR);
+            }
+        }
+
+      SSL_CTX_set_mode (c->tls_ctx,
+                        SSL_MODE_ENABLE_PARTIAL_WRITE |
+                        SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
+      /* always verify server certificate */
+      SSL_CTX_set_default_verify_paths (c->tls_ctx);
+      SSL_CTX_set_verify (c->tls_ctx, SSL_VERIFY_PEER, NULL);
+  }
+
+  if ((scm_e =___NONNULLPOINTER_to_SCMOBJ
+               (___PSTATE,
+                ___CAST(void*,c),
+                ___FAL,
+                ___release_rc_tls_context,
+                &scm_ctx,
+                ___RETURN_POS)) != ___FIX(___NO_ERR))
+    {
+      ___release_rc_tls_context (c);
+      return scm_e;
+    }
+
+  return ___release_scmobj (scm_ctx);
+}
+
+/* TLS support functions */
+
+___HIDDEN void clear_tls_error_queue
+   ___PVOID
+{
+  ERR_clear_error();
+}
+
+/* TLS multithreading support */
+
+#ifdef ___MULTIPLE_THREADED_VMS
+
+___HIDDEN ___MUTEX *tls_mutex_buf = NULL;
+
+___HIDDEN void tls_locking_function
+   ___P((int mode, int n, const char * file, int line),
+        (mode, n, file, line)
+int mode;
+int n;
+const char *file;
+int line;)
+{
+  if (mode & CRYPTO_LOCK)
+    ___MUTEX_LOCK (tls_mutex_buf[n]);
+  else
+    ___MUTEX_UNLOCK (tls_mutex_buf[n]);
+}
+
+___HIDDEN  unsigned long tls_id_function
+   ___PVOID
+{
+  return ((unsigned long)___THREAD_ID);
+}
+
+struct CRYPTO_dynlock_value
+{
+  ___MUTEX mutex;
+};
+
+___HIDDEN struct CRYPTO_dynlock_value *tls_dyn_create_function
+   ___P((const char *file, int line),
+        (file, line)
+const char *file;
+int line;)
+{
+  struct CRYPTO_dynlock_value *value;
+  value = (struct CRYPTO_dynlock_value*)
+    ___ALLOC_MEM(sizeof(struct CRYPTO_dynlock_value));
+
+  if (!value)
+    return NULL;
+
+  ___MUTEX_INIT (value->mutex);
+  return value;
+}
+
+___HIDDEN void tls_dyn_lock_function
+   ___P((int mode,
+         struct CRYPTO_dynlock_value *l,
+         const char *file,
+         int line),
+        (mode, l, file, line)
+int mode;
+struct CRYPTO_dynlock_value *l;
+const char *file;
+int line;)
+{
+  if (mode & CRYPTO_LOCK)
+    ___MUTEX_LOCK (l->mutex);
+  else
+    ___MUTEX_UNLOCK (l->mutex);
+}
+
+___HIDDEN void tls_dyn_destroy_function
+   ___P((struct CRYPTO_dynlock_value *l,
+         const char *file,
+         int line),
+        (l, file, line)
+struct CRYPTO_dynlock_value *l;
+const char *file;
+int line;)
+{
+  ___MUTEX_DESTROY (l->mutex);
+  ___FREE_MEM(l);
+}
+
+___HIDDEN int tls_threading_setup
+   ___PVOID
+{
+  int i;
+  tls_mutex_buf = (___MUTEX*)___ALLOC_MEM(CRYPTO_num_locks() * sizeof(___MUTEX));
+
+  if (!tls_mutex_buf)
+    return 0;
+
+  for (i = 0;  i < CRYPTO_num_locks();  i++)
+    ___MUTEX_INIT (tls_mutex_buf[i]);
+
+#if OPENSSL_VERSION_NUMBER < 0x10001000L
+  CRYPTO_set_id_callback (tls_id_function);
+#elseif
+  CRYPTO_THREADID_set_callback (tls_id_function);
+#endif
+  CRYPTO_set_locking_callback (tls_locking_function);
+
+  CRYPTO_set_dynlock_create_callback (tls_dyn_create_function);
+  CRYPTO_set_dynlock_lock_callback (tls_dyn_lock_function);
+  CRYPTO_set_dynlock_destroy_callback (tls_dyn_destroy_function);
+
+  return 1;
+}
+
+___HIDDEN int tls_threading_cleanup
+   ___PVOID
+{
+  int i;
+
+  if (!tls_mutex_buf)
+    return 0;
+
+#if OPENSSL_VERSION_NUMBER < 0x10001000L
+  CRYPTO_set_id_callback (NULL);
+#elseif
+  CRYPTO_THREADID_set_callback (NULL);
+#endif
+  CRYPTO_set_locking_callback (NULL);
+
+  CRYPTO_set_dynlock_create_callback (NULL);
+  CRYPTO_set_dynlock_lock_callback (NULL);
+  CRYPTO_set_dynlock_destroy_callback (NULL);
+
+  for (i = 0; i < CRYPTO_num_locks(); i++)
+    ___MUTEX_DESTROY (tls_mutex_buf[i]);
+
+  ___FREE_MEM(tls_mutex_buf);
+  tls_mutex_buf = NULL;
+
+  return 1;
+}
+
+#endif
 #endif
 #endif
 
-#ifdef SHUT_WR
-#define SHUTDOWN_WR SHUT_WR
-#else
-#ifdef SD_SEND
-#define SHUTDOWN_WR SD_SEND
-#else
-#define SHUTDOWN_WR 1
-#endif
-#endif
+
+#if !defined (USE_OPENSSL) || !defined (USE_NETWORKING)
+
+typedef void ___tls_context;
+
+___SCMOBJ ___os_make_tls_context
+   ___P((___SCMOBJ min_tls_version,
+         ___SCMOBJ options,
+         ___SCMOBJ certificate_path,
+         ___SCMOBJ private_key_path,
+         ___SCMOBJ dh_params_path,
+         ___SCMOBJ elliptic_curve_name,
+         ___SCMOBJ client_ca_path),
+        (min_tls_version,
+         options,
+         certificate_path,
+         private_key_path,
+         dh_params_path,
+         elliptic_curve_name,
+         client_ca_path)
+___SCMOBJ min_tls_version;
+___SCMOBJ options;
+___SCMOBJ certificate_path;
+___SCMOBJ private_key_path;
+___SCMOBJ dh_params_path;
+___SCMOBJ elliptic_curve_name;
+___SCMOBJ client_ca_path;)
+{
+  return ___FIX(___UNIMPL_ERR);
+}
 
 #endif
 
@@ -3774,8 +4706,8 @@ typedef struct ___device_tcp_client_struct
   {
     ___device_stream base;
     SOCKET_TYPE s;
-    struct sockaddr server_addr;
-    SOCKET_LEN_TYPE server_addrlen;
+    struct sockaddr addr;
+    SOCKET_LEN_TYPE addrlen;
     int try_connect_again;
     int connect_done;
 
@@ -3791,8 +4723,22 @@ typedef struct ___device_tcp_client_struct
     HANDLE io_event;  /* used by ___device_tcp_client_select_raw_virt */
 
 #endif
-  } ___device_tcp_client;
 
+#ifdef USE_OPENSSL
+
+    SSL *tls;
+
+    /* Handle WANT_WRITE/WANT_READ error codes by OpenSSL: want_op[for_op] */
+    int want_op[2];
+
+#if OPENSSL_VERSION_NUMBER < 0x009080cfL
+
+    /* Fix for vulnerability http://www.cvedetails.com/cve/CVE-2009-3555/ */
+    int renegotiations = 0;
+
+#endif
+#endif
+  } ___device_tcp_client;
 
 typedef struct ___device_tcp_client_vtbl_struct
   {
@@ -3806,12 +4752,20 @@ ___HIDDEN int try_connect
 ___device_tcp_client *dev;)
 {
   if (!SOCKET_CALL_ERROR(connect (dev->s,
-                                  &dev->server_addr,
-                                  dev->server_addrlen)) ||
+                                  &dev->addr,
+                                  dev->addrlen)) ||
       CONNECT_IN_PROGRESS || /* establishing connection in background */
       dev->try_connect_again == 2) /* last connect attempt? */
     {
       dev->try_connect_again = 0; /* we're done waiting */
+
+#ifdef USE_OPENSSL
+
+      if (dev->tls != NULL)
+        SSL_connect (dev->tls);
+
+#endif
+
       return 0;
     }
 
@@ -3841,6 +4795,12 @@ int direction;)
   ___device_tcp_client *d = ___CAST(___device_tcp_client*,self);
   int is_not_closed = 0;
 
+#ifdef USE_OPENSSL
+
+  int err;
+
+#endif
+
   if (d->base.base.read_stage != ___STAGE_CLOSED)
     is_not_closed |= ___DIRECTION_RD;
 
@@ -3849,6 +4809,51 @@ int direction;)
 
   if (is_not_closed == 0)
     return ___FIX(___NO_ERR);
+
+#ifdef USE_OPENSSL
+
+  if (d->tls != NULL)
+    {
+      if (SSL_is_init_finished(d->tls))
+        {
+          /*
+           * Make for_op in select have the natural meaning (read for
+           * read, write for write). Note that this is not strictly
+           * necessary, since we are resetting to this state after
+           * each ___device_select_add_fd call on TLS-enabled sockets.
+           */
+          d->want_op[FOR_READING] = FOR_READING;
+          d->want_op[FOR_WRITING] = FOR_WRITING;
+
+          clear_tls_error_queue();
+          err = SSL_shutdown (d->tls);
+
+          if (err == 1)
+            {
+            }
+          else if (err > 0)
+            return ___ERR_CODE_EAGAIN;
+          else if (err < 0)
+            {
+              switch (SSL_get_error(d->tls,err))
+                {
+                case SSL_ERROR_WANT_READ:
+                case SSL_ERROR_WANT_WRITE:
+                  return ___ERR_CODE_EAGAIN;
+                default:
+                  /* Discard any other error in TLS shutdown: once the shutdown
+                     notification has been sent, TLS allows the other part to
+                     avoid responding, so we can assume the connection is closed */
+                  break;
+                }
+            }
+        }
+
+      SSL_free (d->tls);
+      d->tls = NULL;
+    }
+
+#endif
 
   if ((is_not_closed & ~direction) == 0)
     {
@@ -3911,25 +4916,25 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_tcp_client_select_raw_virt
    ___P((___device_stream *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device_stream *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
   ___device_tcp_client *d = ___CAST(___device_tcp_client*,self);
-  int stage = (for_writing
-               ? d->base.base.write_stage
-               : d->base.base.read_stage);
+  int stage = (for_op == FOR_READING
+               ? d->base.base.read_stage
+               : d->base.base.write_stage);
 
   if (pass == ___SELECT_PASS_1)
     {
@@ -3951,7 +4956,26 @@ ___device_select_state *state;)
               ___device_select_add_relative_timeout (state, i, interval * 1e-9);
             }
           else
-            ___device_select_add_fd (state, d->s, for_writing);
+            {
+#ifdef USE_OPENSSL
+              if (d->tls != NULL)
+                {
+                  /* If the connection uses TLS, choose the direction of add_fd
+                     according to previous WANT_WRITE/WANT_READ. This will, in
+                     some cases (during TLS handshake), invert the naturally
+                     expected operation (a write requiring a select for read,
+                     and viceversa). */
+                  ___device_select_add_fd (state, d->s, d->want_op[for_op]);
+                  /* Once the select is done, return the for_op to
+                     its regular meaning (read for read, write for write) */
+                  d->want_op[for_op] = for_op;
+                }
+              else
+                ___device_select_add_fd (state, d->s, for_op);
+#else
+              ___device_select_add_fd (state, d->s, for_op);
+#endif
+            }
 
           return ___FIX(___SELECT_SETUP_DONE);
 
@@ -3973,10 +4997,31 @@ ___device_select_state *state;)
     {
       if (d->try_connect_again != 0)
         d->io_events = (FD_CONNECT | FD_CLOSE);
-      else if (for_writing)
-        d->io_events |= (FD_WRITE | FD_CLOSE);
-      else
+
+#ifdef USE_OPENSSL
+
+      else if (d->tls != NULL)
+        {
+          /* If the connection uses TLS, choose the direction of add_fd
+             according to previous WANT_WRITE/WANT_READ. This will, in
+             some cases (during TLS handshake), invert the naturally
+             expected operation (a write requiring a select for read,
+             and viceversa). */
+          if (d->want_op[for_op] == FOR_READING)
+            d->io_events |= (FD_READ | FD_CLOSE);
+          else
+            d->io_events |= (FD_WRITE | FD_CLOSE);
+          /* Once the select is done, return for_op to
+             its regular meaning (read for read, write for write) */
+          d->want_op[for_op] = for_op;
+        }
+
+#endif
+
+      else if (for_op == FOR_READING)
         d->io_events |= (FD_READ | FD_CLOSE);
+      else
+        d->io_events |= (FD_WRITE | FD_CLOSE);
 
       return ___FIX(___NO_ERR);
     }
@@ -4004,9 +5049,9 @@ ___device_select_state *state;)
 #ifdef USE_POSIX
 
       if (d->try_connect_again != 0 ||
-          (for_writing
-           ? ___FD_ISSET(d->s, &state->writefds)
-           : ___FD_ISSET(d->s, &state->readfds)))
+          (for_op == FOR_READING
+           ? ___FD_ISSET(d->s, state->readfds)
+           : ___FD_ISSET(d->s, state->writefds)))
         {
           d->connect_done = 1;
           state->devs[i] = NULL;
@@ -4037,6 +5082,13 @@ ___HIDDEN ___SCMOBJ ___device_tcp_client_release_raw_virt
         (self)
 ___device_stream *self;)
 {
+  ___device_tcp_client *d = ___CAST(___device_tcp_client*,self);
+
+#ifdef USE_OPENSSL
+  if (d->tls != NULL)
+    SSL_free (d->tls);
+
+#endif
   return ___FIX(___NO_ERR);
 }
 
@@ -4096,6 +5148,90 @@ ___stream_index *len_done;)
         return ERR_CODE_FROM_SOCKET_CALL;
     }
 
+#ifdef USE_OPENSSL
+
+#if OPENSSL_VERSION_NUMBER < 0x009080cfL
+
+  /* Fix for vulnerability http://www.cvedetails.com/cve/CVE-2009-3555/ */
+  if (d->renegotiations > 0)
+    return ___FIX(___TLS_ALERT_ERR);
+
+#endif
+
+  /* The current thread's error queue must be empty before the TLS I/O
+     operation is attempted, or SSL_get_error() will not work reliably. */
+  clear_tls_error_queue();
+  if (d->tls)
+    {
+      n = SSL_read (d->tls, ___CAST(char*,buf), len);
+
+      if (n > 0)
+        *len_done = n;
+      else if (n == 0)
+        {
+          /* Check if the other part initiated a shutdown and we didn't reply */
+          if (SSL_get_shutdown (d->tls)
+              & SSL_RECEIVED_SHUTDOWN
+              ^ SSL_SENT_SHUTDOWN)
+            {
+              clear_tls_error_queue();
+              SSL_shutdown (d->tls);
+            }
+
+          int err = SSL_get_error(d->tls,n);
+          switch (err)
+            {
+            /* The SSL connection is closed: nothing to do */
+            case SSL_ERROR_ZERO_RETURN:
+              *len_done = 0;
+              return ___FIX(___NO_ERR);
+              /* Internal/protocol error */
+            case SSL_ERROR_SYSCALL:
+            case SSL_ERROR_SSL:
+            default:
+              return ___FIX(___TLS_ERR(err));
+            }
+        }
+      else
+        {
+          int err = SSL_get_error(d->tls,n);
+          switch (err)
+            {
+            case SSL_ERROR_WANT_READ:
+              /* want read, FOR_READING */
+              d->want_op[FOR_READING] = FOR_READING;
+              return ___ERR_CODE_EAGAIN;
+            case SSL_ERROR_WANT_WRITE:
+              /* want write, FOR_READING */
+              d->want_op[FOR_READING] = FOR_WRITING;
+              return ___ERR_CODE_EAGAIN;
+            /* These errors require straight repetition */
+            case SSL_ERROR_WANT_ACCEPT:
+            case SSL_ERROR_WANT_CONNECT:
+            case SSL_ERROR_WANT_X509_LOOKUP:
+              return ___ERR_CODE_EAGAIN;
+            /* Internal/protocol error */
+            case SSL_ERROR_SYSCALL:
+            case SSL_ERROR_SSL:
+            default:
+              return ___FIX(___TLS_ERR(err));
+            }
+        }
+    }
+  else
+    {
+      if (SOCKET_CALL_ERROR(n = recv (d->s, ___CAST(char*,buf), len, 0)))
+        {
+          ___SCMOBJ e = ERR_CODE_FROM_SOCKET_CALL;
+          if (NOT_CONNECTED(e) && !d->connect_done)
+            e = ___ERR_CODE_EAGAIN;
+          return e;
+        }
+      *len_done = n;
+    }
+
+#else
+
   if (SOCKET_CALL_ERROR(n = recv (d->s, ___CAST(char*,buf), len, 0)))
     {
       ___SCMOBJ e = ERR_CODE_FROM_SOCKET_CALL;
@@ -4105,6 +5241,8 @@ ___stream_index *len_done;)
     }
 
   *len_done = n;
+
+#endif
 
   return ___FIX(___NO_ERR);
 }
@@ -4141,6 +5279,91 @@ ___stream_index *len_done;)
         return ERR_CODE_FROM_SOCKET_CALL;
     }
 
+#ifdef USE_OPENSSL
+
+#if OPENSSL_VERSION_NUMBER < 0x009080cfL
+
+  /* Fix for vulnerability http://www.cvedetails.com/cve/CVE-2009-3555/ */
+  if (d->renegotiations > 0)
+    return ___FIX(___TLS_ALERT_ERR);
+
+#endif
+
+  /* The current thread's error queue must be empty before the TLS I/O
+     operation is attempted, or SSL_get_error() will not work reliably. */
+  clear_tls_error_queue();
+
+  if (d->tls)
+    {
+      n = SSL_write (d->tls, ___CAST(char*,buf), len);
+
+      if (n > 0)
+        *len_done = n;
+      else if (n == 0)
+        {
+          /* Check if the other part initiated a shutdown and we didn't reply */
+          if (SSL_get_shutdown (d->tls)
+              & SSL_RECEIVED_SHUTDOWN
+              ^ SSL_SENT_SHUTDOWN)
+            {
+              clear_tls_error_queue();
+              SSL_shutdown (d->tls);
+            }
+
+          /* Then look into what actually happened */
+          int err = SSL_get_error(d->tls,n);
+          switch (err)
+            {
+            /* The SSL connection is closed: nothing to do */
+            case SSL_ERROR_ZERO_RETURN:
+              return ___FIX(___NO_ERR);
+            /* Internal/protocol error */
+            case SSL_ERROR_SYSCALL:
+            case SSL_ERROR_SSL:
+            default:
+              return ___FIX(___TLS_ERR(err));
+            }
+        }
+      else
+        {
+          int err = SSL_get_error(d->tls,n);
+          switch (err)
+            {
+            case SSL_ERROR_WANT_READ:
+              /* want read, FOR_WRITING */
+              d->want_op[FOR_WRITING] = FOR_READING;
+              return ___ERR_CODE_EAGAIN;
+            case SSL_ERROR_WANT_WRITE:
+              /* want write, FOR_WRITING */
+              d->want_op[FOR_WRITING] = FOR_WRITING;
+              return ___ERR_CODE_EAGAIN;
+            /* These errors require straight repetition */
+            case SSL_ERROR_WANT_ACCEPT:
+            case SSL_ERROR_WANT_CONNECT:
+            case SSL_ERROR_WANT_X509_LOOKUP:
+              return ___ERR_CODE_EAGAIN;
+            /* Internal/protocol error */
+            case SSL_ERROR_SYSCALL:
+            case SSL_ERROR_SSL:
+            default:
+              return ___FIX(___TLS_ERR(err));
+            }
+        }
+    }
+  else
+    {
+      if (SOCKET_CALL_ERROR(n = send (d->s, ___CAST(char*,buf), len, 0)))
+        {
+          ___SCMOBJ e = ERR_CODE_FROM_SOCKET_CALL;
+          if (NOT_CONNECTED(e) && !d->connect_done)
+            e = ___ERR_CODE_EAGAIN;
+          return e;
+        }
+      *len_done = n;
+    }
+
+#else
+
   if (SOCKET_CALL_ERROR(n = send (d->s, ___CAST(char*,buf), len, 0)))
     {
       ___SCMOBJ e = ERR_CODE_FROM_SOCKET_CALL;
@@ -4150,6 +5373,8 @@ ___stream_index *len_done;)
     }
 
   *len_done = n;
+
+#endif
 
   return ___FIX(___NO_ERR);
 }
@@ -4170,7 +5395,7 @@ ___HIDDEN ___SCMOBJ ___device_tcp_client_default_options_virt
 ___device_stream *self;)
 {
   int char_encoding_errors = ___CHAR_ENCODING_ERRORS_ON;
-  int char_encoding = ___CHAR_ENCODING_ISO_8859_1;
+  int char_encoding = ___CHAR_ENCODING_ASCII;
   int eol_encoding = ___EOL_ENCODING_LF;
   int buffering = ___FULL_BUFFERING;
 
@@ -4224,22 +5449,33 @@ ___HIDDEN ___device_tcp_client_vtbl ___device_tcp_client_table =
 #define ___SOCK_KEEPALIVE_FLAG(options) (((options) & 1) != 0)
 #define ___SOCK_NO_COALESCE_FLAG(options) (((options) & 2) != 0)
 #define ___SOCK_REUSE_ADDRESS_FLAG(options) (((options) & 2048) != 0)
+#define ___SOCK_UDP_FLAG(options) (((options) & ___SOCK_UDP) != 0)
+#define ___SOCK_UDP 4096
 
 
-___HIDDEN ___SCMOBJ create_tcp_socket
+___HIDDEN ___SCMOBJ create_socket
    ___P((SOCKET_TYPE *sock,
+         struct sockaddr *local_addr,
+         SOCKET_LEN_TYPE local_addrlen,
          int options),
         (sock,
+         local_addr,
+         local_addrlen,
          options)
 SOCKET_TYPE *sock;
+struct sockaddr *local_addr;
+SOCKET_LEN_TYPE local_addrlen;
 int options;)
 {
   int keepalive_flag = ___SOCK_KEEPALIVE_FLAG(options);
   int no_coalesce_flag = ___SOCK_NO_COALESCE_FLAG(options);
   int reuse_address_flag = ___SOCK_REUSE_ADDRESS_FLAG(options);
+  int udp_flag = ___SOCK_UDP_FLAG(options);
   SOCKET_TYPE s;
 
-  if (SOCKET_CALL_ERROR2(s = socket (AF_INET, SOCK_STREAM, 0)))
+  if (SOCKET_CALL_ERROR2(s = socket (AF_INET,
+                                     udp_flag ? SOCK_DGRAM : SOCK_STREAM,
+                                     0)))
     return ERR_CODE_FROM_SOCKET_CALL;
 
 #ifndef TCP_NODELAY
@@ -4263,7 +5499,8 @@ int options;)
                    IPPROTO_TCP,
                    TCP_NODELAY,
                    ___CAST(char*,&no_coalesce_flag),
-                   sizeof (no_coalesce_flag)) != 0))
+                   sizeof (no_coalesce_flag)) != 0) ||
+      (bind (s, local_addr, local_addrlen) != 0))
     {
       ___SCMOBJ e = ERR_CODE_FROM_SOCKET_CALL;
       CLOSE_SOCKET(s); /* ignore error */
@@ -4276,10 +5513,13 @@ int options;)
 }
 
 
-___HIDDEN int set_socket_non_blocking
-   ___P((SOCKET_TYPE s),
-        (s)
-SOCKET_TYPE s;)
+___HIDDEN int set_socket_blocking_mode
+   ___P((SOCKET_TYPE s,
+         ___BOOL blocking),
+        (s,
+         blocking)
+SOCKET_TYPE s;
+___BOOL blocking;)
 {
 #ifndef USE_ioctl
 #undef FIONBIO
@@ -4287,13 +5527,13 @@ SOCKET_TYPE s;)
 
 #ifdef FIONBIO
 
-  unsigned long param = 1;
+  unsigned long param = !blocking;
 
   return SOCKET_CALL_ERROR(IOCTL_SOCKET(s, FIONBIO, &param));
 
 #else
 
-  return set_fd_blocking_mode (s, 0);
+  return ___set_fd_blocking_mode (s, blocking);
 
 #endif
 }
@@ -4303,30 +5543,37 @@ ___SCMOBJ ___device_tcp_client_setup_from_socket
    ___P((___device_tcp_client **dev,
          ___device_group *dgroup,
          SOCKET_TYPE s,
-         struct sockaddr *server_addr,
-         SOCKET_LEN_TYPE server_addrlen,
+         struct sockaddr *addr,
+         SOCKET_LEN_TYPE addrlen,
          int try_connect_again,
          int direction),
         (dev,
          dgroup,
          s,
-         server_addr,
-         server_addrlen,
+         addr,
+         addrlen,
          try_connect_again,
          direction)
 ___device_tcp_client **dev;
 ___device_group *dgroup;
 SOCKET_TYPE s;
-struct sockaddr *server_addr;
-SOCKET_LEN_TYPE server_addrlen;
+struct sockaddr *addr;
+SOCKET_LEN_TYPE addrlen;
 int try_connect_again;
 int direction;)
 {
   ___SCMOBJ e;
   ___device_tcp_client *d;
 
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (s, s))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
   d = ___CAST(___device_tcp_client*,
-              ___alloc_mem (sizeof (___device_tcp_client)));
+              ___ALLOC_MEM(sizeof (___device_tcp_client)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -4335,19 +5582,31 @@ int direction;)
    * Setup socket to perform nonblocking I/O.
    */
 
-  if (set_socket_non_blocking (s) != 0) /* set nonblocking mode */
+  if (set_socket_blocking_mode (s, 0) != 0) /* set nonblocking mode */
     {
       e = ERR_CODE_FROM_SOCKET_CALL;
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
   d->base.base.vtbl = &___device_tcp_client_table;
   d->s = s;
-  d->server_addr = *server_addr;
-  d->server_addrlen = server_addrlen;
+  d->addr = *addr;
+  d->addrlen = addrlen;
   d->try_connect_again = try_connect_again;
   d->connect_done = 0;
+
+#ifdef USE_OPENSSL
+
+  d->tls = NULL;
+
+#if OPENSSL_VERSION_NUMBER < 0x009080cfL
+
+  /* Fix for vulnerability http://www.cvedetails.com/cve/CVE-2009-3555/ */
+  d->renegotiations = 0;
+
+#endif
+#endif
 
 #ifdef USE_POSIX
 
@@ -4366,7 +5625,7 @@ int direction;)
   if (d->io_event == NULL)
     {
       e = err_code_from_GetLastError ();
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -4381,40 +5640,59 @@ int direction;)
             0);
 }
 
-
 ___SCMOBJ ___device_tcp_client_setup_from_sockaddr
    ___P((___device_tcp_client **dev,
          ___device_group *dgroup,
-         struct sockaddr *server_addr,
-         SOCKET_LEN_TYPE server_addrlen,
+         struct sockaddr *addr,
+         SOCKET_LEN_TYPE addrlen,
+         struct sockaddr *local_addr,
+         SOCKET_LEN_TYPE local_addrlen,
          int options,
-         int direction),
+         int direction,
+         ___tls_context *tls_context,
+         char *server_name),
         (dev,
          dgroup,
-         server_addr,
-         server_addrlen,
+         addr,
+         addrlen,
+         local_addr,
+         local_addrlen,
          options,
-         direction)
+         direction,
+         tls_context,
+         server_name)
 ___device_tcp_client **dev;
 ___device_group *dgroup;
-struct sockaddr *server_addr;
-SOCKET_LEN_TYPE server_addrlen;
+struct sockaddr *addr;
+SOCKET_LEN_TYPE addrlen;
+struct sockaddr *local_addr;
+SOCKET_LEN_TYPE local_addrlen;
 int options;
-int direction;)
+int direction;
+___tls_context *tls_context;
+char *server_name)
 {
   ___SCMOBJ e;
   SOCKET_TYPE s;
   ___device_tcp_client *d;
 
-  if ((e = create_tcp_socket (&s, options)) != ___FIX(___NO_ERR))
+#ifndef USE_OPENSSL
+
+  if (tls_context != NULL)
+    return ___FIX(___UNIMPL_ERR);
+
+#endif
+
+  if ((e = create_socket (&s, local_addr, local_addrlen, options))
+      != ___FIX(___NO_ERR))
     return e;
 
   if ((e = ___device_tcp_client_setup_from_socket
              (&d,
               dgroup,
               s,
-              server_addr,
-              server_addrlen,
+              addr,
+              addrlen,
               1,
               direction))
       != ___FIX(___NO_ERR))
@@ -4426,6 +5704,23 @@ int direction;)
   device_transfer_close_responsibility (___CAST(___device*,d));
 
   *dev = d;
+
+#ifdef USE_OPENSSL
+
+  if (tls_context != NULL)
+    {
+      d->tls = SSL_new (tls_context->tls_ctx);
+      SSL_set_fd (d->tls, d->s);
+
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+      if (server_name != NULL)
+        {
+          SSL_set_tlsext_host_name (d->tls, server_name);
+        }
+#endif
+    }
+
+#endif
 
   if (try_connect (d) != 0)
     {
@@ -4454,6 +5749,12 @@ typedef struct ___device_tcp_server_struct
 #ifdef USE_WIN32
 
     HANDLE io_event;  /* used by ___device_tcp_server_select_raw_virt */
+
+#endif
+
+#ifdef USE_OPENSSL
+
+    ___tls_context *tls_context_p;
 
 #endif
   } ___device_tcp_server;
@@ -4508,25 +5809,25 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_tcp_server_select_virt
    ___P((___device *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
   ___device_tcp_server *d = ___CAST(___device_tcp_server*,self);
-  int stage = (for_writing
-               ? d->base.write_stage
-               : d->base.read_stage);
+  int stage = (for_op == FOR_READING
+               ? d->base.read_stage
+               : d->base.write_stage);
 
   if (pass == ___SELECT_PASS_1)
     {
@@ -4535,7 +5836,7 @@ ___device_select_state *state;)
       else
         {
 #ifdef USE_POSIX
-          ___device_select_add_fd (state, d->s, for_writing);
+          ___device_select_add_fd (state, d->s, for_op);
 #endif
 
 #ifdef USE_WIN32
@@ -4562,7 +5863,7 @@ ___device_select_state *state;)
     {
 #ifdef USE_POSIX
 
-      if (___FD_ISSET(d->s, &state->readfds))
+      if (___FD_ISSET(d->s, state->readfds))
         state->devs[i] = NULL;
 
 #endif
@@ -4608,36 +5909,38 @@ ___HIDDEN ___device_tcp_server_vtbl ___device_tcp_server_table =
   }
 };
 
-
 ___SCMOBJ ___device_tcp_server_setup
    ___P((___device_tcp_server **dev,
          ___device_group *dgroup,
-         struct sockaddr *server_addr,
-         SOCKET_LEN_TYPE server_addrlen,
+         struct sockaddr *local_addr,
+         SOCKET_LEN_TYPE local_addrlen,
          int backlog,
-         int options),
+         int options,
+         ___tls_context *tls_context),
         (dev,
          dgroup,
-         server_addr,
-         server_addrlen,
+         local_addr,
+         local_addrlen,
          backlog,
-         options)
+         options,
+         tls_context)
 ___device_tcp_server **dev;
 ___device_group *dgroup;
-struct sockaddr *server_addr;
-SOCKET_LEN_TYPE server_addrlen;
+struct sockaddr *local_addr;
+SOCKET_LEN_TYPE local_addrlen;
 int backlog;
-int options;)
+int options;
+___tls_context *tls_context;)
 {
   ___SCMOBJ e;
   SOCKET_TYPE s;
   ___device_tcp_server *d;
 
-  if ((e = create_tcp_socket (&s, options)) != ___FIX(___NO_ERR))
+  if ((e = create_socket (&s, local_addr, local_addrlen, options))
+      != ___FIX(___NO_ERR))
     return e;
 
-  if (set_socket_non_blocking (s) != 0 || /* set nonblocking mode */
-      bind (s, server_addr, server_addrlen) != 0 ||
+  if (set_socket_blocking_mode (s, 0) != 0 || /* set nonblocking mode */
       listen (s, backlog) != 0)
     {
       e = ERR_CODE_FROM_SOCKET_CALL;
@@ -4645,8 +5948,18 @@ int options;)
       return e;
     }
 
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (s, s))
+    {
+      CLOSE_SOCKET(s);
+      return ___FIX(___HEAP_OVERFLOW_ERR);
+    }
+
+#endif
+
   d = ___CAST(___device_tcp_server*,
-              ___alloc_mem (sizeof (___device_tcp_server)));
+              ___ALLOC_MEM(sizeof (___device_tcp_server)));
 
   if (d == NULL)
     {
@@ -4673,7 +5986,7 @@ int options;)
     {
       ___SCMOBJ e = err_code_from_GetLastError ();
       CLOSE_SOCKET(s); /* ignore error */
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -4682,6 +5995,12 @@ int options;)
   d->s = s;
 
   device_transfer_close_responsibility (___CAST(___device*,d));
+
+#ifdef USE_OPENSSL
+
+  d->tls_context_p = tls_context;
+
+#endif
 
   *dev = d;
 
@@ -4731,10 +6050,482 @@ ___device_tcp_client **client;)
       return e;
     }
 
+#ifdef USE_OPENSSL
+
+  if (dev->tls_context_p != NULL)
+    {
+      /* TLS Connection Initialization */
+      (*client)->tls  = SSL_new (dev->tls_context_p->tls_ctx);
+      SSL_set_fd ((*client)->tls, (*client)->s);
+      /* Non-blocking. We don't need to loop over its status, since OpenSSL
+         handles the handshake automatically in SSL_read/write */
+      SSL_accept ((*client)->tls);
+    }
+
+#endif
+
   device_transfer_close_responsibility (___CAST(___device*,*client));
 
   return ___FIX(___NO_ERR);
 }
+
+#endif
+
+
+/*---------------------------------------------------------------------------*/
+
+#ifdef USE_NETWORKING
+
+/* UDP device. */
+
+typedef struct ___device_udp_struct
+  {
+    ___device base;
+    SOCKET_TYPE s;
+
+    struct sockaddr dest_sa;
+    SOCKET_LEN_TYPE dest_salen; /* 0 when no destination yet set */
+
+    struct sockaddr source_sa;
+    SOCKET_LEN_TYPE source_salen; /* 0 when no message yet received */
+    ___BOOL source_same_as_previous; /* true when source_sa contains latest address read by ___os_device_udp_socket_info */
+
+#ifdef USE_WIN32
+
+    long io_events;   /* used by ___device_udp_select_raw_virt */
+    HANDLE io_event;  /* used by ___device_udp_select_raw_virt */
+
+#endif
+  } ___device_udp;
+
+typedef struct ___device_udp_vtbl_struct
+  {
+    ___device_vtbl base;
+  } ___device_udp_vtbl;
+
+
+___HIDDEN int ___device_udp_kind
+   ___P((___device *self),
+        (self)
+___device *self;)
+{
+  return ___UDP_DEVICE_KIND;
+}
+
+___HIDDEN ___SCMOBJ ___device_udp_close_virt
+   ___P((___device *self,
+         int direction),
+        (self,
+         direction)
+        ___device *self;
+        int direction;)
+{
+  ___device_udp *d = ___CAST(___device_udp*,self);
+  int is_not_closed = 0;
+
+  if (d->base.read_stage != ___STAGE_CLOSED)
+    is_not_closed |= ___DIRECTION_RD;
+
+  if (d->base.write_stage != ___STAGE_CLOSED)
+    is_not_closed |= ___DIRECTION_WR;
+
+  if (is_not_closed == 0)
+    return ___FIX(___NO_ERR);
+
+  if ((is_not_closed & ~direction) == 0)
+    {
+      /* Close socket when both sides are closed. */
+
+      d->base.read_stage = ___STAGE_CLOSED; /* avoid multiple closes */
+      d->base.write_stage = ___STAGE_CLOSED;
+
+#ifdef USE_WIN32
+
+      if (d->io_event != NULL)
+        CloseHandle (d->io_event); /* ignore error */
+
+#endif
+
+      if ((d->base.close_direction & (___DIRECTION_RD|___DIRECTION_WR))
+          == (___DIRECTION_RD|___DIRECTION_WR))
+        {
+          if (CLOSE_SOCKET(d->s) != 0)
+            return ERR_CODE_FROM_SOCKET_CALL;
+        }
+    }
+  else if (is_not_closed & direction & ___DIRECTION_RD)
+    d->base.read_stage = ___STAGE_CLOSED;
+  else if (is_not_closed & direction & ___DIRECTION_WR)
+    d->base.write_stage = ___STAGE_CLOSED;
+
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_udp_select_raw_virt
+   ___P((___device *self,
+         int for_op,
+         int i,
+         int pass,
+         ___device_select_state *state),
+        (self,
+         for_op,
+         i,
+         pass,
+         state)
+___device *self;
+int for_op;
+int i;
+int pass;
+___device_select_state *state;)
+{
+  ___device_udp *d = ___CAST(___device_udp*,self);
+  int stage = (for_op == FOR_READING
+               ? d->base.read_stage
+               : d->base.write_stage);
+
+  if (pass == ___SELECT_PASS_1)
+    {
+      if (stage != ___STAGE_OPEN)
+        {
+          state->timeout = ___time_mod.time_neg_infinity;
+          return ___FIX(___SELECT_SETUP_DONE);
+        }
+      else
+        {
+#ifdef USE_POSIX
+
+          ___device_select_add_fd (state, d->s, for_op);
+
+          return ___FIX(___SELECT_SETUP_DONE);
+
+#endif
+
+#ifdef USE_WIN32
+
+          d->io_events = 0;
+
+          return ___FIX(___NO_ERR);
+
+#endif
+        }
+    }
+
+#ifdef USE_WIN32
+
+  else if (pass == ___SELECT_PASS_2)
+    {
+      if (for_op == FOR_READING)
+        d->io_events |= (FD_READ | FD_CLOSE);
+      else
+        d->io_events |= (FD_WRITE | FD_CLOSE);
+
+      return ___FIX(___NO_ERR);
+    }
+  else if (pass == ___SELECT_PASS_3)
+    {
+      HANDLE wait_obj = d->io_event;
+
+      ResetEvent (wait_obj); /* ignore error */
+
+      WSAEventSelect (d->s, wait_obj, d->io_events);
+
+      ___device_select_add_wait_obj (state, i, wait_obj);
+
+      return ___FIX(___SELECT_SETUP_DONE);
+    }
+
+#endif
+
+  /* pass == ___SELECT_PASS_CHECK */
+
+  if (stage != ___STAGE_OPEN)
+    state->devs[i] = NULL;
+  else
+    {
+#ifdef USE_POSIX
+
+      if (for_op == FOR_READING
+          ? ___FD_ISSET(d->s, state->readfds)
+          : ___FD_ISSET(d->s, state->writefds))
+        state->devs[i] = NULL;
+
+#endif
+
+#ifdef USE_WIN32
+
+      if (state->devs_next[i] != -1)
+        state->devs[i] = NULL;
+
+#endif
+    }
+
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_udp_release_virt
+   ___P((___device *self),
+        (self)
+___device *self;)
+{
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_udp_force_output_virt
+   ___P((___device *self,
+         int level),
+        (self,
+         level)
+___device *self;
+int level;)
+{
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___device_udp_vtbl ___device_udp_table =
+{
+  {
+    ___device_udp_kind,
+    ___device_udp_select_raw_virt,
+    ___device_udp_release_virt,
+    ___device_udp_force_output_virt,
+    ___device_udp_close_virt
+  }
+};
+
+___SCMOBJ ___device_udp_setup_from_socket
+   ___P((___device_udp **dev,
+         ___device_group *dgroup,
+         SOCKET_TYPE s,
+         struct sockaddr *local_addr,
+         SOCKET_LEN_TYPE local_addrlen,
+         int direction),
+        (dev,
+         dgroup,
+         s,
+         local_addr,
+         local_addrlen,
+         direction)
+___device_udp **dev;
+___device_group *dgroup;
+SOCKET_TYPE s;
+struct sockaddr *local_addr;
+SOCKET_LEN_TYPE local_addrlen;
+int direction;)
+{
+  ___SCMOBJ e;
+  ___device_udp *d;
+
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (s, s))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
+  d = ___CAST(___device_udp*,
+              ___ALLOC_MEM(sizeof (___device_udp)));
+
+  if (d == NULL)
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+  /*
+   * Setup socket to perform nonblocking I/O.
+   */
+
+  if (set_socket_blocking_mode (s, 0) != 0) /* set nonblocking mode */
+    {
+      e = ERR_CODE_FROM_SOCKET_CALL;
+      ___FREE_MEM(d);
+      return e;
+    }
+
+  d->base.vtbl = &___device_udp_table;
+  d->base.refcount = 1;
+  d->base.direction = direction;
+  d->base.close_direction = 0; /* prevent closing on errors */
+
+  if (direction & ___DIRECTION_RD)
+    d->base.read_stage = ___STAGE_OPEN;
+  else
+    d->base.read_stage = ___STAGE_CLOSED;
+
+  if (direction & ___DIRECTION_WR)
+    d->base.write_stage = ___STAGE_OPEN;
+  else
+    d->base.write_stage = ___STAGE_CLOSED;
+
+  d->s = s;
+  d->dest_salen = 0; /* no destination yet set */
+  d->source_salen = 0; /* no message yet received */
+  d->source_same_as_previous = 0;
+
+#ifdef USE_WIN32
+
+  d->io_event =
+    CreateEvent (NULL,  /* can't inherit */
+                 TRUE,  /* manual reset */
+                 FALSE, /* not signaled */
+                 NULL); /* no name */
+
+  if (d->io_event == NULL)
+    {
+      e = err_code_from_GetLastError ();
+      ___FREE_MEM(d);
+      return e;
+    }
+
+#endif
+
+  device_transfer_close_responsibility (___CAST(___device*,d));
+
+  *dev = d;
+
+  ___device_add_to_group (dgroup, &d->base);
+
+  return ___FIX(___NO_ERR);
+}
+
+___SCMOBJ ___device_udp_setup_from_sockaddr
+   ___P((___device_udp **dev,
+         ___device_group *dgroup,
+         struct sockaddr *local_addr,
+         SOCKET_LEN_TYPE local_addrlen,
+         int options,
+         int direction),
+        (dev,
+         dgroup,
+         local_addr,
+         local_addrlen,
+         options,
+         direction)
+___device_tcp_client **dev;
+___device_group *dgroup;
+struct sockaddr *local_addr;
+SOCKET_LEN_TYPE local_addrlen;
+int options;
+int direction;)
+{
+  ___SCMOBJ e;
+  SOCKET_TYPE s;
+  ___device_udp *d;
+
+  if ((e = create_socket (&s, local_addr, local_addrlen, ___SOCK_UDP))
+      != ___FIX(___NO_ERR))
+    return e;
+
+  if ((e = ___device_udp_setup_from_socket
+             (&d,
+              dgroup,
+              s,
+              local_addr,
+              local_addrlen,
+              direction))
+      != ___FIX(___NO_ERR))
+    {
+      CLOSE_SOCKET(s); /* ignore error */
+      return e;
+    }
+
+  device_transfer_close_responsibility (___CAST(___device*,d));
+
+  *dev = d;
+
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_udp_read_raw
+   ___P((___device_udp *self,
+         ___U8 *buf,
+         ___SSIZE_T len,
+         ___SSIZE_T *len_done),
+        (self,
+         buf,
+         len,
+         len_done)
+___device_udp *self;
+___U8 *buf;
+___SSIZE_T len;
+___SSIZE_T *len_done;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+  ___SSIZE_T n;
+  struct sockaddr sa;
+  SOCKET_LEN_TYPE salen = sizeof (sa);
+
+  if (self->base.read_stage != ___STAGE_OPEN)
+    return ___FIX(___CLOSED_DEVICE_ERR);
+
+  n = recvfrom (self->s, buf, len, 0, &sa, &salen);
+
+  if (n < 0)
+    return ERR_CODE_FROM_SOCKET_CALL;
+
+  if (!self->source_same_as_previous ||
+      !sockaddr_equal (&sa, salen, &self->source_sa, self->source_salen))
+    {
+      self->source_sa = sa;
+      self->source_salen = salen;
+      self->source_same_as_previous = 0;
+    }
+
+  *len_done = n;
+
+  return ___FIX(___NO_ERR);
+
+#endif
+}
+
+
+___HIDDEN ___SCMOBJ ___device_udp_write_raw
+   ___P((___device_udp *self,
+         ___U8 *buf,
+         ___SSIZE_T len,
+         ___SSIZE_T *len_done),
+        (self,
+         buf,
+         len,
+         len_done)
+___device_udp *self;
+___U8 *buf;
+___SSIZE_T len;
+___SSIZE_T *len_done;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+  ___SSIZE_T n;
+
+  if (self->base.write_stage != ___STAGE_OPEN)
+    return ___FIX(___CLOSED_DEVICE_ERR);
+
+  n = sendto (self->s, buf, len, 0, &self->dest_sa, self->dest_salen);
+
+  /*
+   * Note that some operating systems limit the size of datagrams sent.
+   * For example, by default MacOS doesn't allow sending datagrams longer
+   * than 9216 bytes and this can be changed with:
+   *
+   * sudo sysctl -w net.inet.udp.maxdgram=65535
+   */
+
+  if (n < 0)
+    return ERR_CODE_FROM_SOCKET_CALL;
+
+  *len_done = n;
+
+  return ___FIX(___NO_ERR);
+
+#endif
+}
+
 
 #endif
 
@@ -4811,17 +6602,17 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_directory_select_virt
    ___P((___device *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
@@ -4871,19 +6662,15 @@ ___HIDDEN ___device_directory_vtbl ___device_directory_table =
 
 
 #ifdef USE_opendir
-#define ___DIR_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) native
-#endif
-
-#ifdef USE_FindFirstFile
-#ifdef _UNICODE
-#define ___DIR_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) ucs2
+#define ___DIR_OPEN_PATH_SUPPORTED
 #else
-#define ___DIR_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) native
+#ifdef USE_FindFirstFile
+#define ___DIR_OPEN_PATH_SUPPORTED
 #endif
 #endif
 
 
-#ifdef ___DIR_OPEN_PATH_CE_SELECT
+#ifdef ___DIR_OPEN_PATH_SUPPORTED
 
 ___SCMOBJ ___device_directory_setup
    ___P((___device_directory **dev,
@@ -4902,7 +6689,7 @@ int ignore_hidden;)
   ___device_directory *d;
 
   d = ___CAST(___device_directory*,
-              ___alloc_mem (sizeof (___device_directory)));
+              ___ALLOC_MEM(sizeof (___device_directory)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -4918,12 +6705,12 @@ int ignore_hidden;)
 
   d->ignore_hidden = ignore_hidden;
 
-  d->dir = opendir (path);
+  d->dir = opendir_long_path (path);
 
   if (d->dir == NULL)
     {
       ___SCMOBJ e = fnf_or_err_code_from_errno ();
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -4955,7 +6742,7 @@ int ignore_hidden;)
     if (d->h == INVALID_HANDLE_VALUE)
       {
         ___SCMOBJ e = fnf_or_err_code_from_GetLastError ();
-        ___free_mem (d);
+        ___FREE_MEM(d);
         return e;
       }
   }
@@ -5124,25 +6911,25 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_event_queue_select_virt
    ___P((___device *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
   ___device_event_queue *d = ___CAST(___device_event_queue*,self);
-  int stage = (for_writing
-               ? d->base.write_stage
-               : d->base.read_stage);
+  int stage = (for_op == FOR_READING
+               ? d->base.read_stage
+               : d->base.write_stage);
 
   if (pass == ___SELECT_PASS_1)
     {
@@ -5223,7 +7010,7 @@ ___SCMOBJ selector;)
   ___device_event_queue *d;
 
   d = ___CAST(___device_event_queue*,
-              ___alloc_mem (sizeof (___device_event_queue)));
+              ___ALLOC_MEM(sizeof (___device_event_queue)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -5285,6 +7072,7 @@ ___SCMOBJ *event;)
                      0,           /* no constraint on the message type */
                      0,
                      PM_REMOVE))  /* remove message */
+      /* TODO: check if ___release_scmobj (...); needed to avoid memory leak */
       return ___NONNULLPOINTER_to_SCMOBJ
                (___PSTATE,
                 ___CAST(void*,msg),
@@ -5352,7 +7140,7 @@ ___device_file *d;)
 
   /* set blocking mode */
 
-  set_fd_blocking_mode (d->fd, 1); /* ignore error */
+  ___set_fd_blocking_mode (d->fd, 1); /* ignore error */
 
 #endif
 }
@@ -5404,7 +7192,7 @@ int direction;)
 #endif
 
 #ifdef USE_POSIX
-          if (close_no_EINTR (d->fd) < 0)
+          if (___close_no_EINTR (d->fd) < 0)
             return err_code_from_errno ();
 #endif
 
@@ -5424,25 +7212,25 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_file_select_raw_virt
    ___P((___device_stream *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device_stream *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
 {
   ___device_file *d = ___CAST(___device_file*,self);
-  int stage = (for_writing
-               ? d->base.base.write_stage
-               : d->base.base.read_stage);
+  int stage = (for_op == FOR_READING
+               ? d->base.base.read_stage
+               : d->base.base.write_stage);
 
   if (pass == ___SELECT_PASS_1)
     {
@@ -5459,7 +7247,7 @@ ___device_select_state *state;)
 #endif
 
 #ifdef USE_POSIX
-          ___device_select_add_fd (state, d->fd, for_writing);
+          ___device_select_add_fd (state, d->fd, for_op);
 #endif
         }
       return ___FIX(___SELECT_SETUP_DONE);
@@ -5481,9 +7269,9 @@ ___device_select_state *state;)
 
 #ifdef USE_POSIX
 
-      if (for_writing
-           ? ___FD_ISSET(d->fd, &state->writefds)
-           : ___FD_ISSET(d->fd, &state->readfds))
+      if (for_op == FOR_READING
+           ? ___FD_ISSET(d->fd, state->readfds)
+           : ___FD_ISSET(d->fd, state->writefds))
         state->devs[i] = NULL;
 
 #endif
@@ -5595,7 +7383,7 @@ int whence;)
 #ifndef USE_POSIX
 #ifndef USE_WIN32
 
-      int new_pos;
+      ___stream_index new_pos;
       ___FILE *stream = d->stream;
 
       if (stream == 0)
@@ -5612,7 +7400,7 @@ int whence;)
 
 #ifdef USE_POSIX
 
-      int new_pos;
+      ___stream_index new_pos;
 
       if ((new_pos = lseek (d->fd, *pos, whence)) < 0)
         return err_code_from_errno ();
@@ -5676,14 +7464,14 @@ ___stream_index *len_done;)
     if (stream == ___stdin)
       len = 1; /* only read 1 byte at a time to prevent blocking on tty */
 
-    if ((n = fread (buf, 1, len, stream)) == 0)
+    if ((n = ___fread (buf, 1, len, stream)) == 0)
       {
-        if (ferror (stream))
+        if (___ferror (stream))
           {
-            clearerr (stream);
+            ___clearerr (stream);
             return ___FIX(___UNKNOWN_ERR);
           }
-        clearerr (stream);
+        ___clearerr (stream);
       }
 
     *len_done = n;
@@ -5750,11 +7538,11 @@ ___stream_index *len_done;)
     if (stream == 0)
       stream = ___stdout;
 
-    if ((n = fwrite (buf, 1, len, stream)) == 0)
+    if ((n = ___fwrite (buf, 1, len, stream)) == 0)
       {
-        if (ferror (stream))
+        if (___ferror (stream))
           {
-            clearerr (stream);
+            ___clearerr (stream);
             return ___FIX(___UNKNOWN_ERR);
           }
       }
@@ -5827,7 +7615,7 @@ ___device_stream *self;)
     char_encoding_errors = ___CHAR_ENCODING_ERRORS_ON;
 
   if (char_encoding == 0)
-    char_encoding = ___CHAR_ENCODING_ISO_8859_1;
+    char_encoding = ___CHAR_ENCODING_ASCII;
 
   if (eol_encoding == 0)
     eol_encoding = ___EOL_ENCODING_LF;
@@ -5851,7 +7639,7 @@ ___device_stream *self;)
 
 #endif
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
   ___printf ("file char_encoding_errors=%d   char_encoding=%d   eol_encoding=%d   buffering=%d\n",
              char_encoding_errors,
@@ -5928,7 +7716,7 @@ int direction;)
   ___device_file *d;
 
   d = ___CAST(___device_file*,
-              ___alloc_mem (sizeof (___device_file)));
+              ___ALLOC_MEM(sizeof (___device_file)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -5967,8 +7755,15 @@ int direction;)
 {
   ___device_file *d;
 
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (fd, fd))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
   d = ___CAST(___device_file*,
-              ___alloc_mem (sizeof (___device_file)));
+              ___ALLOC_MEM(sizeof (___device_file)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -6013,7 +7808,7 @@ int pumps_on;)
   ___device_file *d;
 
   d = ___CAST(___device_file*,
-              ___alloc_mem (sizeof (___device_file)));
+              ___ALLOC_MEM(sizeof (___device_file)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -6103,7 +7898,6 @@ int *direction;)
 #endif
 #endif
 
-
 #ifdef USE_POSIX
 
 ___HIDDEN int ___device_stream_kind_from_fd
@@ -6113,7 +7907,7 @@ int fd;)
 {
   /*
    * Determine what kind of device is attached to the file descriptor
-   * (tty, socket, or regular file).
+   * (tty, socket, pipe, or regular file).
    */
 
   if (isatty (fd))
@@ -6127,27 +7921,13 @@ int fd;)
     if (___fstat (fd, &s) < 0)
       return ___NONE_KIND;
 
-    if (S_ISREG(s.st_mode))
-      return ___FILE_DEVICE_KIND;
-
-#if 0
-
-    if (S_ISDIR(s.st_mode))
-      return ???;
-
-    if (S_ISLNK(s.st_mode))
-      return ???;
-
-#endif
-
-    if (S_ISCHR(s.st_mode))
-      return ___FILE_DEVICE_KIND;
-
-    if (S_ISBLK(s.st_mode))
+    if (S_ISREG(s.st_mode) ||
+        S_ISCHR(s.st_mode) ||
+        S_ISBLK(s.st_mode))
       return ___FILE_DEVICE_KIND;
 
     if (S_ISFIFO(s.st_mode))
-      return ___FILE_DEVICE_KIND;
+      return ___PIPE_DEVICE_KIND;
 
 #ifdef USE_NETWORKING
     if (S_ISSOCK(s.st_mode))
@@ -6223,7 +8003,7 @@ int direction;)
   if (direction == 0)
     direction = ___device_stream_direction_from_fd (fd);
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("fd=%d kind=%d direction=%d\n", fd, kind, direction);
 #endif
 
@@ -6258,13 +8038,13 @@ int direction;)
         case ___TCP_CLIENT_DEVICE_KIND:
           {
             ___device_tcp_client *d;
-            struct sockaddr server_addr;
+            struct sockaddr addr;
 
             if ((e = ___device_tcp_client_setup_from_socket
                        (&d,
                         dgroup,
                         fd,
-                        &server_addr,
+                        &addr,
                         0,
                         0,
                         direction))
@@ -6286,7 +8066,7 @@ int direction;)
              * Setup file descriptor to perform nonblocking I/O.
              */
 
-            if (set_fd_blocking_mode (fd, 0) != 0) /* set nonblocking mode */
+            if (___set_fd_blocking_mode (fd, 0) != 0) /* set nonblocking mode */
               return err_code_from_errno ();
 
 #endif
@@ -6294,6 +8074,33 @@ int direction;)
             if ((e = ___device_file_setup_from_fd
                        (&d,
                         dgroup,
+                        fd,
+                        direction))
+                == ___FIX(___NO_ERR))
+              *dev = ___CAST(___device_stream*,d);
+
+            break;
+          }
+
+        case ___PIPE_DEVICE_KIND:
+          {
+            ___device_pipe *d;
+
+#ifdef USE_NONBLOCKING_FILE_IO
+
+            /*
+             * Setup file descriptor to perform nonblocking I/O.
+             */
+
+            if (___set_fd_blocking_mode (fd, 0) != 0) /* set nonblocking mode */
+              return err_code_from_errno ();
+
+#endif
+
+            if ((e = ___device_pipe_setup_from_fd
+                       (&d,
+                        dgroup,
+                        fd,
                         fd,
                         direction))
                 == ___FIX(___NO_ERR))
@@ -6385,14 +8192,12 @@ HANDLE h;)
   DCB dcb;
   BY_HANDLE_FILE_INFORMATION finfo;
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("GetFileType -> %d\n", ___CAST(int,GetFileType (h)));
 #endif
 
-  if (GetNumberOfConsoleInputEvents (h, &n))
-    return ___TTY_DEVICE_KIND;
-
-  if (GetConsoleCursorInfo (h, &cinfo))
+  if (GetNumberOfConsoleInputEvents (h, &n) ||
+      GetConsoleCursorInfo (h, &cinfo))
     return ___TTY_DEVICE_KIND;
 
   if (GetCommState (h, &dcb))
@@ -6401,10 +8206,9 @@ HANDLE h;)
   if (GetFileType (h) == FILE_TYPE_PIPE)
     return ___PIPE_DEVICE_KIND;
 
-  if (GetFileType (h) == FILE_TYPE_CHAR)
-    return ___FILE_DEVICE_KIND;
-
-  if (GetFileInformationByHandle (h, &finfo))
+  if (GetFileType (h) == FILE_TYPE_CHAR ||
+      GetFileType (h) == FILE_TYPE_DISK ||
+      GetFileInformationByHandle (h, &finfo))
     return ___FILE_DEVICE_KIND;
 
   return ___NONE_KIND;
@@ -6472,7 +8276,7 @@ int direction;)
   if (direction == 0)
     direction = ___device_stream_direction_from_handle (h);
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("kind=%d direction=%d\n", kind, direction);
 #endif
 
@@ -6620,6 +8424,131 @@ int *direction;)
 
 /*---------------------------------------------------------------------------*/
 
+/* Child process interrupts. */
+
+#ifdef USE_POSIX
+
+___HIDDEN void sigchld_signal_handler
+   ___P((int sig),
+        (sig)
+int sig;)
+{
+  int save_errno = errno;
+#ifdef USE_signal
+  ___set_signal_handler (SIGCHLD, sigchld_signal_handler);
+#endif
+
+  /*
+   * A SIGCHLD signal indicates that at least one child has changed
+   * status.  There may be more than one because signals are not
+   * queued.  For example during a period when the SIGCHLD signal is
+   * blocked several child processes can terminate and only one call
+   * to the SIGCHLD handler will occur when the SIGCHLD signal is
+   * unblocked.  For this reason we must call waitpid in a loop, until
+   * the last call indicates that no other child process is available.
+   */
+
+  for (;;)
+    {
+      int status;
+      ___device *head;
+      pid_t pid = ___waitpid_no_EINTR (-1, &status, WNOHANG);
+
+      if (pid <= 0 ||
+          !(WIFEXITED(status) || WIFSIGNALED(status)))
+        break;
+
+      /*
+       * Find the process device structure for the process which
+       * terminated, and save the exit status with the process device.
+       */
+
+      head = ___global_device_group ()->list;
+
+      if (head != NULL)
+        {
+          ___device *d = head->prev;
+
+          do
+            {
+              if (___device_kind (d) == ___PROCESS_DEVICE_KIND)
+                {
+                  ___device_process *dev = ___CAST(___device_process*,d);
+
+                  if (dev->pid == pid)
+                    {
+                      ___device_process_status_set (dev, status); /* ignore error */
+                      break;
+                    }
+                }
+              d = d->prev;
+            } while  (d != head);
+        }
+    }
+  errno = save_errno;
+}
+
+#endif
+
+
+___SCMOBJ ___setup_child_interrupt_handling ___PVOID
+{
+#ifdef USE_SIGNALS
+
+  ___set_signal_handler (SIGPIPE, SIG_IGN);
+  ___set_signal_handler (SIGCHLD, sigchld_signal_handler);
+
+  ___thread_sigmask1 (SIG_UNBLOCK, SIGCHLD, NULL);
+
+#endif
+
+  return ___FIX(___NO_ERR);
+}
+
+
+void ___cleanup_child_interrupt_handling ___PVOID
+{
+#ifdef USE_SIGNALS
+
+  ___set_signal_handler (SIGPIPE, SIG_DFL);
+  ___set_signal_handler (SIGCHLD, SIG_DFL);
+
+  ___thread_sigmask1 (SIG_UNBLOCK, SIGCHLD, NULL);
+
+#endif
+}
+
+
+___EXP_FUNC(void,___mask_child_interrupts_begin)
+   ___P((___mask_child_interrupts_state *state),
+        (state)
+___mask_child_interrupts_state *state;)
+{
+#ifdef USE_SIGNALS
+
+  ___thread_sigmask1 (SIG_BLOCK, SIGCHLD, state->sigset+2);
+
+#endif
+}
+
+
+___EXP_FUNC(void,___mask_child_interrupts_end)
+   ___P((___mask_child_interrupts_state *state),
+        (state)
+___mask_child_interrupts_state *state;)
+{
+#ifdef USE_SIGNALS
+
+  ___thread_sigmask (SIG_SETMASK, state->sigset+2, NULL);
+
+#endif
+}
+
+
+/*---------------------------------------------------------------------------*/
+
+#ifndef ___STREAM_OPEN_PROCESS_CE_SELECT
+
 #ifdef USE_execvp
 #define ___STREAM_OPEN_PROCESS_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) native
 #ifndef USE_openpty
@@ -6639,70 +8568,12 @@ int *direction;)
 #endif
 #endif
 
+#endif
+
 
 #ifdef ___STREAM_OPEN_PROCESS_CE_SELECT
 
 #ifdef USE_execvp
-
-/**********************************/
-#define USE_pipe
-
-typedef struct half_duplex_pipe
-  {
-    int reading_fd;
-    int writing_fd;
-  } half_duplex_pipe;
-
-typedef struct full_duplex_pipe
-  {
-    half_duplex_pipe input;
-    half_duplex_pipe output;
-  } full_duplex_pipe;
-
-
-___HIDDEN int open_half_duplex_pipe
-   ___P((half_duplex_pipe *hdp),
-        (hdp)
-half_duplex_pipe *hdp;)
-{
-  int fds[2];
-
-#ifdef USE_pipe
-  if (pipe (fds) < 0)
-    return -1;
-#endif
-
-#ifdef USE_socketpair
-  if (socketpair (AF_UNIX, SOCK_STREAM, 0, fds) < 0)
-    return -1;
-#endif
-
-  hdp->reading_fd = fds[0];
-  hdp->writing_fd = fds[1];
-
-  return 0;
-}
-
-___HIDDEN void close_half_duplex_pipe
-   ___P((half_duplex_pipe *hdp,
-         int end),
-        (hdp,
-         end)
-half_duplex_pipe *hdp;
-int end;)
-{
-  if (end != 1 && hdp->reading_fd >= 0)
-    {
-      close_no_EINTR (hdp->reading_fd); /* ignore error */
-      hdp->reading_fd = -1;
-    }
-
-  if (end != 0 && hdp->writing_fd >= 0)
-    {
-      close_no_EINTR (hdp->writing_fd); /* ignore error */
-      hdp->writing_fd = -1;
-    }
-}
 
 ___HIDDEN int open_pseudo_terminal_master
    ___P((int *master_fd_ptr,
@@ -6725,7 +8596,7 @@ int *slave_fd_ptr;)
 #else
 
   *slave_fd_ptr = -1;
-  return *master_fd_ptr = open ("/dev/ptmx", O_RDWR | O_NOCTTY);
+  return *master_fd_ptr = open_long_path ("/dev/ptmx", O_RDWR | O_NOCTTY);
 
 #endif
 #endif
@@ -6800,7 +8671,7 @@ int *slave_fd;)
   if (grantpt (master_fd) >= 0 &&
       unlockpt (master_fd) >= 0 &&
       (name = ptsname (master_fd)) != NULL &&
-      (fd = open (name, O_RDWR)) >= 0)
+      (fd = open_long_path (name, O_RDWR)) >= 0)
     {
       int tmp;
 
@@ -6821,7 +8692,7 @@ int *slave_fd;)
         }
 
       tmp = errno;
-      close_no_EINTR (fd); /* ignore error */
+      ___close_no_EINTR (fd); /* ignore error */
       errno = tmp;
     }
 
@@ -6832,11 +8703,11 @@ int *slave_fd;)
 
 
 ___HIDDEN int open_full_duplex_pipe1
-   ___P((full_duplex_pipe *fdp,
+   ___P((___full_duplex_pipe *fdp,
          ___BOOL use_pty),
         (fdp,
          use_pty)
-full_duplex_pipe *fdp;
+___full_duplex_pipe *fdp;
 ___BOOL use_pty;)
 {
   fdp->input.reading_fd = -1;
@@ -6852,7 +8723,7 @@ ___BOOL use_pty;)
         {
           int master_fd_dup;
           int tmp;
-          if ((master_fd_dup = dup_no_EINTR (master_fd)) >= 0)
+          if ((master_fd_dup = ___dup_no_EINTR (master_fd)) >= 0)
             {
               fdp->input.writing_fd = master_fd;
               fdp->output.reading_fd = master_fd_dup;
@@ -6860,19 +8731,19 @@ ___BOOL use_pty;)
               return 0;
             }
           tmp = errno;
-          close_no_EINTR (master_fd); /* ignore error */
+          ___close_no_EINTR (master_fd); /* ignore error */
           if (slave_fd >= 0)
-            close_no_EINTR (slave_fd); /* ignore error */
+            ___close_no_EINTR (slave_fd); /* ignore error */
           errno = tmp;
         }
     }
   else
     {
-      if (open_half_duplex_pipe (&fdp->input) >= 0)
+      if (___open_half_duplex_pipe (&fdp->input) >= 0)
         {
-          if (open_half_duplex_pipe (&fdp->output) >= 0)
+          if (___open_half_duplex_pipe (&fdp->output) >= 0)
             return 0;
-          close_half_duplex_pipe (&fdp->input, 2);
+          ___close_half_duplex_pipe (&fdp->input, 2);
         }
     }
 
@@ -6881,11 +8752,11 @@ ___BOOL use_pty;)
 
 
 ___HIDDEN int open_full_duplex_pipe2
-   ___P((full_duplex_pipe *fdp,
+   ___P((___full_duplex_pipe *fdp,
          ___BOOL use_pty),
         (fdp,
          use_pty)
-full_duplex_pipe *fdp;
+___full_duplex_pipe *fdp;
 ___BOOL use_pty;)
 {
   if (use_pty)
@@ -6899,10 +8770,10 @@ ___BOOL use_pty;)
         {
           int tmp;
           if (setup_terminal_slave (fdp->input.reading_fd) >= 0 &&
-              (fdp->output.writing_fd = dup_no_EINTR (fdp->input.reading_fd)) >= 0)
+              (fdp->output.writing_fd = ___dup_no_EINTR (fdp->input.reading_fd)) >= 0)
             return 0;
           tmp = errno;
-          close_no_EINTR (fdp->input.reading_fd); /* ignore error */
+          ___close_no_EINTR (fdp->input.reading_fd); /* ignore error */
           errno = tmp;
         }
     }
@@ -6919,6 +8790,67 @@ ___BOOL use_pty;)
 
 #define ___ESCAPE_PROCESS_ARGS
 
+int arg_encoding
+   ___P((___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) arg,
+         int *len_increase,
+         ___BOOL *need_quotes),
+        (arg,
+         len_increase,
+         need_quotes)
+___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) arg;
+int *len_increase;
+___BOOL *need_quotes;)
+{
+  int len = 0;
+
+  while (arg[len] != ___UNICODE_NUL)
+    len++;
+
+#ifdef ___ESCAPE_PROCESS_ARGS
+
+  {
+    int j = len;
+    int increase = 0;
+    ___BOOL quotes = FALSE;
+    ___BOOL double_backslash = TRUE;
+
+    while (--j >= 0)
+      {
+        ___CHAR_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) c = arg[j];
+        if (c == ___UNICODE_DOUBLEQUOTE ||
+            (double_backslash && c == ___UNICODE_BACKSLASH))
+          {
+            double_backslash = TRUE;
+            increase++; /* space for backslash */
+          }
+        else
+          {
+            double_backslash = FALSE;
+            if (c == ___UNICODE_SPACE)
+              quotes = TRUE;
+          }
+      }
+
+    if (increase > 0)
+      quotes = TRUE;
+
+    if (quotes)
+      increase += 2; /* space for quotes */
+
+    *len_increase = increase;
+    *need_quotes = quotes;
+  }
+
+#else
+
+  *len_increase = 0;
+  *need_quotes = FALSE;
+
+#endif
+
+  return len;
+}
+
 ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) argv_to_ccmd
    ___P((___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv),
         (argv)
@@ -6927,45 +8859,19 @@ ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv;)
   ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) ccmd;
   int ccmd_len = 0;
   int i = 0;
+  int len_increase;
+  ___BOOL need_quotes;
   ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) arg;
 
   while ((arg = argv[i]) != NULL)
     {
-      int j = 0;
-
-      while (arg[j] != ___UNICODE_NUL)
-        j++;
-
-      ccmd_len += j + 1;
-
-#ifdef ___ESCAPE_PROCESS_ARGS
-
-      {
-        ___BOOL double_backslash = TRUE;
-
-        while (--j >= 0)
-          {
-            ___CHAR_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) c = arg[j];
-            if (c == ___UNICODE_DOUBLEQUOTE ||
-                (double_backslash && c == ___UNICODE_BACKSLASH))
-              {
-                double_backslash = TRUE;
-                ccmd_len++;
-              }
-            else
-              double_backslash = FALSE;
-          }
-
-        ccmd_len += 2;
-      }
-
-#endif
-
+      ccmd_len += arg_encoding (arg, &len_increase, &need_quotes);
+      ccmd_len += len_increase + 1;
       i++;
     }
 
   ccmd = ___CAST(___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT),
-                 ___alloc_mem (ccmd_len * sizeof (*ccmd)));
+                 ___ALLOC_MEM(ccmd_len * sizeof (*ccmd)));
 
   if (ccmd != NULL)
     {
@@ -6973,19 +8879,19 @@ ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv;)
 
       while (--i >= 0)
         {
-          int j = 0;
+          int j;
 
           arg = argv[i];
 
-          while (arg[j] != ___UNICODE_NUL)
-            j++;
+          j = arg_encoding (arg, &len_increase, &need_quotes);
 
 #ifdef ___ESCAPE_PROCESS_ARGS
 
           {
             ___BOOL double_backslash = TRUE;
 
-            ccmd[--ccmd_len] = ___UNICODE_DOUBLEQUOTE;
+            if (need_quotes)
+              ccmd[--ccmd_len] = ___UNICODE_DOUBLEQUOTE;
 
             while (--j >= 0)
               {
@@ -7001,7 +8907,8 @@ ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv;)
                   double_backslash = FALSE;
               }
 
-            ccmd[--ccmd_len] = ___UNICODE_DOUBLEQUOTE;
+            if (need_quotes)
+              ccmd[--ccmd_len] = ___UNICODE_DOUBLEQUOTE;
           }
 
 #else
@@ -7022,15 +8929,15 @@ ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv;)
   return ccmd;
 }
 
-___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) env_to_cenv
-   ___P((___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *env),
+___STRING_TYPE(___ENVIRON_CE_SELECT) env_to_cenv
+   ___P((___STRING_TYPE(___ENVIRON_CE_SELECT) *env),
         (env)
-___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *env;)
+___STRING_TYPE(___ENVIRON_CE_SELECT) *env;)
 {
-  ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) cenv;
+  ___STRING_TYPE(___ENVIRON_CE_SELECT) cenv;
   int cenv_len = 0;
   int i = 0;
-  ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) varval;
+  ___STRING_TYPE(___ENVIRON_CE_SELECT) varval;
 
   while ((varval = env[i++]) != NULL)
     {
@@ -7042,12 +8949,12 @@ ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *env;)
 
   cenv_len++;
 
-  cenv = ___CAST(___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT),
-                 ___alloc_mem (cenv_len * sizeof (*cenv)));
+  cenv = ___CAST(___STRING_TYPE(___ENVIRON_CE_SELECT),
+                 ___ALLOC_MEM(cenv_len * sizeof (*cenv)));
 
   if (cenv != NULL)
     {
-      ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) p = cenv;
+      ___STRING_TYPE(___ENVIRON_CE_SELECT) p = cenv;
       i = 0;
 
       while ((varval = env[i++]) != NULL)
@@ -7070,8 +8977,8 @@ ___SCMOBJ ___device_stream_setup_from_process
    ___P((___device_stream **dev,
          ___device_group *dgroup,
          ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv,
-         ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *env,
-         ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) dir,
+         ___STRING_TYPE(___ENVIRON_CE_SELECT) *env,
+         ___STRING_TYPE(___SET_CURRENT_DIRECTORY_PATH_CE_SELECT) dir,
          int options),
         (dev,
          dgroup,
@@ -7082,8 +8989,8 @@ ___SCMOBJ ___device_stream_setup_from_process
 ___device_stream **dev;
 ___device_group *dgroup;
 ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *argv;
-___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) *env;
-___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) dir;
+___STRING_TYPE(___ENVIRON_CE_SELECT) *env;
+___STRING_TYPE(___SET_CURRENT_DIRECTORY_PATH_CE_SELECT) dir;
 int options;)
 {
 #define STDIN_REDIR  1
@@ -7098,8 +9005,8 @@ int options;)
   int direction;
   ___device_process *d;
   pid_t pid = 0;
-  half_duplex_pipe hdp_errno;
-  full_duplex_pipe fdp;
+  ___half_duplex_pipe hdp_errno;
+  ___full_duplex_pipe fdp;
   int execvp_errno;
   int n;
 
@@ -7108,12 +9015,14 @@ int options;)
    * sigchld_signal_handler will find it in the device group.
    */
 
-  sigset_type oldmask = block_signal (SIGCHLD);
+  ___mask_all_interrupts_state all_interrupts;
+
+  ___mask_all_interrupts_begin (&all_interrupts);
 
   fdp.input.writing_fd = -1;
   fdp.output.reading_fd = -1;
 
-  if (open_half_duplex_pipe (&hdp_errno) < 0)
+  if (___open_half_duplex_pipe (&hdp_errno) < 0)
     e = err_code_from_errno ();
   else
     {
@@ -7122,24 +9031,19 @@ int options;)
         e = err_code_from_errno ();
       else
         {
-          ___disable_os_interrupts ();
-
           if ((pid = fork ()) < 0)
             {
               e = err_code_from_errno ();
               if (options & (STDIN_REDIR | STDOUT_REDIR | STDERR_REDIR))
                 {
-                  close_half_duplex_pipe (&fdp.input, 2);
-                  close_half_duplex_pipe (&fdp.output, 2);
+                  ___close_half_duplex_pipe (&fdp.input, 2);
+                  ___close_half_duplex_pipe (&fdp.output, 2);
                 }
             }
-
-          if (pid > 0)
-            ___enable_os_interrupts ();
         }
 
       if (e != ___FIX(___NO_ERR))
-        close_half_duplex_pipe (&hdp_errno, 2);
+        ___close_half_duplex_pipe (&hdp_errno, 2);
     }
 
   if (e == ___FIX(___NO_ERR))
@@ -7148,19 +9052,17 @@ int options;)
         {
           /* child process */
 
-          restore_sigmask (oldmask);
-
-          ___cleanup_os_interrupt_handling ();
+          ___cleanup_all_interrupt_handling ();
 
           if (options & (STDIN_REDIR | STDOUT_REDIR | STDERR_REDIR))
             {
               if (open_full_duplex_pipe2 (&fdp, options & PSEUDO_TERM) < 0 ||
                   ((options & STDIN_REDIR) &&
-                   dup2_no_EINTR (fdp.input.reading_fd, STDIN_FILENO) < 0) ||
+                   ___dup2_no_EINTR (fdp.input.reading_fd, STDIN_FILENO) < 0) ||
                   ((options & STDOUT_REDIR) &&
-                   dup2_no_EINTR (fdp.output.writing_fd, STDOUT_FILENO) < 0) ||
+                   ___dup2_no_EINTR (fdp.output.writing_fd, STDOUT_FILENO) < 0) ||
                   ((options & (STDERR_REDIR | PSEUDO_TERM)) &&
-                   dup2_no_EINTR (fdp.output.writing_fd, STDERR_FILENO) < 0))
+                   ___dup2_no_EINTR (fdp.output.writing_fd, STDERR_FILENO) < 0))
                 goto return_errno;
             }
 
@@ -7173,9 +9075,9 @@ int options;)
 #endif
 #endif
 
-          close_half_duplex_pipe (&fdp.input, 1);
-          close_half_duplex_pipe (&fdp.output, 0);
-          close_half_duplex_pipe (&hdp_errno, 0);
+          ___close_half_duplex_pipe (&fdp.input, 1);
+          ___close_half_duplex_pipe (&fdp.output, 0);
+          ___close_half_duplex_pipe (&hdp_errno, 0);
 
           {
             /* Close all file descriptors that aren't used. */
@@ -7188,12 +9090,12 @@ int options;)
                     fd != STDOUT_FILENO &&
                     fd != STDERR_FILENO &&
                     fd != hdp_errno.writing_fd)
-                  close_no_EINTR (fd); /* ignore error */
+                  ___close_no_EINTR (fd); /* ignore error */
                 fd--;
               }
           }
 
-          if (dir == NULL || chdir (dir) == 0)
+          if (dir == NULL || chdir_long_path (dir) == 0)
             {
 #ifdef USE_environ
               if (env != NULL)
@@ -7202,6 +9104,8 @@ int options;)
               execvp (argv[0], argv);
               /* the exec failed, errno will be returned to parent */
             }
+          else
+            errno = 0; /* special code indicating chdir failed */
 
         return_errno:
 
@@ -7209,11 +9113,12 @@ int options;)
 
           execvp_errno = errno;
 
-          write (hdp_errno.writing_fd, &execvp_errno, sizeof (execvp_errno));
+          if (write (hdp_errno.writing_fd, &execvp_errno, sizeof (execvp_errno)) < 0)
+            execvp_errno = 0; /* dummy op to avoid compiler warning */
 
-          close_half_duplex_pipe (&fdp.input, 0);
-          close_half_duplex_pipe (&fdp.output, 1);
-          close_half_duplex_pipe (&hdp_errno, 1);
+          ___close_half_duplex_pipe (&fdp.input, 0);
+          ___close_half_duplex_pipe (&fdp.output, 1);
+          ___close_half_duplex_pipe (&hdp_errno, 1);
 
           _exit (1);
         }
@@ -7222,11 +9127,11 @@ int options;)
 
       if (options & (STDIN_REDIR | STDOUT_REDIR | STDERR_REDIR))
         {
-          close_half_duplex_pipe (&fdp.input, 0);
-          close_half_duplex_pipe (&fdp.output, 1);
+          ___close_half_duplex_pipe (&fdp.input, 0);
+          ___close_half_duplex_pipe (&fdp.output, 1);
         }
 
-      close_half_duplex_pipe (&hdp_errno, 1);
+      ___close_half_duplex_pipe (&hdp_errno, 1);
 
       /*
        * The following call to read has been known to fail with EINTR,
@@ -7236,16 +9141,21 @@ int options;)
        * process receives a SIGCHLD signal which interrupts the read.
        */
 
-      n = read_no_EINTR (hdp_errno.reading_fd,
-                         &execvp_errno,
-                         sizeof (execvp_errno));
+      n = ___read_no_EINTR (hdp_errno.reading_fd,
+                            &execvp_errno,
+                            sizeof (execvp_errno));
 
       if (n < 0)
         e = err_code_from_errno ();
       else if (n == sizeof (execvp_errno))
         {
-          errno = execvp_errno;
-          e = err_code_from_errno ();
+          if (execvp_errno == 0) /* chdir failed? */
+            e = ___FIX(1); /* indicate current directory couldn't be set */
+          else
+            {
+              errno = execvp_errno;
+              e = err_code_from_errno ();
+            }
         }
       else if (n != 0)
         e = ___FIX(___UNKNOWN_ERR);
@@ -7270,14 +9180,14 @@ int options;)
       if (e != ___FIX(___NO_ERR))
         if (options & (STDIN_REDIR | STDOUT_REDIR | STDERR_REDIR))
           {
-            close_half_duplex_pipe (&fdp.input, 1);
-            close_half_duplex_pipe (&fdp.output, 0);
+            ___close_half_duplex_pipe (&fdp.input, 1);
+            ___close_half_duplex_pipe (&fdp.output, 0);
           }
 
-      close_half_duplex_pipe (&hdp_errno, 0);
+      ___close_half_duplex_pipe (&hdp_errno, 0);
     }
 
-  restore_sigmask (oldmask);
+  ___mask_all_interrupts_end (&all_interrupts);
 
   return e;
 
@@ -7290,7 +9200,7 @@ int options;)
   ___device_process *d;
 
   ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) ccmd;
-  ___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT) cenv = NULL;
+  ___STRING_TYPE(___ENVIRON_CE_SELECT) cenv = NULL;
 
   HANDLE hstdin_rd = NULL;
   HANDLE hstdin_wr = NULL;
@@ -7380,35 +9290,44 @@ int options;)
         }
 #endif
 
-      if (si.hStdError == INVALID_HANDLE_VALUE ||
-          !CreateProcess
-             (NULL, /* module name                              */
-              ccmd, /* command line                             */
-              NULL, /* process handle not inheritable           */
-              NULL, /* thread handle not inheritable            */
-              TRUE, /* set handle inheritance to TRUE           */
-              (CP_ENV_FLAGS | ((options & SHOW_CONSOLE) ? 0 : CREATE_NO_WINDOW)), /* creation flags */
-              cenv, /* child's environment                      */
-              dir,  /* child's starting directory               */
-              &si,  /* pointer to STARTUPINFO structure         */
-              &pi)) /* pointer to PROCESS_INFORMATION structure */
+      if (si.hStdError == INVALID_HANDLE_VALUE)
         e = err_code_from_GetLastError ();
       else
         {
-          direction = ___DIRECTION_RD|___DIRECTION_WR;
+          if (!CreateProcess
+                 (NULL, /* module name                              */
+                  ccmd, /* command line                             */
+                  NULL, /* process handle not inheritable           */
+                  NULL, /* thread handle not inheritable            */
+                  TRUE, /* set handle inheritance to TRUE           */
+                  (CP_ENV_FLAGS | ((options & SHOW_CONSOLE) ? 0 : CREATE_NO_WINDOW)), /* creation flags */
+                  cenv, /* child's environment                      */
+                  dir,  /* child's starting directory               */
+                  &si,  /* pointer to STARTUPINFO structure         */
+                  &pi)) /* pointer to PROCESS_INFORMATION structure */
+            {
+              if (GetLastError () == ERROR_DIRECTORY)
+                e = ___FIX(1); /* indicate setting starting directory failed */
+              else
+                e = err_code_from_GetLastError ();
+            }
+          else
+            {
+              direction = ___DIRECTION_RD|___DIRECTION_WR;
 
-          e = ___device_process_setup_from_process
-                (&d,
-                 dgroup,
-                 pi,
-                 hstdin_wr,
-                 hstdout_rd,
-                 direction);
+              e = ___device_process_setup_from_process
+                    (&d,
+                     dgroup,
+                     pi,
+                     hstdin_wr,
+                     hstdout_rd,
+                     direction);
 
-          *dev = ___CAST(___device_stream*,d);
+              *dev = ___CAST(___device_stream*,d);
 
-          if (e == ___FIX(___NO_ERR))
-            device_transfer_close_responsibility (___CAST(___device*,d));
+              if (e == ___FIX(___NO_ERR))
+                device_transfer_close_responsibility (___CAST(___device*,d));
+            }
         }
     }
 
@@ -7428,10 +9347,10 @@ int options;)
     }
 
   if (cenv != NULL)
-    ___free_mem (cenv);
+    ___FREE_MEM(cenv);
 
   if (ccmd != NULL)
-    ___free_mem (ccmd);
+    ___FREE_MEM(ccmd);
 
   return e;
 
@@ -7492,26 +9411,9 @@ ___SCMOBJ dev;)
 
 /*---------------------------------------------------------------------------*/
 
-#ifndef USE_POSIX
-#ifndef USE_WIN32
-#define ___STREAM_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) native
-#endif
-#endif
+#define ___STREAM_OPEN_PATH_SUPPORTED
 
-#ifdef USE_POSIX
-#define ___STREAM_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) native
-#endif
-
-#ifdef USE_WIN32
-#ifdef _UNICODE
-#define ___STREAM_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) ucs2
-#else
-#define ___STREAM_OPEN_PATH_CE_SELECT(latin1,utf8,ucs2,ucs4,wchar,native) native
-#endif
-#endif
-
-
-#ifdef ___STREAM_OPEN_PATH_CE_SELECT
+#ifdef ___STREAM_OPEN_PATH_SUPPORTED
 
 ___SCMOBJ ___device_stream_setup_from_path
    ___P((___device_stream **dev,
@@ -7543,7 +9445,7 @@ int mode;)
                           &mod,
                           &direction);
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("path=\"%s\" mode=%s\n", path, mod);
 #endif
 
@@ -7572,16 +9474,16 @@ int mode;)
                           &fl,
                           &direction);
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("path=\"%s\" fl=%d\n", path, fl);
 #endif
 
-  if ((fd = open (path,
-                  fl,
+  if ((fd = open_long_path (path,
+                            fl,
 #ifdef O_BINARY
-                  O_BINARY|
+                            O_BINARY|
 #endif
-                  mode))
+                            mode))
       < 0)
     return fnf_or_err_code_from_errno ();
 
@@ -7592,7 +9494,7 @@ int mode;)
               ___NONE_KIND,
               direction))
       != ___FIX(___NO_ERR))
-    close_no_EINTR (fd); /* ignore error */
+    ___close_no_EINTR (fd); /* ignore error */
 
 #endif
 
@@ -7660,13 +9562,14 @@ ___SCMOBJ dev;)
 
 
 ___SCMOBJ ___os_device_force_output
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ level),
-        (dev,
+        (dev_condvar,
          level)
-___SCMOBJ dev;
+___SCMOBJ dev_condvar;
 ___SCMOBJ level;)
 {
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device *d = ___CAST(___device*,___FIELD(dev,___FOREIGN_PTR));
 
   return ___device_force_output (d, ___INT(level));
@@ -7692,47 +9595,50 @@ ___SCMOBJ direction;)
 /* Stream device operations. */
 
 ___SCMOBJ ___os_device_stream_seek
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ pos,
          ___SCMOBJ whence),
-        (dev,
+        (dev_condvar,
          pos,
          whence)
-___SCMOBJ dev;
+___SCMOBJ dev_condvar;
 ___SCMOBJ pos;
 ___SCMOBJ whence;)
 {
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_stream *d =
     ___CAST(___device_stream*,___FIELD(dev,___FOREIGN_PTR));
-  ___S32 p;
+  ___SSIZE_T p;
   ___SCMOBJ e;
   ___SCMOBJ result;
 
-  if ((e = ___SCMOBJ_to_S32 (___PSA(___PSTATE) pos, &p, 2)) == ___FIX(___NO_ERR))
+  if ((e = ___SCMOBJ_to_SSIZE_T (___PSA(___PSTATE) pos, &p, 2)) == ___FIX(___NO_ERR))
     e = ___device_stream_seek (d, &p, ___INT(whence));
 
   if (e != ___FIX(___NO_ERR) ||
-      (e = ___S32_to_SCMOBJ (___PSTATE, p, &result, ___RETURN_POS)) != ___FIX(___NO_ERR))
+      (e = ___SSIZE_T_to_SCMOBJ (___PSTATE, p, &result, ___RETURN_POS)) != ___FIX(___NO_ERR))
     result = e;
+  /* TODO: check if ___release_scmobj (...); needed to avoid memory leak */
 
   return result;
 }
 
 
 ___SCMOBJ ___os_device_stream_read
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ buffer,
          ___SCMOBJ lo,
          ___SCMOBJ hi),
-        (dev,
+        (dev_condvar,
          buffer,
          lo,
          hi)
-___SCMOBJ dev;
+___SCMOBJ dev_condvar;
 ___SCMOBJ buffer;
 ___SCMOBJ lo;
 ___SCMOBJ hi;)
 {
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_stream *d =
     ___CAST(___device_stream*,___FIELD(dev,___FOREIGN_PTR));
   ___stream_index len_done;
@@ -7751,19 +9657,20 @@ ___SCMOBJ hi;)
 
 
 ___SCMOBJ ___os_device_stream_write
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ buffer,
          ___SCMOBJ lo,
          ___SCMOBJ hi),
-        (dev,
+        (dev_condvar,
          buffer,
          lo,
          hi)
-___SCMOBJ dev;
+___SCMOBJ dev_condvar;
 ___SCMOBJ buffer;
 ___SCMOBJ lo;
 ___SCMOBJ hi;)
 {
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_stream *d =
     ___CAST(___device_stream*,___FIELD(dev,___FOREIGN_PTR));
   ___stream_index len_done;
@@ -7782,10 +9689,11 @@ ___SCMOBJ hi;)
 
 
 ___SCMOBJ ___os_device_stream_width
-   ___P((___SCMOBJ dev),
-        (dev)
-___SCMOBJ dev;)
+   ___P((___SCMOBJ dev_condvar),
+        (dev_condvar)
+___SCMOBJ dev_condvar;)
 {
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_stream *d =
     ___CAST(___device_stream*,___FIELD(dev,___FOREIGN_PTR));
 
@@ -7821,6 +9729,300 @@ ___SCMOBJ options;)
 
 
 /*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+
+/* Raw device file descriptors */
+
+typedef struct ___device_raw_struct
+  {
+    ___device base;
+
+#ifdef USE_POSIX
+    int fd;
+#endif
+
+#ifdef USE_WIN32
+    HANDLE h;
+#endif
+
+  } ___device_raw;
+
+typedef struct ___device_raw_vtbl_struct
+  {
+    ___device_vtbl base;
+  } ___device_raw_vtbl;
+
+
+___HIDDEN int ___device_raw_kind
+   ___P((___device *self),
+        (self)
+___device *self;)
+{
+  return ___RAW_DEVICE_KIND;
+}
+
+___HIDDEN ___SCMOBJ ___device_raw_close_virt
+   ___P((___device *self,
+         int direction),
+        (self,
+         direction)
+        ___device *self;
+        int direction;)
+{
+  ___device_raw *d = ___CAST(___device_raw*,self);
+  int is_not_closed = 0;
+
+  if (d->base.read_stage != ___STAGE_CLOSED)
+    is_not_closed |= ___DIRECTION_RD;
+
+  if (d->base.write_stage != ___STAGE_CLOSED)
+    is_not_closed |= ___DIRECTION_WR;
+
+  if (is_not_closed == 0)
+    return ___FIX(___NO_ERR);
+
+  if ((is_not_closed & ~direction) == 0)
+    {
+      d->base.read_stage = ___STAGE_CLOSED; /* avoid multiple closes */
+      d->base.write_stage = ___STAGE_CLOSED;
+
+#ifdef USE_POSIX
+      if (___close_no_EINTR (d->fd) < 0)
+        return err_code_from_errno ();
+#endif
+
+#ifdef USE_WIN32
+      if (!CloseHandle (d->h))
+        return err_code_from_GetLastError ();
+#endif
+
+    }
+  else if (is_not_closed & direction & ___DIRECTION_RD)
+    d->base.read_stage = ___STAGE_CLOSED;
+  else if (is_not_closed & direction & ___DIRECTION_WR)
+    d->base.write_stage = ___STAGE_CLOSED;
+
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_raw_select_raw_virt
+   ___P((___device *self,
+         int for_op,
+         int i,
+         int pass,
+         ___device_select_state *state),
+        (self,
+         for_op,
+         i,
+         pass,
+         state)
+___device *self;
+int for_op;
+int i;
+int pass;
+___device_select_state *state;)
+{
+  ___device_raw *d = ___CAST(___device_raw*,self);
+  int stage = (for_op == FOR_READING
+               ? d->base.read_stage
+               : d->base.write_stage);
+
+  if (pass == ___SELECT_PASS_1)
+    {
+      if (stage != ___STAGE_OPEN)
+        state->timeout = ___time_mod.time_neg_infinity;
+      else
+        {
+#ifndef USE_POSIX
+#ifndef USE_WIN32
+
+        state->timeout = ___time_mod.time_neg_infinity;
+
+#endif
+#endif
+
+#ifdef USE_POSIX
+          ___device_select_add_fd (state, d->fd, for_op);
+#endif
+        }
+      return ___FIX(___SELECT_SETUP_DONE);
+    }
+
+  /* pass == ___SELECT_PASS_CHECK */
+
+  if (stage != ___STAGE_OPEN)
+    state->devs[i] = NULL;
+  else
+    {
+#ifndef USE_POSIX
+#ifndef USE_WIN32
+
+      state->devs[i] = NULL;
+
+#endif
+#endif
+
+#ifdef USE_POSIX
+
+      if (for_op == FOR_READING
+           ? ___FD_ISSET(d->fd, state->readfds)
+           : ___FD_ISSET(d->fd, state->writefds))
+        state->devs[i] = NULL;
+
+#endif
+
+#ifdef USE_WIN32
+
+      if (state->devs_next[i] != -1)
+        state->devs[i] = NULL;
+
+#endif
+    }
+
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_raw_release_virt
+   ___P((___device *self),
+        (self)
+___device *self;)
+{
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___SCMOBJ ___device_raw_force_output_virt
+   ___P((___device *self,
+         int level),
+        (self,
+         level)
+___device *self;
+int level;)
+{
+  return ___FIX(___NO_ERR);
+}
+
+___HIDDEN ___device_raw_vtbl ___device_raw_table =
+{
+  {
+    ___device_raw_kind,
+    ___device_raw_select_raw_virt,
+    ___device_raw_release_virt,
+    ___device_raw_force_output_virt,
+    ___device_raw_close_virt
+  }
+};
+
+#ifdef USE_POSIX
+
+___SCMOBJ ___device_raw_setup_from_fd
+   ___P((___device_raw **dev,
+         ___device_group *dgroup,
+         int fd,
+         int direction),
+        (dev,
+         dgroup,
+         fd,
+         direction)
+___device_raw **dev;
+___device_group *dgroup;
+int fd;
+int direction;)
+{
+  ___device_raw *d;
+
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (fd, fd))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
+  d = ___CAST(___device_raw*,
+              ___ALLOC_MEM(sizeof (___device_raw)));
+
+  if (d == NULL)
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+
+  d->base.vtbl = &___device_raw_table;
+  d->base.refcount = 1;
+  d->base.direction = direction;
+  d->base.close_direction = 0; /* prevent closing on errors */
+
+  if (direction & ___DIRECTION_RD)
+    d->base.read_stage = ___STAGE_OPEN;
+  else
+    d->base.read_stage = ___STAGE_CLOSED;
+
+  if (direction & ___DIRECTION_WR)
+    d->base.write_stage = ___STAGE_OPEN;
+  else
+    d->base.write_stage = ___STAGE_CLOSED;
+
+  d->fd = fd;
+
+  device_transfer_close_responsibility (___CAST(___device*,d));
+
+  *dev = d;
+
+  ___device_add_to_group (dgroup, &d->base);
+
+  return ___FIX(___NO_ERR);
+}
+#endif
+
+___SCMOBJ ___os_device_raw_open_from_fd
+   ___P((___SCMOBJ fd,
+         ___SCMOBJ flags),
+        (fd,
+         flags)
+___SCMOBJ fd;
+___SCMOBJ flags;)
+{
+
+#ifdef USE_POSIX
+  ___SCMOBJ e;
+  ___device_raw *dev;
+  ___SCMOBJ result;
+
+  int ifd;
+  int fl;
+  int direction;
+
+  device_translate_flags (___INT(flags),
+                          &fl,
+                          &direction);
+
+  ifd = ___INT(fd);
+
+  if ((e = ___device_raw_setup_from_fd
+             (&dev,
+              ___global_device_group (),
+              ifd,
+              direction))
+      != ___FIX(___NO_ERR))
+    return e;
+
+  if ((e = ___NONNULLPOINTER_to_SCMOBJ
+             (___PSTATE,
+              dev,
+              ___FAL,
+              ___device_cleanup_from_ptr,
+              &result,
+              ___RETURN_POS))
+      != ___FIX(___NO_ERR))
+    {
+      ___device_cleanup (___CAST(___device*,dev)); /* ignore error */
+      return e;
+    }
+
+  return ___release_scmobj (result);
+
+#else
+
+  return ___FIX(___UNIMPL_ERR);
+
+#endif
+}
 
 /* Opening a predefined device (stdin, stdout, stderr, console, etc). */
 
@@ -7858,6 +10060,22 @@ ___SCMOBJ flags;)
 
   switch (___INT(index))
     {
+    case -4:
+      {
+        ___device_tty *d;
+
+        if ((e = ___device_tty_setup_console
+                   (&d,
+                    ___global_device_group (),
+                    direction))
+            != ___FIX(___NO_ERR))
+          return e;
+
+        dev = ___CAST(___device_stream*,d);
+
+        break;
+      }
+
     default:
       {
         switch (___INT(index))
@@ -7870,9 +10088,6 @@ ___SCMOBJ flags;)
             break;
           case -3:
             stream = ___stderr;
-            break;
-          case -4:
-            stream = 0;
             break;
           default:
             stream = fdopen (___INT(index), mode);
@@ -8043,9 +10258,7 @@ ___SCMOBJ flags;)
       return e;
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 }
 
 
@@ -8064,7 +10277,7 @@ ___SCMOBJ path;
 ___SCMOBJ flags;
 ___SCMOBJ mode;)
 {
-#ifndef ___STREAM_OPEN_PATH_CE_SELECT
+#ifndef ___STREAM_OPEN_PATH_SUPPORTED
 
   return ___FIX(___UNIMPL_ERR);
 
@@ -8116,9 +10329,7 @@ ___SCMOBJ mode;)
       ___release_string (cpath);
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 
 #endif
 }
@@ -8168,7 +10379,7 @@ ___SCMOBJ options;)
                environment,
                &env,
                2,
-               ___CE(___STREAM_OPEN_PROCESS_CE_SELECT)))
+               ___CE(___ENVIRON_CE_SELECT)))
        != ___FIX(___NO_ERR)) ||
       (directory != ___FAL &&
        (e = ___SCMOBJ_to_NONNULLSTRING
@@ -8176,15 +10387,15 @@ ___SCMOBJ options;)
                directory,
                &dir,
                3,
-               ___CE(___STREAM_OPEN_PROCESS_CE_SELECT),
+               ___CE(___SET_CURRENT_DIRECTORY_PATH_CE_SELECT),
                0))
        != ___FIX(___NO_ERR)) ||
       (e = ___device_stream_setup_from_process
              (&dev,
               ___global_device_group (),
               ___CAST(___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT)*,argv),
-              ___CAST(___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT)*,env),
-              ___CAST(___STRING_TYPE(___STREAM_OPEN_PROCESS_CE_SELECT),dir),
+              ___CAST(___STRING_TYPE(___ENVIRON_CE_SELECT)*,env),
+              ___CAST(___STRING_TYPE(___SET_CURRENT_DIRECTORY_PATH_CE_SELECT),dir),
               ___INT(options)))
       != ___FIX(___NO_ERR))
     result = e;
@@ -8216,83 +10427,32 @@ ___SCMOBJ options;)
 }
 
 
-#ifdef USE_POSIX
-
-___HIDDEN void sigchld_signal_handler
-   ___P((int sig),
-        (sig)
-int sig;)
-{
-#ifdef USE_signal
-  ___set_signal_handler (SIGCHLD, sigchld_signal_handler);
-#endif
-
-  /*
-   * A SIGCHLD signal indicates that at least one child has changed
-   * status.  There may be more than one because signals are not
-   * queued.  For example during a period when the SIGCHLD signal is
-   * blocked several child processes can terminate and only one call
-   * to the SIGCHLD handler will occur when the SIGCHLD signal is
-   * unblocked.  For this reason we must call waitpid in a loop, until
-   * the last call indicates that no other child process is available.
-   */
-
-  for (;;)
-    {
-      int status;
-      ___device *head;
-      pid_t pid = waitpid_no_EINTR (-1, &status, WNOHANG);
-
-      if (pid <= 0)
-        break;
-
-      /*
-       * Find the process device structure for the process which
-       * terminated, and save the exit status with the process device.
-       */
-
-      head = ___global_device_group ()->list;
-
-      if (head != NULL)
-        {
-          ___device *d = head->prev;
-
-          do
-            {
-              if (___device_kind (d) == ___PROCESS_DEVICE_KIND)
-                {
-                  ___device_process *dev = ___CAST(___device_process*,d);
-
-                  if (dev->pid == pid)
-                    {
-                      if (WIFEXITED(status) || WIFSIGNALED(status))
-                        ___device_process_status_set (dev, status); /* ignore error */
-                      break;
-                    }
-                }
-              d = d->prev;
-            } while  (d != head);
-        }
-    }
-}
-
-#endif
-
-
 /*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
 
 /* Opening a TCP client. */
 
 ___SCMOBJ ___os_device_tcp_client_open
-   ___P((___SCMOBJ server_addr,
+   ___P((___SCMOBJ local_addr,
+         ___SCMOBJ local_port_num,
+         ___SCMOBJ addr,
          ___SCMOBJ port_num,
-         ___SCMOBJ options),
-        (server_addr,
+         ___SCMOBJ options,
+         ___SCMOBJ tls_context,
+         ___SCMOBJ server_name),
+        (local_addr,
+         local_port_num,
+         addr,
          port_num,
-         options)
-___SCMOBJ server_addr;
+         options,
+         tls_context,
+         server_name)
+___SCMOBJ local_addr;
+___SCMOBJ local_port_num;
+___SCMOBJ addr;
 ___SCMOBJ port_num;
-___SCMOBJ options;)
+___SCMOBJ options;
+___SCMOBJ tls_context;
+___SCMOBJ server_name;)
 {
 #ifndef USE_NETWORKING
 
@@ -8303,21 +10463,85 @@ ___SCMOBJ options;)
   ___SCMOBJ e;
   ___device_tcp_client *dev;
   ___SCMOBJ result;
+  struct sockaddr local_sa;
+  SOCKET_LEN_TYPE local_salen;
   struct sockaddr sa;
-  int salen;
+  SOCKET_LEN_TYPE salen;
+  ___tls_context *tls_context_p;
+  char *server_name_p;
 
-  if ((e = ___SCMOBJ_to_sockaddr (server_addr, port_num, &sa, &salen, 1))
+  if ((e = ___SCMOBJ_to_sockaddr (local_addr,
+                                  local_port_num,
+                                  &local_sa,
+                                  &local_salen,
+                                  1))
+      != ___FIX(___NO_ERR) ||
+      (e = ___SCMOBJ_to_sockaddr (addr,
+                                  port_num,
+                                  &sa,
+                                  &salen,
+                                  2))
       != ___FIX(___NO_ERR))
     return e;
 
-  if ((e = ___device_tcp_client_setup_from_sockaddr
-             (&dev,
-              ___global_device_group (),
-              &sa,
-              salen,
-              ___INT(options),
-              ___DIRECTION_RD|___DIRECTION_WR))
-      != ___FIX(___NO_ERR))
+#ifdef USE_OPENSSL
+
+  if (tls_context == ___FAL)
+    {
+      tls_context_p = NULL;
+      server_name_p = NULL;
+    }
+  else
+    {
+      if ((e = ___SCMOBJ_to_NONNULLPOINTER
+           (___PSA(___PSTATE) tls_context,
+            ___CAST(void**,&tls_context_p),
+            ___FAL,
+            7))
+          != ___FIX(___NO_ERR))
+        return e;
+
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+      if (___FALSEP (server_name))
+        server_name_p = NULL;
+      else if ((e = ___SCMOBJ_to_CHARSTRING
+                (___PSA(___PSTATE) server_name,
+                 &server_name_p,
+                 8))
+               != ___FIX(___NO_ERR))
+        return e;
+#else
+      server_name_p = NULL;
+#endif
+
+    }
+
+#else
+
+  if (tls_context != ___FAL)
+    return ___FIX(___UNIMPL_ERR);
+
+  tls_context_p = NULL;
+  server_name_p = NULL;
+
+#endif
+
+  e = ___device_tcp_client_setup_from_sockaddr
+        (&dev,
+         ___global_device_group (),
+         &sa,
+         salen,
+         &local_sa,
+         local_salen,
+         ___INT(options),
+         ___DIRECTION_RD|___DIRECTION_WR,
+         tls_context_p,
+         server_name_p);
+
+  if (server_name_p != NULL)
+    ___release_string (server_name_p);
+
+  if (e != ___FIX(___NO_ERR))
     return e;
 
   if ((e = ___NONNULLPOINTER_to_SCMOBJ
@@ -8333,9 +10557,7 @@ ___SCMOBJ options;)
       return e;
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 
 #endif
 }
@@ -8360,6 +10582,10 @@ ___SCMOBJ peer;)
   struct sockaddr sa;
   SOCKET_LEN_TYPE salen;
 
+  if (d->base.base.read_stage != ___STAGE_OPEN &&
+      d->base.base.write_stage != ___STAGE_OPEN)
+    return ___FIX(___CLOSED_DEVICE_ERR);
+
   if (d->try_connect_again != 0)
     {
       if (try_connect (d) == 0)
@@ -8383,7 +10609,7 @@ ___SCMOBJ peer;)
       return e;
     }
 
-  return ___sockaddr_to_SCMOBJ (&sa, salen, ___RETURN_POS);
+  return ___release_scmobj (___sockaddr_to_SCMOBJ (&sa, salen, ___RETURN_POS));
 
 #endif
 }
@@ -8394,18 +10620,21 @@ ___SCMOBJ peer;)
 /* Opening and reading a TCP server. */
 
 ___SCMOBJ ___os_device_tcp_server_open
-   ___P((___SCMOBJ server_addr,
-         ___SCMOBJ port_num,
+   ___P((___SCMOBJ local_addr,
+         ___SCMOBJ local_port_num,
          ___SCMOBJ backlog,
-         ___SCMOBJ options),
-        (server_addr,
-         port_num,
+         ___SCMOBJ options,
+         ___SCMOBJ tls_context),
+        (local_addr,
+         local_port_num,
          backlog,
-         options)
-___SCMOBJ server_addr;
-___SCMOBJ port_num;
+         options,
+         tls_context)
+___SCMOBJ local_addr;
+___SCMOBJ local_port_num;
 ___SCMOBJ backlog;
-___SCMOBJ options;)
+___SCMOBJ options;
+___SCMOBJ tls_context;)
 {
 #ifndef USE_NETWORKING
 
@@ -8416,20 +10645,53 @@ ___SCMOBJ options;)
   ___SCMOBJ e;
   ___device_tcp_server *dev;
   ___SCMOBJ result;
-  struct sockaddr sa;
-  int salen;
+  struct sockaddr local_sa;
+  SOCKET_LEN_TYPE local_salen;
+  ___tls_context *tls_context_p;
 
-  if ((e = ___SCMOBJ_to_sockaddr (server_addr, port_num, &sa, &salen, 1))
+  if ((e = ___SCMOBJ_to_sockaddr (local_addr,
+                                  local_port_num,
+                                  &local_sa,
+                                  &local_salen,
+                                  1))
       != ___FIX(___NO_ERR))
     return e;
+
+#ifdef USE_OPENSSL
+
+  if (tls_context == ___FAL)
+    tls_context_p = NULL;
+  else
+    {
+      if ((e = ___SCMOBJ_to_NONNULLPOINTER
+           (___PSA(___PSTATE) tls_context,
+            ___CAST(void**,&tls_context_p),
+            ___FAL,
+            7))
+          != ___FIX(___NO_ERR))
+        return e;
+
+      if ((tls_context_p->options & ___TLS_OPTION_SERVER_MODE) == 0)
+        return ___FIX(___TLS_SERVER_CONTEXT_EXPECTED_ERR);
+    }
+
+#else
+
+  if (tls_context != ___FAL)
+    return ___FIX(___UNIMPL_ERR);
+
+  tls_context_p = NULL;
+
+#endif
 
   e = ___device_tcp_server_setup
         (&dev,
          ___global_device_group (),
-         &sa,
-         salen,
+         &local_sa,
+         local_salen,
          ___INT(backlog),
-         ___INT(options));
+         ___INT(options),
+         tls_context_p);
 
   if (e != ___FIX(___NO_ERR))
     return e;
@@ -8448,18 +10710,16 @@ ___SCMOBJ options;)
       return e;
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 
 #endif
 }
 
 
 ___SCMOBJ ___os_device_tcp_server_read
-   ___P((___SCMOBJ dev),
-        (dev)
-___SCMOBJ dev;)
+   ___P((___SCMOBJ dev_condvar),
+        (dev_condvar)
+___SCMOBJ dev_condvar;)
 {
 #ifndef USE_NETWORKING
 
@@ -8467,6 +10727,7 @@ ___SCMOBJ dev;)
 
 #else
 
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_tcp_server *d =
     ___CAST(___device_tcp_server*,___FIELD(dev,___FOREIGN_PTR));
   ___SCMOBJ e;
@@ -8491,9 +10752,7 @@ ___SCMOBJ dev;)
       return e;
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 
 #endif
 }
@@ -8513,14 +10772,292 @@ ___SCMOBJ dev;)
   ___device_tcp_server *d =
     ___CAST(___device_tcp_server*,___FIELD(dev,___FOREIGN_PTR));
   struct sockaddr sa;
-  SOCKET_LEN_TYPE salen;
+  SOCKET_LEN_TYPE salen = sizeof (sa);
 
-  salen = sizeof (sa);
+  if (d->base.read_stage != ___STAGE_OPEN &&
+      d->base.write_stage != ___STAGE_OPEN)
+    return ___FIX(___CLOSED_DEVICE_ERR);
 
   if (getsockname (d->s, &sa, &salen) < 0)
     return ERR_CODE_FROM_SOCKET_CALL;
 
-  return ___sockaddr_to_SCMOBJ (&sa, salen, ___RETURN_POS);
+  return ___release_scmobj (___sockaddr_to_SCMOBJ (&sa, salen, ___RETURN_POS));
+
+#endif
+}
+
+
+/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+
+/* Opening a UDP socket. */
+
+___SCMOBJ ___os_device_udp_open
+   ___P((___SCMOBJ local_addr,
+         ___SCMOBJ local_port_num,
+         ___SCMOBJ options),
+        (local_addr,
+         local_port_num,
+         options)
+___SCMOBJ local_addr;
+___SCMOBJ local_port_num;
+___SCMOBJ options;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+  ___SCMOBJ e;
+  ___device_udp *dev;
+  ___SCMOBJ result;
+  struct sockaddr local_sa;
+  SOCKET_LEN_TYPE local_salen;
+
+  if ((e = ___SCMOBJ_to_sockaddr (local_addr,
+                                  local_port_num,
+                                  &local_sa,
+                                  &local_salen,
+                                  1))
+      != ___FIX(___NO_ERR))
+    return e;
+
+  if ((e = ___device_udp_setup_from_sockaddr
+             (&dev,
+              ___global_device_group (),
+              &local_sa,
+              local_salen,
+              ___INT(options),
+              ___DIRECTION_RD|___DIRECTION_WR))
+      != ___FIX(___NO_ERR))
+    return e;
+
+  if ((e = ___NONNULLPOINTER_to_SCMOBJ
+             (___PSTATE,
+              dev,
+              ___FAL,
+              ___device_cleanup_from_ptr,
+              &result,
+              ___RETURN_POS))
+      != ___FIX(___NO_ERR))
+    {
+      ___device_cleanup (___CAST(___device*,dev)); /* ignore error */
+      return e;
+    }
+
+  return ___release_scmobj (result);
+
+#endif
+}
+
+
+___SCMOBJ ___os_device_udp_read_subu8vector
+   ___P((___SCMOBJ dev_condvar,
+         ___SCMOBJ buffer,
+         ___SCMOBJ lo,
+         ___SCMOBJ hi),
+        (dev_condvar,
+         buffer,
+         lo,
+         hi)
+___SCMOBJ dev_condvar;
+___SCMOBJ buffer;
+___SCMOBJ lo;
+___SCMOBJ hi;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+#define MAX_DATAGRAM_LENGTH 65536
+
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
+  ___device_udp *d =
+    ___CAST(___device_udp*,___FIELD(dev,___FOREIGN_PTR));
+  ___SCMOBJ e;
+  ___SSIZE_T n;
+  ___SCMOBJ result;
+
+  if (buffer == ___FAL)
+    {
+      ___U8 buf[MAX_DATAGRAM_LENGTH];
+
+      if ((e = ___device_udp_read_raw
+                  (d,
+                   buf,
+                   MAX_DATAGRAM_LENGTH,
+                   &n))
+          != ___FIX(___NO_ERR))
+        return e;
+
+      result = ___alloc_scmobj (___PSTATE, ___sU8VECTOR, n);
+
+      if (___FIXNUMP(result))
+        return ___FIX(___CTOS_HEAP_OVERFLOW_ERR+___RETURN_POS);
+
+      memmove (___BODY_AS(result,___tSUBTYPED),
+               buf,
+               n);
+
+      ___release_scmobj (result);
+    }
+  else
+    {
+      if ((e = ___device_udp_read_raw
+                  (d,
+                   ___CAST(___U8*,___BODY_AS(buffer,___tSUBTYPED)) + ___INT(lo),
+                   ___INT(hi)-___INT(lo),
+                   &n))
+          != ___FIX(___NO_ERR))
+        return e;
+
+      result = ___FIX(n);
+    }
+
+  return result;
+
+#endif
+}
+
+
+___SCMOBJ ___os_device_udp_write_subu8vector
+   ___P((___SCMOBJ dev_condvar,
+         ___SCMOBJ buffer,
+         ___SCMOBJ lo,
+         ___SCMOBJ hi),
+        (dev_condvar,
+         buffer,
+         lo,
+         hi)
+___SCMOBJ dev_condvar;
+___SCMOBJ buffer;
+___SCMOBJ lo;
+___SCMOBJ hi;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
+  ___device_udp *d =
+    ___CAST(___device_udp*,___FIELD(dev,___FOREIGN_PTR));
+  ___SCMOBJ e;
+  ___SSIZE_T n;
+  ___U8 *buf = ___CAST(___U8*,___BODY_AS(buffer,___tSUBTYPED));
+  ___SSIZE_T len;
+
+  if (lo == ___FAL)
+    len = ___INT(___U8VECTORLENGTH(buffer));
+  else
+    {
+      buf += ___INT(lo);
+      len = ___INT(hi)-___INT(lo);
+    }
+
+  if ((e = ___device_udp_write_raw (d, buf, len, &n))
+      != ___FIX(___NO_ERR))
+    return e;
+
+  if (n != len)
+    return ___FIX(___UNKNOWN_ERR);
+
+  return ___VOID;
+
+#endif
+}
+
+
+___SCMOBJ ___os_device_udp_socket_info
+   ___P((___SCMOBJ dev,
+         ___SCMOBJ source),
+        (dev,
+         source)
+___SCMOBJ dev;
+___SCMOBJ source;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+  ___device_udp *d =
+    ___CAST(___device_udp*,___FIELD(dev,___FOREIGN_PTR));
+
+  if (d->base.read_stage != ___STAGE_OPEN &&
+      d->base.write_stage != ___STAGE_OPEN)
+    return ___FIX(___CLOSED_DEVICE_ERR);
+
+  if (source == ___FAL)
+    {
+      struct sockaddr sa;
+      SOCKET_LEN_TYPE salen = sizeof (sa);
+
+      if (getsockname (d->s, &sa, &salen) < 0)
+        return ERR_CODE_FROM_SOCKET_CALL;
+
+      return ___release_scmobj (___sockaddr_to_SCMOBJ (&sa,
+                                                       salen,
+                                                       ___RETURN_POS));
+    }
+  else
+    {
+      if (d->source_salen == 0) /* no message received yet? */
+        return ___FAL;
+
+      if (d->source_same_as_previous) /* last source address same as previously read? */
+        return ___TRU;
+
+      d->source_same_as_previous = 1;
+
+      return ___release_scmobj (___sockaddr_to_SCMOBJ (&d->source_sa,
+                                                       d->source_salen,
+                                                       ___RETURN_POS));
+    }
+
+#endif
+}
+
+
+___SCMOBJ ___os_device_udp_destination_set
+   ___P((___SCMOBJ dev_condvar,
+         ___SCMOBJ addr,
+         ___SCMOBJ port_num),
+        (dev_condvar,
+         addr,
+         port_num)
+___SCMOBJ dev_condvar;
+___SCMOBJ addr;
+___SCMOBJ port_num;)
+{
+#ifndef USE_NETWORKING
+
+  return ___FIX(___UNIMPL_ERR);
+
+#else
+
+  ___SCMOBJ e;
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
+  ___device_udp *d =
+    ___CAST(___device_udp*,___FIELD(dev,___FOREIGN_PTR));
+
+  if (d->base.read_stage != ___STAGE_OPEN &&
+      d->base.write_stage != ___STAGE_OPEN)
+    return ___FIX(___CLOSED_DEVICE_ERR);
+
+  if ((e = ___SCMOBJ_to_sockaddr (addr,
+                                  port_num,
+                                  &d->dest_sa,
+                                  &d->dest_salen,
+                                  1)) /* argument 1 of udp-destination-set! */
+      != ___FIX(___NO_ERR))
+    return e;
+
+  return ___FIX(___NO_ERR);
 
 #endif
 }
@@ -8538,7 +11075,7 @@ ___SCMOBJ ___os_device_directory_open_path
 ___SCMOBJ path;
 ___SCMOBJ ignore_hidden;)
 {
-#ifndef ___DIR_OPEN_PATH_CE_SELECT
+#ifndef ___DIR_OPEN_PATH_SUPPORTED
 
   return ___FIX(___UNIMPL_ERR);
 
@@ -8589,25 +11126,24 @@ ___SCMOBJ ignore_hidden;)
       ___release_string (cpath);
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 
 #endif
 }
 
 
 ___SCMOBJ ___os_device_directory_read
-   ___P((___SCMOBJ dev),
-        (dev)
-___SCMOBJ dev;)
+   ___P((___SCMOBJ dev_condvar),
+        (dev_condvar)
+___SCMOBJ dev_condvar;)
 {
-#ifndef ___DIR_OPEN_PATH_CE_SELECT
+#ifndef ___DIR_OPEN_PATH_SUPPORTED
 
   return ___FIX(___UNIMPL_ERR);
 
 #else
 
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_directory *d =
     ___CAST(___device_directory*,___FIELD(dev,___FOREIGN_PTR));
   ___SCMOBJ e;
@@ -8624,9 +11160,7 @@ ___SCMOBJ dev;)
       != ___FIX(___NO_ERR))
     return e;
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 
 #endif
 }
@@ -8667,17 +11201,16 @@ ___SCMOBJ selector;)
         }
     }
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 }
 
 
 ___SCMOBJ ___os_device_event_queue_read
-   ___P((___SCMOBJ dev),
-        (dev)
-___SCMOBJ dev;)
+   ___P((___SCMOBJ dev_condvar),
+        (dev_condvar)
+___SCMOBJ dev_condvar;)
 {
+  ___SCMOBJ dev = ___FIELD(dev_condvar,___CONDVAR_NAME);
   ___device_event_queue *d =
     ___CAST(___device_event_queue*,___FIELD(dev,___FOREIGN_PTR));
   ___SCMOBJ e;
@@ -8686,9 +11219,7 @@ ___SCMOBJ dev;)
   if ((e = ___device_event_queue_read (d, &result)) != ___FIX(___NO_ERR))
     return e;
 
-  ___release_scmobj (result);
-
-  return result;
+  return ___release_scmobj (result);
 }
 
 
@@ -8697,33 +11228,15 @@ ___SCMOBJ dev;)
 /* Waiting for I/O to become possible on a set of devices. */
 
 ___SCMOBJ ___os_condvar_select
-   ___P((___SCMOBJ run_queue,
+   ___P((___SCMOBJ devices,
          ___SCMOBJ timeout),
-        (run_queue,
+        (devices,
          timeout)
-___SCMOBJ run_queue;
+___SCMOBJ devices;
 ___SCMOBJ timeout;)
 {
-/******************/
-#define ___BTQ_DEQ_NEXT 1
-#define ___BTQ_DEQ_PREV 2
-#define ___BTQ_COLOR    3
-#define ___BTQ_PARENT   4
-#define ___BTQ_LEFT     5
-#define ___BTQ_RIGHT    6
-#define ___BTQ_LEFTMOST 6
-#define ___BTQ_OWNER    7
-#define ___CONDVAR_NAME 8
-
   ___SCMOBJ e;
   ___time to;
-  ___device *devs[MAX_CONDVARS];
-  ___SCMOBJ condvars[MAX_CONDVARS];
-  int read_pos;
-  int write_pos;
-  ___SCMOBJ condvar;
-  int i;
-  int j;
 
   if (timeout == ___FAL)
     to = ___time_mod.time_neg_infinity;
@@ -8732,75 +11245,78 @@ ___SCMOBJ timeout;)
   else
     ___time_from_seconds (&to, ___F64VECTORREF(timeout,___FIX(0)));
 
-  read_pos = 0;
-  write_pos = MAX_CONDVARS;
-  condvar = ___FIELD(run_queue,___BTQ_DEQ_NEXT);
-
-  while (condvar != run_queue)
+  if (___FALSEP(devices))
     {
-      ___SCMOBJ owner = ___FIELD(condvar,___BTQ_OWNER);
-      if (read_pos < write_pos)
+      e = ___device_select (NULL, 0, 0, 0, to);
+    }
+  else
+    {
+      ___device *devs[MAX_CONDVARS];
+      ___SCMOBJ condvars[MAX_CONDVARS];
+      ___SCMOBJ condvar;
+      int event_pos = 0;
+      int write_pos = 0;
+      int read_pos = 0;
+      int i;
+      int j;
+
+      condvar = ___FIELD(devices,___BTQ_DEQ_NEXT);
+
+      while (condvar != devices)
         {
-          if (owner & ___FIX(2))
-            condvars[--write_pos] = condvar;
+          ___SCMOBJ owner = ___FIELD(condvar,___BTQ_OWNER);
+          if (read_pos < MAX_CONDVARS-1)
+            {
+              ___FIELD(condvar,___BTQ_OWNER) = owner & ~___FIX(1);
+              switch (___INT(owner)>>1)
+                {
+                case FOR_READING:
+                  condvars[read_pos++] = condvar;
+                  break;
+                case FOR_WRITING:
+                  condvars[read_pos++] = condvars[write_pos];
+                  condvars[write_pos++] = condvar;
+                  break;
+                case FOR_EVENT:
+                  condvars[read_pos++] = condvars[write_pos];
+                  condvars[write_pos++] = condvars[event_pos];
+                  condvars[event_pos++] = condvar;
+                  break;
+                }
+            }
           else
-            condvars[read_pos++] = condvar;
-          ___FIELD(condvar,___BTQ_OWNER) = owner & ~___FIX(1);
+            {
+              ___FIELD(condvar,___BTQ_OWNER) = owner | ___FIX(1);
+              to = ___time_mod.time_neg_infinity;
+            }
+          condvar = ___FIELD(condvar,___BTQ_DEQ_NEXT);
         }
-      else
+
+      for (i=0; i<read_pos; i++)
         {
-          to = ___time_mod.time_neg_infinity;
-          ___FIELD(condvar,___BTQ_OWNER) = owner | ___FIX(1);
+          devs[i] = ___CAST(___device*,
+                            ___FIELD(___FIELD(condvars[i],___CONDVAR_NAME),
+                                     ___FOREIGN_PTR));
         }
-      condvar = ___FIELD(condvar,___BTQ_DEQ_NEXT);
-    }
 
-  i = 0;
+      ___PRIMITIVEUNLOCK(devices,___FIX(___OBJ_LOCK1),___FIX(___OBJ_LOCK2))
 
-  while (i < read_pos)
-    {
-      devs[i] = ___CAST(___device*,
-                        ___FIELD(___FIELD(condvars[i],___CONDVAR_NAME),
-                                 ___FOREIGN_PTR));
-      i++;
-    }
+      e = ___device_select (devs,
+                            read_pos - write_pos,
+                            write_pos - event_pos,
+                            event_pos,
+                            to);
 
-  j = MAX_CONDVARS;
+      ___PRIMITIVELOCK(devices,___FIX(___OBJ_LOCK1),___FIX(___OBJ_LOCK2))
 
-  while (j > write_pos)
-    {
-      j--;
-      devs[i] = ___CAST(___device*,
-                        ___FIELD(___FIELD(condvars[j],___CONDVAR_NAME),
-                                 ___FOREIGN_PTR));
-      i++;
-    }
-
-  e = ___device_select (devs, read_pos, MAX_CONDVARS-write_pos, to);
-
-  i = 0;
-
-  while (i < read_pos)
-    {
-      if (devs[i] == NULL)
+      for (i=0; i<read_pos; i++)
         {
-          condvar = condvars[i];
-          ___FIELD(condvar,___BTQ_OWNER) |= ___FIX(1);
+          if (devs[i] == NULL)
+            {
+              condvar = condvars[i];
+              ___FIELD(condvar,___BTQ_OWNER) |= ___FIX(1);
+            }
         }
-      i++;
-    }
-
-  j = MAX_CONDVARS;
-
-  while (j > write_pos)
-    {
-      j--;
-      if (devs[i] == NULL)
-        {
-          condvar = condvars[j];
-          ___FIELD(condvar,___BTQ_OWNER) |= ___FIX(1);
-        }
-      i++;
     }
 
   return e;
@@ -8813,79 +11329,6 @@ ___SCMOBJ timeout;)
  * Decoding and encoding of a buffer of Scheme characters to a buffer
  * of bytes.
  */
-
-/*
- * The following definitions must match the structure of ports defined
- * in _io#.scm .
- */
-
-#define ___PORT_MUTEX                1
-#define ___PORT_RKIND                2
-#define ___PORT_WKIND                3
-#define ___PORT_NAME                 4
-#define ___PORT_READ_DATUM           5
-#define ___PORT_WRITE_DATUM          6
-#define ___PORT_NEWLINE              7
-#define ___PORT_FORCE_OUTPUT         8
-#define ___PORT_CLOSE                9
-#define ___PORT_ROPTIONS             10
-#define ___PORT_RTIMEOUT             11
-#define ___PORT_RTIMEOUT_THUNK       12
-#define ___PORT_SET_RTIMEOUT         13
-#define ___PORT_WOPTIONS             14
-#define ___PORT_WTIMEOUT             15
-#define ___PORT_WTIMEOUT_THUNK       16
-#define ___PORT_SET_WTIMEOUT         17
-#define ___PORT_IO_EXCEPTION_HANDLER 18
-
-#define ___PORT_OBJECT_OTHER1        19
-#define ___PORT_OBJECT_OTHER2        20
-#define ___PORT_OBJECT_OTHER3        21
-
-#define ___PORT_CHAR_RBUF            19
-#define ___PORT_CHAR_RLO             20
-#define ___PORT_CHAR_RHI             21
-#define ___PORT_CHAR_RCHARS          22
-#define ___PORT_CHAR_RLINES          23
-#define ___PORT_CHAR_RCURLINE        24
-#define ___PORT_CHAR_RBUF_FILL       25
-#define ___PORT_CHAR_PEEK_EOFP       26
-
-#define ___PORT_CHAR_WBUF            27
-#define ___PORT_CHAR_WLO             28
-#define ___PORT_CHAR_WHI             29
-#define ___PORT_CHAR_WCHARS          30
-#define ___PORT_CHAR_WLINES          31
-#define ___PORT_CHAR_WCURLINE        32
-#define ___PORT_CHAR_WBUF_DRAIN      33
-#define ___PORT_INPUT_READTABLE      34
-#define ___PORT_OUTPUT_READTABLE     35
-#define ___PORT_OUTPUT_WIDTH         36
-
-#define ___PORT_CHAR_OTHER1          37
-#define ___PORT_CHAR_OTHER2          38
-#define ___PORT_CHAR_OTHER3          39
-#define ___PORT_CHAR_OTHER4          40
-#define ___PORT_CHAR_OTHER5          41
-
-#define ___PORT_BYTE_RBUF            37
-#define ___PORT_BYTE_RLO             38
-#define ___PORT_BYTE_RHI             39
-#define ___PORT_BYTE_RBUF_FILL       40
-
-#define ___PORT_BYTE_WBUF            41
-#define ___PORT_BYTE_WLO             42
-#define ___PORT_BYTE_WHI             43
-#define ___PORT_BYTE_WBUF_DRAIN      44
-
-#define ___PORT_BYTE_OTHER1          45
-#define ___PORT_BYTE_OTHER2          46
-
-#define ___PORT_RDEVICE_CONDVAR      45
-#define ___PORT_WDEVICE_CONDVAR      46
-
-#define ___PORT_DEVICE_OTHER1        47
-#define ___PORT_DEVICE_OTHER2        48
 
 #define ___C ___CS_SELECT(___U8,___U16,___U32)
 
@@ -8951,9 +11394,11 @@ ___SCMOBJ eof;)
             e = err_code_from_char_encoding (___CHAR_ENCODING(options), 1, 0, 0);
           else
             {
+#if ___UNICODE_REPLACEMENT <= ___MAX_CHR
               if (___CHAR_ENCODING_SUPPORTS_BMP(___CHAR_ENCODING(options)))
                 cbuf_ptr[chi] = ___UNICODE_REPLACEMENT;
               else
+#endif
                 cbuf_ptr[chi] = ___UNICODE_QUESTION;
 
               cbuf_avail--;
@@ -9017,9 +11462,11 @@ ___SCMOBJ port;)
             ___C replacement_cbuf[1];
             int replacement_cbuf_avail = 1;
 
+#if ___UNICODE_REPLACEMENT <= ___MAX_CHR
             if (___CHAR_ENCODING_SUPPORTS_BMP(___CHAR_ENCODING(options)))
               replacement_cbuf[0] = ___UNICODE_REPLACEMENT;
             else
+#endif
               replacement_cbuf[0] = ___UNICODE_QUESTION;
 
             code = chars_to_bytes (replacement_cbuf,
@@ -9050,36 +11497,129 @@ ___SCMOBJ port;)
 /* I/O module initialization/finalization. */
 
 
+___SCMOBJ ___setup_io_pstate
+   ___P((___processor_state ___ps),
+        (___ps)
+___processor_state ___ps;)
+{
+  ___SCMOBJ e = ___FIX(___NO_ERR);
+
+#ifdef USE_POSIX
+
+  if (!___fdset_init (___ps))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+
+#ifdef USE_POSIX
+
+  if (___open_half_duplex_pipe (&___ps->os.select_abort) < 0 ||
+      ___set_fd_blocking_mode (___ps->os.select_abort.writing_fd, 0) < 0 ||
+      ___set_fd_blocking_mode (___ps->os.select_abort.reading_fd, 0) < 0)
+    e = err_code_from_errno ();
+
+#endif
+
+#ifdef USE_WIN32
+
+  ___ps->os.select_abort =
+    CreateEvent (NULL,  /* can't inherit */
+                 TRUE,  /* manual reset */
+                 FALSE, /* not signaled */
+                 NULL); /* no name */
+
+  if (___ps->os.select_abort == NULL)
+    e = err_code_from_GetLastError ();
+
+#endif
+
+#endif
+
+  return e;
+}
+
+
+void ___cleanup_io_pstate
+   ___P((___processor_state ___ps),
+        (___ps)
+___processor_state ___ps;)
+{
+#ifdef USE_ASYNC_DEVICE_SELECT_ABORT
+
+#ifdef USE_POSIX
+
+  ___close_half_duplex_pipe (&___ps->os.select_abort, 2);
+
+#endif
+
+#ifdef USE_WIN32
+
+  CloseHandle (___ps->os.select_abort); /* ignore error */
+
+#endif
+
+#endif
+}
+
+
+___SCMOBJ ___setup_io_vmstate
+   ___P((___virtual_machine_state ___vms),
+        (___vms)
+___virtual_machine_state ___vms;)
+{
+#ifdef USE_POSIX
+  {
+    int size = 8 * sizeof (fd_set);
+    if (size < MAX_CONDVARS)
+      size = MAX_CONDVARS;
+
+    ___vms->os.fdset.size = size;
+    ___vms->os.fdset.overflow = 0;
+  }
+#endif
+
+  return ___FIX(___NO_ERR);
+}
+
+
+void ___cleanup_io_vmstate
+   ___P((___virtual_machine_state ___vms),
+        (___vms)
+___virtual_machine_state ___vms;)
+{
+}
+
+
 ___HIDDEN ___SCMOBJ io_module_setup ___PVOID
 {
   ___SCMOBJ e;
 
   if ((e = ___device_group_setup (&___io_mod.dgroup)) == ___FIX(___NO_ERR))
     {
-#ifdef USE_POSIX
-
-      ___set_signal_handler (SIGCHLD, sigchld_signal_handler);
-
-#endif
+      ___setup_child_interrupt_handling (); /* ignore error */
 
 #ifdef USE_WIN32
 
 #define WINSOCK_MAJOR 1
 #define WINSOCK_MINOR 1
 
-      WSADATA winsock_data;
+      {
+        WSADATA winsock_data;
 
-      if (!WSAStartup (MAKEWORD(WINSOCK_MAJOR, WINSOCK_MINOR), &winsock_data))
-        {
-          if (LOBYTE(winsock_data.wVersion) == WINSOCK_MINOR &&
-              HIBYTE(winsock_data.wVersion) == WINSOCK_MAJOR)
-            return ___FIX(___NO_ERR);
-          WSACleanup (); /* ignore error */
-        }
+        if (!WSAStartup (MAKEWORD(WINSOCK_MAJOR, WINSOCK_MINOR), &winsock_data))
+          {
+            if (LOBYTE(winsock_data.wVersion) == WINSOCK_MINOR &&
+                HIBYTE(winsock_data.wVersion) == WINSOCK_MAJOR)
+              return ___FIX(___NO_ERR);
+            WSACleanup (); /* ignore error */
+          }
 
-      e = ___FIX(___UNKNOWN_ERR);
+        e = ___FIX(___UNKNOWN_ERR);
 
-      ___device_group_cleanup (___io_mod.dgroup);
+        ___device_group_cleanup (___io_mod.dgroup);
+      }
 
 #endif
     }
@@ -9090,11 +11630,7 @@ ___HIDDEN ___SCMOBJ io_module_setup ___PVOID
 
 ___HIDDEN void io_module_cleanup ___PVOID
 {
-#ifdef USE_POSIX
-
-  ___set_signal_handler (SIGCHLD, SIG_DFL);
-
-#endif
+  ___cleanup_child_interrupt_handling ();
 
 #ifdef USE_WIN32
 
@@ -9113,11 +11649,6 @@ ___SCMOBJ ___setup_io_module ___PVOID
     {
 #ifdef USE_WIN32
 
-      ___SCMOBJ e = ___FIX(___NO_ERR);
-
-      ___io_mod.always_signaled = NULL;
-      ___io_mod.abort_select = NULL;
-
       ___io_mod.always_signaled =
         CreateEvent (NULL,  /* can't inherit */
                      TRUE,  /* manual reset */
@@ -9125,21 +11656,7 @@ ___SCMOBJ ___setup_io_module ___PVOID
                      NULL); /* no name */
 
       if (___io_mod.always_signaled == NULL)
-        e = err_code_from_GetLastError ();
-      else
-        {
-          ___io_mod.abort_select =
-            CreateEvent (NULL,  /* can't inherit */
-                         TRUE,  /* manual reset */
-                         FALSE, /* not signaled */
-                         NULL); /* no name */
-
-          if (___io_mod.abort_select == NULL)
-            {
-              CloseHandle (___io_mod.always_signaled); /* ignore error */
-              e = err_code_from_GetLastError ();
-            }
-        }
+        return err_code_from_GetLastError ();
 
 #endif
 
@@ -9157,10 +11674,17 @@ void ___cleanup_io_module ___PVOID
   if (___io_mod.setup)
     {
       io_module_cleanup ();/*****************************/
+
 #ifdef USE_WIN32
-      CloseHandle (___io_mod.abort_select); /* ignore error */
       CloseHandle (___io_mod.always_signaled); /* ignore error */
 #endif
+
+#ifdef USE_OPENSSL
+      ERR_free_strings();
+      EVP_cleanup();
+      CRYPTO_cleanup_all_ex_data();
+#endif
+
       ___io_mod.setup = 0;
     }
 }

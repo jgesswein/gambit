@@ -4,11 +4,11 @@
 
 ;;; File: "run-unit-tests.scm"
 
-;;; Copyright (c) 2012-2014 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 2012-2017 by Marc Feeley, All Rights Reserved.
 
 ;;;----------------------------------------------------------------------------
 
-(define cleanup? #f)
+(define cleanup? #t)
 
 (define nb-good 0)
 (define nb-fail 0)
@@ -32,34 +32,62 @@
           (let ((blanks (- w (+ lsi lsf))))
             (string-append (make-string (max blanks 0) #\space) si sf)))))))
 
+(define (sort-list lst <?)
+
+  (define (mergesort lst)
+
+    (define (merge lst1 lst2)
+      (cond ((null? lst1) lst2)
+            ((null? lst2) lst1)
+            (else
+             (let ((e1 (car lst1)) (e2 (car lst2)))
+               (if (<? e1 e2)
+                 (cons e1 (merge (cdr lst1) lst2))
+                 (cons e2 (merge lst1 (cdr lst2))))))))
+
+    (define (split lst)
+      (if (or (null? lst) (null? (cdr lst)))
+        lst
+        (cons (car lst) (split (cddr lst)))))
+
+    (if (or (null? lst) (null? (cdr lst)))
+      lst
+      (let* ((lst1 (mergesort (split lst)))
+             (lst2 (mergesort (split (cdr lst)))))
+        (merge lst1 lst2))))
+
+  (mergesort lst))
+
 (define (show-bar nb-good nb-fail nb-other nb-total elapsed)
 
   (define (ratio n)
     (quotient (* n (+ nb-good nb-fail nb-other)) nb-total))
 
-  (if (tty? (current-output-port))
+  (let* ((istty (tty? (current-output-port)))
+         (bar-width 16)
+         (bar-length (ratio bar-width)))
 
-      (let* ((bar-width 42)
-             (bar-length (ratio bar-width)))
+    (define (esc x)
+      (if istty x ""))
 
-        (define (esc x)
-          x)
+    (print (if istty "\r" "\n")
+           "["
+           (esc "\33[32;1m") (num->string nb-good 3 0) (esc "\33[0m")
+           "|"
+           (esc "\33[31;1m") (num->string nb-fail 3 0) (esc "\33[0m")
+           ;;"|"
+           ;;(esc "\33[34;1m") (num->string nb-other 4 0) (esc "\33[0m")
+           "] "
+           (num->string (ratio 100) 3 0)
+           "% "
+           (make-string bar-length #\#)
+           (make-string (- bar-width bar-length) #\.)
+           " "
+           (num->string elapsed 3 1)
+           "s"
+           (esc "\33[K"))
 
-        (print "\r"
-               "["
-               (esc "\33[32;1m") (num->string nb-good 4 0) (esc "\33[0m")
-               "|"
-               (esc "\33[31;1m") (num->string nb-fail 4 0) (esc "\33[0m")
-               "|"
-               (esc "\33[34;1m") (num->string nb-other 4 0) (esc "\33[0m")
-               "] "
-               (num->string (ratio 100) 3 0)
-               "% "
-               (make-string bar-length #\#)
-               (make-string (- bar-width bar-length) #\.)
-               (num->string elapsed 6 1)
-               "s"
-               (esc "\33[K")))))
+    (force-output)))
 
 (define (run path . args)
   (let* ((port
@@ -74,22 +102,129 @@
     (close-port port)
     (cons status output)))
 
-(define (test-using-mode file mode)
-  (cond ((equal? mode "gsi")
-         (run "../gsi/gsi" "-:d-,flu,=.." file))))
+(define (run-gsi-under-debugger file debug? target)
+  (if debug?
 
-(define (test file)
+      (if (equal? (cadr (system-type)) 'apple)
+
+          (begin
+            (with-output-to-file
+                "clean_exit.py"
+              (lambda ()
+                (print "import os\n"
+                       "\n"
+                       "def clean_exit(debugger, command, result, internal_dict):\n"
+                       "    target = debugger.GetSelectedTarget()\n"
+                       "    process = target.GetProcess()\n"
+                       "    if not process.exit_state == -1:\n"
+                       "        os._exit(process.exit_state)\n"
+                       "\n"
+                       "def exit1(debugger, command, result, internal_dict):\n"
+                       "    os._exit(1)\n"
+                       "\n"
+                       "def __lldb_init_module(debugger, internal_dict):\n"
+                       "    debugger.HandleCommand('command script add -f clean_exit.clean_exit clean_exit')\n"
+                       "    debugger.HandleCommand('command script add -f clean_exit.exit1 exit1')\n")))
+            (with-output-to-file
+                "dbg-script"
+              (lambda ()
+                (print "settings set auto-confirm 1\n"
+                       "command script import clean_exit.py\n"
+                       "run -:d-,flu,~~=.. -f " file "\n"
+                       "clean_exit\n"
+                       "frame variable\n"
+                       "thread backtrace all\n"
+                       ;;"call ___print_ctrl_flow_history();"
+                       "exit1\n")))
+            (let ((result
+                   (run "lldb" "-s" "dbg-script" "../gsi/gsi")))
+              (delete-file "clean_exit.py")
+              (delete-file "dbg-script")
+              result))
+
+          (begin
+            (with-output-to-file
+                "dbg-script"
+              (lambda ()
+                (print "set $_exitcode = -1\n"
+                       "run -:d-,flu,~~=.. -f " file "\n"
+                       "if $_exitcode != -1\n"
+                       "  quit $_exitcode\n"
+                       "end\n"
+                       "info locals\n"
+                       "thread apply all bt\n"
+                       ;;"call ___print_ctrl_flow_history();"
+                       "quit 1\n")))
+            (let ((result
+                   (if (equal? (cadr (system-type)) 'apple)
+                       (run "sudo" "gdb" "-q" "-x" "dbg-script" "../gsi/gsi")
+                       (run "gdb" "-q" "-x" "dbg-script" "../gsi/gsi"))))
+              (delete-file "dbg-script")
+              result)))
+
+      (case target
+        ((C)
+         (run "../gsi/gsi" "-:d-,flu,~~=.." "-f" file))
+        (else
+         (let ((gsi (string-append "../gsi/gsi-" (symbol->string target))))
+           (run gsi "-f" file))))))
+
+(define (test-using-mode file mode target)
+  (case target
+    ((C)
+     (cond ((member mode '(gsi gsi-dbg))
+            (run-gsi-under-debugger file (eq? mode 'gsi-dbg) target))
+           ((member mode '(gsc gsc-dbg))
+            (let* ((filename "_test.o1")
+                   (result (run "../gsc/gsc" "-:d-,flu,~~=.." "-f" "-o" filename file)))
+              (if (= 0 (car result))
+                  (let ((result (run-gsi-under-debugger filename (eq? mode 'gsc-dbg) target)))
+                    (if cleanup? (delete-file filename))
+                    result)
+                  result)))))
+    (else
+     (let* ((filename "_test.bat")
+            (result (run "../gsc/gsc" "-:d-,flu,~~=.." "-warnings" "-target" (symbol->string target) "-exe" "-postlude" "(##exit)" "-o" filename file)))
+       (if (string? (cdr result))
+           (begin
+             (print (cdr result))
+             (force-output)))
+       (if (= 0 (car result))
+           (let ((result (run (path-expand filename))))
+             (if cleanup? (delete-file filename))
+             result)
+           result)))))
+
+(define (trim-filename file)
+  (if (and (>= (string-length file) (string-length default-dir))
+           (string=? (substring file 0 (string-length default-dir))
+                     default-dir))
+      (substring file (string-length default-dir) (string-length file))
+      file))
+
+(define (test file target)
   (for-each
 
    (lambda (mode)
-     (let ((result (test-using-mode file mode)))
 
-       (if (= 0 (car result))
+     (print " " (trim-filename file))
+     (force-output)
+
+     (let* ((result (test-using-mode file mode target))
+            (status (car result))
+            (status-hi (quotient status 256))
+            (status-lo (modulo status 256)))
+
+       (if (= 0 status)
            (set! nb-good (+ nb-good 1))
            (begin
              (set! nb-fail (+ nb-fail 1))
              (print "\n")
-             ;;(print "*********************** FAILED TEST " mode " " file "\n")
+             (print "*** FAILED " (trim-filename file) " WITH EXIT CODE HI="
+                    status-hi
+                    " LO="
+                    status-lo
+                    "\n")
              (print (cdr result))))
 
        (show-bar nb-good
@@ -100,7 +235,7 @@
 
    modes))
 
-(define (run-tests files)
+(define (run-tests files target)
 
   (set! nb-good 0)
   (set! nb-fail 0)
@@ -108,7 +243,9 @@
   (set! nb-total (length files))
   (set! start (time->seconds (current-time)))
 
-  (for-each test files)
+  (show-bar nb-good nb-fail nb-other nb-total 0.0)
+
+  (for-each (lambda (file) (test file target)) files)
 
   (print "\n")
 
@@ -134,7 +271,7 @@
           (list file-or-dir)
           (list))))
 
-(define (list-of-scm-files args)
+(define (list-of-scm-files args stress?)
   (apply
    append
    (map
@@ -142,30 +279,60 @@
       (find-files f
                   (lambda (filename)
                     (and (equal? (path-extension filename) ".scm")
-                         (not (equal? filename "#.scm"))))))
+                         (not (equal? (path-strip-directory filename) "#.scm"))
+                         (or stress?
+                             (let ((len (string-length filename)))
+                               (not (and (> len 11)
+                                         (equal? (substring filename (- len 11) len)
+                                                 "_stress.scm")))))))))
     args)))
 
 (define modes '())
+(define targets '())
+
+(define default-dir
+  (let* ((cd (current-directory))
+         (len (string-length cd)))
+    (string-append "unit-tests" (substring cd (- len 1) len))))
 
 (define (main . args)
+
+  (define stress? #f)
 
   (let loop ()
     (if (and (pair? args)
              (> (string-length (car args)) 1)
              (char=? #\- (string-ref (car args) 0)))
-        (begin
-          (set! modes
-                (cons (substring (car args) 1 (string-length (car args)))
-                      modes))
+        (let ((word (substring (car args) 1 (string-length (car args)))))
+          (cond ((equal? word "stress")
+                 (set! stress? #t))
+                ((member word '("C" "js" "python" "ruby" "php" "go" "java"))
+                 (set! targets
+                       (cons (string->symbol word)
+                             targets)))
+                (else
+                 (set! modes
+                       (cons (string->symbol word)
+                             modes))))
           (set! args (cdr args))
           (loop))))
 
   (if (null? args)
-      (set! args '("unit-tests")))
+      (set! args (list default-dir)))
 
   (if (null? modes)
-      (set! modes '("gsi")))
+      (set! modes '(gsi)))
 
-  (run-tests (list-of-scm-files args)))
+  (if (null? targets)
+      (set! targets '(C)))
+
+  (let ((files
+         (sort-list
+          (list-of-scm-files args stress?)
+          string<?)))
+    (for-each
+     (lambda (target)
+       (run-tests files target))
+     targets)))
 
 ;;;============================================================================

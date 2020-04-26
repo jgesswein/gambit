@@ -1,8 +1,8 @@
 ;;;============================================================================
 
-;;; File: "_system#.scm", Time-stamp: <2007-05-27 22:03:58 feeley>
+;;; File: "_system#.scm"
 
-;;; Copyright (c) 1994-2007 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -13,17 +13,17 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
-(define-library-type-of-exception unbound-table-key-exception
+(define-library-type-of-exception unbound-key-exception
   id: 1a1e928d-8df4-11d9-8894-00039301ba52
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception unbound-serial-number-exception
@@ -31,23 +31,20 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
-
-;;;----------------------------------------------------------------------------
-
-;;; Define type checking macros.
-
-(define-check-type hash-algorithm 'hash-algorithm
-  ##hash-algorithm?)
 
 ;;;----------------------------------------------------------------------------
 
 ;;; Representation of tables.
 
+(macro-case-target
+
+ ((C)
+
 (define-type table
-  id: 5917e472-85e5-11d9-a2c0-00039301ba52
+  id: F3F63A41-2974-4D41-8B24-1744E866741D
   type-exhibitor: macro-type-table
   constructor: macro-make-table
   implementer: implement-type-table
@@ -62,24 +59,65 @@
   (gcht  unprintable:)
   (init  unprintable:)
 )
+)
 
-;;; Representation of digests.
+ (else
 
-(define-type digest
-  id: 1ce13de0-ccaa-4627-94be-b13eaa2c32e6
-  type-exhibitor: macro-type-digest
-  constructor: macro-make-digest
-  implementer: implement-type-digest
+(define-type table
+  id: A7AB629D-EAB0-422F-8005-08B2282E04FC
+  type-exhibitor: macro-type-table
+  constructor: macro-make-table
+  implementer: implement-type-table
   opaque:
   macros:
   prefix: macro-
 
-  (close-digest unprintable:)
-  (hash-update  unprintable:)
-  (hash         unprintable:)
-  (block        unprintable:)
-  (block-pos    unprintable:)
-  (bit-pos      unprintable:)
+  (test      unprintable:)
+  (init      unprintable:)
+  (hashtable unprintable:)
+  (flags     unprintable:)
 )
+
+))
+
+;;;----------------------------------------------------------------------------
+
+;;; Partially initialized structures.
+
+(define-type partially-initialized-structure
+  id: cd85663e-b289-472c-b943-a41768e2f8a3
+  type-exhibitor: macro-type-partially-initialized-structure
+  constructor: macro-make-partially-initialized-structure
+  implementer: implement-type-partially-initialized-structure
+  opaque:
+  macros:
+  prefix: macro-
+)
+
+;;;----------------------------------------------------------------------------
+
+;;; Auxiliary macro for computing hash key.
+
+;; The FNV1a hash algorithm is adapted to hash values, in
+;; particular the hashing constants are used (see
+;; https://tools.ietf.org/html/draft-eastlake-fnv-12).  Because the
+;; hash function result is a fixnum and it needs to give the same
+;; result on 32 bit and 64 bit architectures, the constants are
+;; adapted to fit in a 32 bit fixnum.
+
+;; FNV1a 32 bit constants
+(##define-macro (macro-fnv1a-prime-32bits)          #x01000193)
+(##define-macro (macro-fnv1a-offset-basis-32bits)   #x811C9DC5)
+
+;; constants adapted to fit in 29 bits (tagged 32 bit fixnums)
+(##define-macro (macro-fnv1a-prime-fixnum32)        #x01000193)
+(##define-macro (macro-fnv1a-offset-basis-fixnum32) #x011C9DC5) ;; 29 bits!
+
+(##define-macro (macro-hash-combine a b)
+  `(let ((a ,a)
+         (b ,b))
+     (##fxand (##fxwrap* (macro-fnv1a-prime-fixnum32)
+                         (##fxxor a b))
+              (macro-max-fixnum32))))
 
 ;;;============================================================================

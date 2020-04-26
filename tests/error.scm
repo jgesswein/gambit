@@ -1,6 +1,6 @@
-; File: "error.scm", Time-stamp: <2008-04-01 12:44:06 feeley>
+; File: "error.scm"
 
-; Copyright (c) 1998-2007 by Marc Feeley, All Rights Reserved.
+; Copyright (c) 1998-2020 by Marc Feeley, All Rights Reserved.
 
 ; Test program for error processing.
 
@@ -11,7 +11,7 @@
 (define scheme-system
   (let ((str1 (symbol->string (car '(aB\c;
                                      ))))
-        (str2 "\0411\x23"))
+        (str2 "\0411\x23;"))
     (cond ((or (equal? str1 "aB\\c") (equal? str1 "aB"))
            'gambit) ; Gambit in case-sensitive mode
           ((equal? str1 "ab\\c")
@@ -151,10 +151,10 @@
                  (call "???" '()))
                 ((heap-overflow-exception? exc)
                  (call "???" '()))
-                ((improper-length-list-exception? exc)
+                ((length-mismatch-exception? exc)
                  (call
-                  (improper-length-list-exception-procedure exc)
-                  (improper-length-list-exception-arguments exc)))
+                  (length-mismatch-exception-procedure exc)
+                  (length-mismatch-exception-arguments exc)))
                 ((join-timeout-exception? exc)
                  (call
                   (join-timeout-exception-procedure exc)
@@ -221,6 +221,14 @@
                  (call
                   (no-such-file-or-directory-exception-procedure exc)
                   (no-such-file-or-directory-exception-arguments exc)))
+                ((file-exists-exception? exc)
+                 (call
+                  (file-exists-exception-procedure exc)
+                  (file-exists-exception-arguments exc)))
+                ((permission-denied-exception? exc)
+                 (call
+                  (permission-denied-exception-procedure exc)
+                  (permission-denied-exception-arguments exc)))
                 (else
                  (call "???" '()))))
         thunk))))
@@ -1665,7 +1673,7 @@
 
 (define (test-make-string)
 (try 'make-string make-string 0)
-(try 'make-string make-string 3)
+;;(try 'make-string make-string 3)
 (try 'make-string make-string 536870911)
 (try 'make-string make-string 12345678901234567890)
 (try 'make-string make-string -1)
@@ -2392,7 +2400,7 @@
            eol-encoding: 'cr-lf))
 (try 'read-all-open-process read-all-open-process)
 )
-(test-open-process)
+'(test-open-process)
 
 (define (test-host-info)
 (define (host-info-addresses-host-info hostname)

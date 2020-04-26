@@ -1,16 +1,17 @@
 /* File: "os_base.c" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved. */
 
 /*
  * This module implements the most basic operating system services.
  */
 
 #define ___INCLUDED_FROM_OS_BASE
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
 #include "os_base.h"
+#include "os_shell.h"
 #include "setup.h"
 
 
@@ -21,16 +22,15 @@ ___base_module ___base_mod =
 {
   0
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ,
-  0,
-  0,
-  0
-#ifdef ___DEBUG_ALLOC_MEM_TRACE
-  ,
-  0,
   0
 #endif
+
+#ifdef ___DEBUG_ALLOC_MEM
+  ,
+  0,
+  0
 #endif
 
 #ifdef ___BASE_MODULE_INIT
@@ -110,14 +110,54 @@ ___FILE *stream;)
 }
 
 
-#ifdef ___DEBUG
+int ___ferror
+   ___P((___FILE *stream),
+        (stream)
+___FILE *stream;)
+{
+  return ferror (stream);
+}
+
+
+int ___feof
+   ___P((___FILE *stream),
+        (stream)
+___FILE *stream;)
+{
+  return feof (stream);
+}
+
+
+void ___clearerr
+   ___P((___FILE *stream),
+        (stream)
+___FILE *stream;)
+{
+  clearerr (stream);
+}
+
+
+void ___setbuf
+   ___P((___FILE *stream,
+         char *buf),
+        (stream,
+         buf)
+___FILE *stream;
+char *buf;)
+{
+  setbuf (stream, buf);
+}
+
+
+#ifdef ___DEBUG_LOG
 
 #include <stdarg.h>
 
 int ___printf
    ___P((const char *format,
          ...),
-        (format, ...)
+        (format,
+         ...)
 const char *format;)
 {
   va_list ap;
@@ -144,24 +184,25 @@ const char *format;)
 /* Memory allocation. */
 
 
+#ifdef ___DEBUG_ALLOC_MEM
+void *___alloc_mem
+   ___P((___SIZE_T bytes,
+         int lineno,
+         char *file),
+        (bytes,
+         lineno,
+         file)
+___SIZE_T bytes;
+int lineno;
+char *file;)
+#else
 void *___alloc_mem
    ___P((___SIZE_T bytes),
         (bytes)
 ___SIZE_T bytes;)
+#endif
 {
   void *ptr;
-
-#ifdef ___DEBUG
-#ifdef USE_WIN32
-
-  InterlockedIncrement (&___base_mod.alloc_mem_calls);
-
-#else
-
-  ___base_mod.alloc_mem_calls++;
-
-#endif
-#endif
 
 #ifdef USE_TempNewHandle
 
@@ -186,22 +227,72 @@ ___SIZE_T bytes;)
 
 #endif
 
+#ifdef ___DEBUG_ALLOC_MEM
+
+  if (ptr != NULL)
+    {
+#ifdef USE_WIN32
+
+      InterlockedIncrement (&___base_mod.alloc_mem_calls);
+
+#else
+
+      ___base_mod.alloc_mem_calls++;
+
+#endif
+    }
+
+#ifdef ___DEBUG_LOG
+
+  if (file != 0)
+    ___printf ("%p (%lu bytes) ALLOCATED AT \"%s\"@%d.1\n",
+               ptr,
+               bytes,
+               file,
+               lineno);
+  else
+    ___printf ("%p (%lu bytes) ALLOCATED\n", ptr, bytes);
+
+#endif
+
+#endif
+
   return ptr;
 }
 
 
+#ifdef ___DEBUG_ALLOC_MEM
+void ___free_mem
+   ___P((void *ptr,
+         int lineno,
+         char *file),
+        (ptr,
+         lineno,
+         file)
+void *ptr;
+int lineno;
+char *file;)
+#else
 void ___free_mem
    ___P((void *ptr),
         (ptr)
 void *ptr;)
-{
-#ifdef ___DEBUG
-#ifdef ___DEBUG_ALLOC_MEM_TRACE
-  ___printf ("%p FREED\n", ptr);
 #endif
+{
+#ifdef ___DEBUG_ALLOC_MEM
+
+#ifdef ___DEBUG_LOG
+
+  if (file != 0)
+    ___printf ("%p FREED AT \"%s\"@%d.1\n",
+               ptr,
+               file,
+               lineno);
+  else
+    ___printf ("%p FREED\n", ptr);
+
 #endif
 
-#ifdef ___DEBUG
 #ifdef USE_WIN32
 
   InterlockedIncrement (&___base_mod.free_mem_calls);
@@ -211,6 +302,7 @@ void *ptr;)
   ___base_mod.free_mem_calls++;
 
 #endif
+
 #endif
 
 #ifdef USE_TempNewHandle
@@ -233,42 +325,6 @@ void *ptr;)
 }
 
 
-#ifdef ___DEBUG
-#ifdef ___DEBUG_ALLOC_MEM_TRACE
-
-
-void * ___alloc_mem_debug
-   ___P((___SIZE_T bytes,
-         int lineno,
-         char *file),
-        (bytes,
-         lineno,
-         file)
-___SIZE_T bytes;
-int lineno;
-char *file;)
-{
-  void *ptr;
-
-  ptr = ___alloc_mem (bytes);
-
-  if (file != 0)
-    ___printf ("%p (%lu bytes) ALLOCATED AT \"%s\"@%d.1\n",
-               ptr,
-               bytes,
-               file,
-               lineno);
-  else
-    ___printf ("%p (%lu bytes) ALLOCATED\n", ptr, bytes);
-
-  return ptr;
-}
-
-
-#endif
-#endif
-
-
 void *___alloc_mem_code
    ___P((___SIZE_T bytes),
         (bytes)
@@ -277,7 +333,13 @@ ___SIZE_T bytes;)
 #ifndef USE_mmap
 #ifndef USE_VirtualAlloc
 
-  return NULL;
+  /* allocate a normal block and hope it is executable */
+
+#ifdef ___DEBUG_ALLOC_MEM
+  return ___alloc_mem (bytes, lineno, file);
+#else
+  return ___alloc_mem (bytes);
+#endif
 
 #endif
 #endif
@@ -327,6 +389,12 @@ void *ptr;)
 #ifndef USE_mmap
 #ifndef USE_VirtualAlloc
 
+#ifdef ___DEBUG_ALLOC_MEM
+  ___free_mem (ptr, lineno, file);
+#else
+  ___free_mem (ptr);
+#endif
+
 #endif
 #endif
 
@@ -341,6 +409,74 @@ void *ptr;)
 #ifdef USE_VirtualAlloc
 
   VirtualFree (ptr, 0, MEM_RELEASE);
+
+#endif
+}
+
+
+#ifdef ___DEBUG_ALLOC_MEM
+void *___alloc_mem_heap
+   ___P((___SIZE_T bytes,
+         int lineno,
+         char *file),
+        (bytes,
+         lineno,
+         file)
+___SIZE_T bytes;
+int lineno;
+char *file;)
+#else
+void *___alloc_mem_heap
+   ___P((___SIZE_T bytes),
+        (bytes)
+___SIZE_T bytes;)
+#endif
+{
+#ifdef ___SUPPORT_LOWLEVEL_EXEC
+
+  return ___alloc_mem_code (bytes);
+
+#else
+
+#ifdef ___DEBUG_ALLOC_MEM
+  return ___alloc_mem (bytes, lineno, file);
+#else
+  return ___alloc_mem (bytes);
+#endif
+
+#endif
+}
+
+
+#ifdef ___DEBUG_ALLOC_MEM
+void ___free_mem_heap
+   ___P((void *ptr,
+         int lineno,
+         char *file),
+        (ptr,
+         lineno,
+         file)
+void *ptr;
+int lineno;
+char *file;)
+#else
+void ___free_mem_heap
+   ___P((void *ptr),
+        (ptr)
+void *ptr;)
+#endif
+{
+#ifdef ___SUPPORT_LOWLEVEL_EXEC
+
+  ___free_mem_code (ptr);
+
+#else
+
+#ifdef ___DEBUG_ALLOC_MEM
+  ___free_mem (ptr, lineno, file);
+#else
+  ___free_mem (ptr);
+#endif
 
 #endif
 }
@@ -376,6 +512,43 @@ ___program_startup_info_struct ___program_startup_info =
 };
 
 
+___HIDDEN int lang_char_encoding ___PVOID
+{
+  static ___UCS_2 lang_env_name[] = { 'L', 'A', 'N', 'G', '\0' };
+  ___UCS_2STRING cvalue;
+  int char_encoding = ___CHAR_ENCODING_ISO_8859_1; /* default char encoding */
+
+  /* check if the LANG environment variable ends in .UTF-8 or .utf8 */
+
+  if (___getenv_UCS_2 (lang_env_name, &cvalue) == ___FIX(___NO_ERR))
+    {
+      if (cvalue != 0)
+        {
+          ___UCS_2 *p = cvalue;
+          ___UCS_2 *dot = p;
+
+          while (*p != '\0')
+            {
+              if (*p == '.')
+                dot = p;
+              p++;
+            }
+
+          if (dot[0]=='.'
+              && ((dot[1]=='U' && dot[2]=='T' && dot[3]=='F') ||
+                  (dot[1]=='u' && dot[2]=='t' && dot[3]=='f'))
+              && ((dot[4]=='-' && dot[5]=='8' && dot[6]=='\0') ||
+                  (dot[4]=='8' && dot[5]=='\0')))
+            char_encoding = ___CHAR_ENCODING_UTF_8;
+
+          ___FREE_MEM(cvalue);
+        }
+    }
+
+  return char_encoding;
+}
+
+
 ___EXP_FUNC(int,___main_char)
   ___P((int argc,
         char *argv[],
@@ -396,16 +569,20 @@ char *script_line;)
     result = ___EXIT_CODE_OSERR;
   else
     {
-      if (___NONNULLCHARSTRINGLIST_to_NONNULLUCS_2STRINGLIST
+      int argv_char_encoding = lang_char_encoding ();
+
+      if (___NONNULLSTRINGLIST_to_NONNULLUCS_2STRINGLIST
             (argv,
-             &___program_startup_info.argv)
+             &___program_startup_info.argv,
+             argv_char_encoding)
           != ___FIX(___NO_ERR))
         result = ___EXIT_CODE_SOFTWARE;
       else
         {
-          if (___CHARSTRING_to_UCS_2STRING
+          if (___STRING_to_UCS_2STRING
                 (script_line,
-                 &___program_startup_info.script_line)
+                 &___program_startup_info.script_line,
+                 ___CHAR_ENCODING_UTF_8)
               != ___FIX(___NO_ERR))
             result = ___EXIT_CODE_SOFTWARE;
           else
@@ -447,9 +624,10 @@ char *script_line;)
     {
       ___program_startup_info.argv = argv;
 
-      if (___CHARSTRING_to_UCS_2STRING
+      if (___STRING_to_UCS_2STRING
             (script_line,
-             &___program_startup_info.script_line)
+             &___program_startup_info.script_line,
+             ___CHAR_ENCODING_UTF_8)
           != ___FIX(___NO_ERR))
         result = ___EXIT_CODE_SOFTWARE;
       else
@@ -500,17 +678,17 @@ ___UCS_2STRING **argv_return;)
       if (pass != 0)
         {
           if ((argv = ___CAST(___UCS_2STRING*,
-                              ___alloc_mem ((argc + 1)
-                                            * sizeof (___UCS_2STRING)))) == 0)
+                              ___ALLOC_MEM((argc + 1)
+                                           * sizeof (___UCS_2STRING)))) == 0)
             return ___FIX(___HEAP_OVERFLOW_ERR);
 
           if (total_arg_len > 0)
             {
               if ((args = ___CAST(___UCS_2STRING,
-                                  ___alloc_mem (total_arg_len
-                                                * sizeof (___UCS_2)))) == 0)
+                                  ___ALLOC_MEM(total_arg_len
+                                               * sizeof (___UCS_2)))) == 0)
                 {
-                  ___free_mem (argv);
+                  ___FREE_MEM(argv);
                   return ___FIX(___HEAP_OVERFLOW_ERR);
                 }
             }
@@ -546,6 +724,7 @@ ___UCS_2STRING **argv_return;)
                     {
                       if ((nb_backslashes & 1) == 0)
                         in_double_quotes ^= 1;
+#define PROCESS_PROGRAM_LIKE_OTHER_ARGS
 #ifndef PROCESS_PROGRAM_LIKE_OTHER_ARGS
                       if (argc == 0)
                         nb_backslashes = (nb_backslashes<<1) + 1;
@@ -597,9 +776,9 @@ ___HIDDEN void free_windows_command_line
 ___UCS_2STRING *argv;)
 {
   if (argv[0] != 0)
-    ___free_mem (argv[0]);
+    ___FREE_MEM(argv[0]);
 
-  ___free_mem (argv);
+  ___FREE_MEM(argv);
 }
 
 
@@ -644,9 +823,10 @@ char *script_line;)
         result = ___EXIT_CODE_SOFTWARE;
       else
         {
-          if (___CHARSTRING_to_UCS_2STRING
+          if (___STRING_to_UCS_2STRING
                 (script_line,
-                 &___program_startup_info.script_line)
+                 &___program_startup_info.script_line,
+                 ___CHAR_ENCODING_UTF_8)
               != ___FIX(___NO_ERR))
             result = ___EXIT_CODE_SOFTWARE;
           else
@@ -841,7 +1021,7 @@ int code;)
 }
 
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 ___SCMOBJ ___err_code_from_errno_debug
    ___P((int lineno,
          char *file),
@@ -855,7 +1035,7 @@ ___SCMOBJ ___err_code_from_errno ___PVOID
 {
   int e = errno;
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("*** OS ERROR AT \"%s\"@%d.1 -- errno=%d (%s)\n",
              file,
              lineno,
@@ -905,7 +1085,7 @@ int code;)
 }
 
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 ___SCMOBJ ___err_code_from_h_errno_debug
    ___P((int lineno,
          char *file),
@@ -919,7 +1099,7 @@ ___SCMOBJ ___err_code_from_h_errno ___PVOID
 {
   int e = h_errno;
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("*** OS ERROR AT \"%s\"@%d.1 -- h_errno=%d (%s)\n",
              file,
              lineno,
@@ -966,7 +1146,7 @@ int code;)
 }
 
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 ___SCMOBJ ___err_code_from_gai_code_debug
    ___P((int code,
          int lineno,
@@ -994,7 +1174,7 @@ int code;)
 
     e = ___GAI_CODE_ERR(code);
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("*** OS ERROR AT \"%s\"@%d.1 -- gai_code=%d (%s)\n",
              file,
              lineno,
@@ -1009,10 +1189,55 @@ int code;)
 #endif
 
 
+#ifdef USE_OPENSSL
+
+___HIDDEN const char *tls_error_to_string
+   ___P((int code),
+        (code)
+int code;)
+{
+
+  static char *tls_messages[] =
+    {
+      "OpenSSL library version mismatch",
+      "Error initializing TLS library",
+      "Wrong TLS version",
+      "TLS protocol security alert. Aborting.",
+      "Not enough entropy in the pool",
+      "Server mode context expected",
+      "Library version does not support empty fragment insertion",
+      "Library version does not support Diffie-Hellman key exchange",
+      "Library version does not support elliptic curves",
+      "Diffie-Hellman parameters internal error",
+      "Error reading Diffie-Hellman parameters from file",
+      "Elliptic curve internal error",
+      "Unknown Elliptic Curve name",
+      "Error reading Certificate Authorities file",
+      "Certificate file error",
+      "Private key file error",
+      "Private key and Certificate don't match",
+    };
+
+  /* Codes between 65000 and 65536 are reserved for high-level TLS errors, below
+     are library-specific codes. Since we are dealing here only with high-level
+     errors, we need to offset the error to use it as index. */
+  int generic_err_code = code - 65000;
+  if (generic_err_code >= 0 && generic_err_code < sizeof (tls_messages) / sizeof (*tls_messages))
+    {
+      return tls_messages[generic_err_code];
+    }
+
+  return "Unknown resolver error";
+
+}
+
+#endif
+
+
 #ifdef USE_GetLastError
 
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 ___SCMOBJ ___err_code_from_GetLastError_debug
    ___P((int lineno,
          char *file),
@@ -1026,7 +1251,7 @@ ___SCMOBJ ___err_code_from_GetLastError ___PVOID
 {
   DWORD e = GetLastError ();
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   char buf[___ERR_MAX_LENGTH+1];
   DWORD len = FormatMessageA
                 (FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_MAX_WIDTH_MASK,
@@ -1049,6 +1274,12 @@ ___SCMOBJ ___err_code_from_GetLastError ___PVOID
   if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
     return ___ERR_CODE_ENOENT;
 
+  if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS)
+    return ___ERR_CODE_EEXIST;
+
+  if (e == ERROR_ACCESS_DENIED)
+    return ___ERR_CODE_EACCES;
+
   return ___FIX(___WIN32_ERR(e));
 }
 
@@ -1059,7 +1290,7 @@ ___SCMOBJ ___err_code_from_GetLastError ___PVOID
 #ifdef USE_WSAGetLastError
 
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 ___SCMOBJ ___err_code_from_WSAGetLastError_debug
    ___P((int lineno,
          char *file),
@@ -1073,7 +1304,7 @@ ___SCMOBJ ___err_code_from_WSAGetLastError ___PVOID
 {
   DWORD e = WSAGetLastError ();
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   char buf[___ERR_MAX_LENGTH+1];
   DWORD len = FormatMessageA
                 (FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_MAX_WIDTH_MASK,
@@ -1115,7 +1346,7 @@ int code;)
 }
 
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 ___SCMOBJ ___err_code_from_OSErr_debug
    ___P((OSErr e,
          char *file,
@@ -1133,7 +1364,7 @@ ___SCMOBJ ___err_code_from_OSErr
 OSErr e;)
 #endif
 {
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
   ___printf ("*** OS ERROR AT \"%s\"@%d.1 -- OSErr=%d (%s)\n",
              file,
              lineno,
@@ -1268,12 +1499,34 @@ ___SCMOBJ err;)
 {
   ___SCMOBJ e;
   ___SCMOBJ result;
-  ___ERR_CODE err_code = ___INT(err);
-  int facility = ___ERR_CODE_FACILITY(err_code);
+  ___ERR_CODE err_code;
+  int facility;
   ___CHAR_TYPE(___ERR_CODE_CE_SELECT) buf[___ERR_MAX_LENGTH+1];
   int pos = 0;
 
   buf[0] = 0;
+
+  /* On Windows, map common error codes to Windows HRESULT */
+
+#ifdef USE_GetLastError
+  if (err == ___ERR_CODE_ENOENT)
+    err_code = ___WIN32_ERR(ERROR_FILE_NOT_FOUND);
+  else if (err == ___ERR_CODE_EEXIST)
+    err_code = ___WIN32_ERR(ERROR_ALREADY_EXISTS);
+  else if (err == ___ERR_CODE_EACCES)
+    err_code = ___WIN32_ERR(ERROR_ACCESS_DENIED);
+  else
+#endif
+
+#ifdef USE_WSAGetLastError
+    if (err == ___ERR_CODE_EAGAIN)
+      err_code = ___WIN32_ERR(WSAEWOULDBLOCK);
+    else
+#endif
+
+      err_code = ___INT(err);
+
+  facility = ___ERR_CODE_FACILITY(err_code);
 
   if (facility >= ___ERR_CODE_FACILITY_SYSTEM)
     {
@@ -1402,6 +1655,28 @@ ___SCMOBJ err;)
 
 #endif
     }
+  else if (facility >= ___ERR_CODE_FACILITY_TLS)
+    {
+
+#ifdef USE_OPENSSL
+
+      int tls_error = ___TLS_ERR_FROM_ERR_CODE(err_code);
+      const char *msg = NULL;
+
+      if (tls_error > 65000) /* See tls_error_to_string */
+        msg = tls_error_to_string (tls_error);
+      else
+        msg = ERR_error_string (tls_error, NULL);
+
+      if (msg == NULL)
+        msg = "Unknown error";
+
+      append_charstring (buf, &pos, "TLS ERROR: ");
+      append_charstring (buf, &pos, msg);
+
+#endif
+
+    }
   else
     {
       /* Windows HRESULT error code */
@@ -1503,7 +1778,7 @@ ___HIDDEN void cleanup_fp ___PVOID
 /* Interrupt handling. */
 
 
-#ifdef USE_POSIX
+#ifdef USE_SIGNALS
 
 
 void ___set_signal_handler
@@ -1588,52 +1863,67 @@ short trap_num;)
 
 ___SCMOBJ ___setup_base_module ___PVOID
 {
-  if (___base_mod.refcount == 0)
+  if (___base_mod.refcount++ == 0)
     {
+#ifdef ___BASE_MODULE_INIT_CODE
+      ___BASE_MODULE_INIT_CODE;
+#endif
+
 #ifdef USE_CLASSIC_MACOS
 
-      long response;
+      {
+        long response;
 
-      ___base_mod.has_GetUTCDateTime = trap_exists (_UTCDateTime);
-      ___base_mod.has_GetDateTime = trap_exists (_GetDateTime);
-      ___base_mod.has_ReadLocation = trap_exists (_ReadLocation);
-      ___base_mod.has_Delay = trap_exists (_Delay);
-      ___base_mod.has_IdleUpdate = trap_exists (_IdleUpdate);
-      ___base_mod.has_WaitNextEvent = trap_exists (_WaitNextEvent);
-      ___base_mod.has_OSDispatch = trap_exists (_OSDispatch);
+        ___base_mod.has_GetUTCDateTime = trap_exists (_UTCDateTime);
+        ___base_mod.has_GetDateTime = trap_exists (_GetDateTime);
+        ___base_mod.has_ReadLocation = trap_exists (_ReadLocation);
+        ___base_mod.has_Delay = trap_exists (_Delay);
+        ___base_mod.has_IdleUpdate = trap_exists (_IdleUpdate);
+        ___base_mod.has_WaitNextEvent = trap_exists (_WaitNextEvent);
+        ___base_mod.has_OSDispatch = trap_exists (_OSDispatch);
 
-      ___base_mod.has_FindFolder =
-        (Gestalt (gestaltFindFolderAttr, &response) == noErr &&
-         test_bit (response, gestaltFindFolderPresent));
+        ___base_mod.has_FindFolder =
+          (Gestalt (gestaltFindFolderAttr, &response) == noErr &&
+           test_bit (response, gestaltFindFolderPresent));
 
-      ___base_mod.has_AliasMgr =
-        (Gestalt (gestaltAliasMgrAttr, &response) == noErr &&
-         test_bit (response, gestaltAliasMgrPresent));
+        ___base_mod.has_AliasMgr =
+          (Gestalt (gestaltAliasMgrAttr, &response) == noErr &&
+           test_bit (response, gestaltAliasMgrPresent));
 
-      ___base_mod.has_AppleEvents =
-        (Gestalt (gestaltAppleEventsAttr, &response) == noErr &&
-         test_bit (response, gestaltAppleEventsPresent));
-
-#endif
-
-#ifdef ___DEBUG
-
-      ___base_mod.debug = ___fopen ("gambc.log", "w");
-
-      if (___base_mod.debug == NULL)
-        ___base_mod.debug = ___stderr;
-
-      ___printf ("*** START OF DEBUGGING TRACES\n");
-
-      ___base_mod.alloc_mem_calls = 0;
-      ___base_mod.free_mem_calls = 0;
+        ___base_mod.has_AppleEvents =
+          (Gestalt (gestaltAppleEventsAttr, &response) == noErr &&
+           test_bit (response, gestaltAppleEventsPresent));
+      }
 
 #endif
 
-      setup_fp ();
+      if (___setup_shell_module () == ___FIX(___NO_ERR))
+        {
+#ifdef ___DEBUG_ALLOC_MEM
+
+          ___base_mod.alloc_mem_calls = 0;
+          ___base_mod.free_mem_calls = 0;
+
+#endif
+
+#ifdef ___DEBUG_LOG
+
+          ___base_mod.debug = ___fopen ("gambit.log", "w");
+
+          if (___base_mod.debug == NULL)
+            ___base_mod.debug = ___stderr;
+
+          ___printf ("*** START OF DEBUGGING TRACES\n");
+
+#endif
+
+          setup_fp ();
+
+          return ___FIX(___NO_ERR);
+        }
+      else
+        return ___FIX(___UNKNOWN_ERR);
     }
-
-  ___base_mod.refcount++;
 
   return ___FIX(___NO_ERR);
 }
@@ -1645,7 +1935,11 @@ void ___cleanup_base_module ___PVOID
     {
       cleanup_fp ();
 
-#ifdef ___DEBUG
+      ___cleanup_shell_module ();
+
+#ifdef ___DEBUG_LOG
+
+#ifdef ___DEBUG_ALLOC_MEM
 
       if (___base_mod.alloc_mem_calls != ___base_mod.free_mem_calls)
         {
@@ -1653,6 +1947,8 @@ void ___cleanup_base_module ___PVOID
                      ___base_mod.alloc_mem_calls,
                      ___base_mod.free_mem_calls);
         }
+
+#endif
 
       if (___base_mod.debug != ___stderr)
         ___fclose (___base_mod.debug);

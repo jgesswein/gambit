@@ -26,7 +26,7 @@
 
 (define main-help-document     (path-expand "~~/help.html"))
 (define r5rs-help-document     (path-expand "~~/r5rs.html"))
-(define gambit-c-help-document (path-expand "~~/gambit-c.html"))
+(define gambit-help-document (path-expand "~~/gambit.html"))
 
 (define help-names-r5rs '(
 *
@@ -225,7 +225,7 @@ write-char
 zero?
 ))
 
-(define help-names-gambit-c '(
+(define help-names-gambit '(
 <
 <=
 =
@@ -401,6 +401,9 @@ f64vector?
 file-attributes
 file-creation-time
 file-device
+file-exists-exception-arguments
+file-exists-exception-procedure
+file-exists-exception?
 file-exists?
 file-group
 file-info
@@ -699,6 +702,9 @@ path-strip-trailing-directory-separator
 path-strip-volume
 path-volume
 peek-char
+permission-denied-exception-arguments
+permission-denied-exception-procedure
+permission-denied-exception?
 port-settings-set!
 port?
 pp
@@ -1175,8 +1181,8 @@ wrong-number-of-arguments-exception?
                 (else
                  subject)))
          (docu
-          (cond ((memq name help-names-gambit-c)
-                 gambit-c-help-document)
+          (cond ((memq name help-names-gambit)
+                 gambit-help-document)
                 ((memq name help-names-r5rs)
                  r5rs-help-document)
                 (else

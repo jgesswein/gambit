@@ -1,11 +1,11 @@
 #! /bin/sh
-":";exec /usr/bin/env gsi -:dar,=.. -f $0 $*
+":";THISDIR="`dirname $0`";GSI="$THISDIR/../gsi/gsi";if test "`basename $0`" == "igsc.scm" ; then exec $GSI -:dar,=$THISDIR/.. -f $0 $*; else exec $GSI -:dar,=$THISDIR -f $0 $*; fi
 
 ;;;============================================================================
 
 ;;; File: "igsc.scm"
 
-;;; Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2017 by Marc Feeley, All Rights Reserved.
 
 ;;;----------------------------------------------------------------------------
 
@@ -24,9 +24,10 @@
 
 ;;;----------------------------------------------------------------------------
 
-(include "gsc/fixnum.scm")
 
-(define root "../") ;; the Gambit root directory is always one level up
+(define-macro (at-expansion-time expr) (eval expr) '(begin))
+
+(at-expansion-time (define ##compilation-options '()))
 
 ;; use custom absent object otherwise the interpreter gets confused
 
@@ -44,8 +45,9 @@
 
 ;; normalize program name
 
-(set-car! ##processed-command-line
-          (path-normalize (car ##processed-command-line)))
+(set! ##processed-command-line
+      (cons (path-normalize (car ##processed-command-line))
+            (cdr ##processed-command-line)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -64,12 +66,16 @@
 "_asm"
 "_x86"
 "_codegen"
-"_t-univ"
+"_t-univ-1"
+"_t-univ-2"
+"_t-univ-3"
+"_t-univ-4"
 "_t-c-1"
 "_t-c-3"
 "_t-c-2"
 "_gsclib"
 "_gsc"
+"_gscdebug"
 ))
 
 (define (load-from-root dir)
@@ -77,7 +83,7 @@
     (with-output-to-port
         (current-error-port)
       (lambda ()
-        (let ((file (string-append root dir base ".scm")))
+        (let ((file (string-append "~~/" dir base ".scm")))
           (display "loading ")
           (write file)
           (load file)
@@ -85,13 +91,19 @@
 
 ;;;----------------------------------------------------------------------------
 
+(eval '(begin
+        (##namespace ("c#"))
+        (##include "~~/lib/header.scm")))
+
 ((load-from-root "gsc/") "_host")
 
-(set! **main-readtable
-  (and **main-readtable
-       (##list->vector (##vector->list **main-readtable))))
+(set! c#**main-readtable
+  (and c#**main-readtable
+       (##list->vector (##vector->list c#**main-readtable))))
 
 (for-each (load-from-root "gsc/") gsc-modules)
+
+(eval '(##namespace ("")))
 
 (##main-gsi/gsc)
 

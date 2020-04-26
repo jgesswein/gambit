@@ -2,7 +2,7 @@
 
 ; File: "tcltk.scm"
 
-; Copyright (c) 1997-2015 by Marc Feeley, All Rights Reserved.
+; Copyright (c) 1997-2019 by Marc Feeley, All Rights Reserved.
 
 ; This is the Gambit interface for Tcl/Tk.
 
@@ -112,12 +112,12 @@ char *cmd;)
       if (tcl_interp == NULL)
         tcltk_eval_error ("Tcl not initialized");
       else if (Tcl_Eval (tcl_interp, cmd) != TCL_OK)
-        tcltk_eval_error (tcl_interp->result);
+        tcltk_eval_error (___CAST(char*,Tcl_GetStringResult(tcl_interp)));
       else
         break;
     }
 
-  return tcl_interp->result;
+  return ___CAST(char*,Tcl_GetStringResult(tcl_interp));
 }
 
 /*
@@ -313,7 +313,7 @@ c-declare-end
            * Setup the client data.
            */
 
-          ___SCMOBJ vect = ___EXT(___make_vector) (1, ___FAL, ___STILL);
+          ___SCMOBJ vect = ___EXT(___make_vector) (___ps, 1, ___FAL);
 
           if (___FIXNUMP(vect))
             {
@@ -372,7 +372,7 @@ c-lambda-end
 (define (tcltk#start-event-loop-thread)
   (if (##not ##tcltk-event-loop-thread)
       (set! ##tcltk-event-loop-thread
-            (##parameterize
+            (##parameterize1
              ##current-user-interrupt-handler
              (lambda () #f) ; prevent user interrupts
              (lambda ()

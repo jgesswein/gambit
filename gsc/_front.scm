@@ -2,7 +2,7 @@
 
 ;;; File: "_front.scm"
 
-;;; Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 (include "fixnum.scm")
 
@@ -19,18 +19,6 @@
 (##include "../gsc/_hostadt.scm")
 )
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(define (zzzbb-put-non-branch! bb text gvm-instr)
-  (let ((frame (gvm-instr-frame gvm-instr))
-        (comment (gvm-instr-comment gvm-instr)))
-    '
-    (bb-put-non-branch! bb
-      (make-copy (make-obj text)
-                 (make-glo '***)
-                 frame
-                 comment))
-    (bb-put-non-branch! bb gvm-instr)))
-
 ;;;----------------------------------------------------------------------------
 
 ;;;; Front-end of GAMBIT compiler
@@ -39,20 +27,21 @@
 
 ;; sample use:
 ;;
-;; (cf "tak" '((target c)) #f #f #f)    -- compile tak.scm to tak.c with C back-end
-;; (cf "tak" '() #f #f #f)              -- compile tak.scm with default back-end
-;; (cf "tak" '() "foo.c" #f #f)         -- compile tak.scm to foo.c
-;; (cf "tak" '((verbose)) #f #f #f)     -- produce compiler trace
-;; (cf "tak" '((report)) #f #f #f)      -- show usage of global variables
-;; (cf "tak" '((gvm)) #f #f #f)         -- write GVM code on 'tak.gvm'
-;; (cf "tak" '((debug)) #f #f #f)       -- generate code with debugging info
-;; (cf "tak" '((expansion)) #f #f #f)   -- show code after source-to-source transf.
-;; (cf "tak" '((asm) (stats)) #f #f #f) -- various back-end options
+;; (cf "tak" '((target C)) #f)    -- compile tak.scm to tak.c with C back-end
+;; (cf "tak" '() #f)              -- compile tak.scm with default back-end
+;; (cf "tak" '() "foo.c")         -- compile tak.scm to foo.c
+;; (cf "tak" '((verbose)) #f)     -- produce compiler trace
+;; (cf "tak" '((report)) #f)      -- show usage of global variables
+;; (cf "tak" '((gvm)) #f)         -- write GVM code on 'tak.gvm'
+;; (cf "tak" '((debug)) #f)       -- generate code with debugging info
+;; (cf "tak" '((expansion)) #f)   -- show code after source-to-source transf.
+;; (cf "tak" '((asm) (stats)) #f) -- various back-end options
 
 (define cf #f)
 
 (set! cf
-  (lambda (input opts output-filename-gen module-name unique-name)
+  (lambda (input opts output-filename-gen)
+
     (with-exception-handling
      (lambda ()
        (let* ((t
@@ -82,8 +71,6 @@
                           opts
                           (cons (list 'target (default-target)) opts))
                       output-filename-gen
-                      module-name
-                      unique-name
                       info-port))))
 
            result))))))
@@ -114,6 +101,12 @@
                      ((gvm)
                       (set! compiler-option-gvm                #t)
                       #t)
+                     ((cfg)
+                      (set! compiler-option-cfg                #t)
+                      #t)
+                     ((dg)
+                      (set! compiler-option-dg                 #t)
+                      #t)
                      ((debug)
                       (set! compiler-option-debug              #t)
                       #t)
@@ -130,10 +123,10 @@
                       (set! compiler-option-track-scheme       #t)
                       #t)
                      ((c dynamic exe obj link flat
-                         check force keep-c
-                         o l prelude postlude
+                         check force keep-temp
+                         o l module-ref linker-name prelude postlude
                          cc-options ld-options-prelude ld-options
-                         asm)
+                         pkg-config pkg-config-path asm)
                       #t) ;; these options are innocuous
                      (else
                       ;; OK if the option is a target specific option
@@ -161,6 +154,8 @@
   (set! compiler-option-report             #f)
   (set! compiler-option-expansion          #f)
   (set! compiler-option-gvm                #f)
+  (set! compiler-option-cfg                #f)
+  (set! compiler-option-dg                 #f)
   (set! compiler-option-debug              #f)
   (set! compiler-option-debug-location     #f)
   (set! compiler-option-debug-source       #f)
@@ -172,6 +167,8 @@
 (define compiler-option-report             #f)
 (define compiler-option-expansion          #f)
 (define compiler-option-gvm                #f)
+(define compiler-option-cfg                #f)
+(define compiler-option-dg                 #f)
 (define compiler-option-debug              #f)
 (define compiler-option-debug-location     #f)
 (define compiler-option-debug-source       #f)
@@ -194,184 +191,253 @@
   (lambda (program)
     program))
 
+(define (compile-frontend-aux
+         input
+         opts
+         output-filename-gen
+         info-port
+         inner)
+  (let* ((output-filename
+          (and output-filename-gen
+               (output-filename-gen)))
+         (root
+             (if output-filename
+                 (path-strip-extension output-filename)
+                 (let ((filename
+                        (if (source? input)
+                            (source-path input)
+                            input)))
+                   (path-strip-directory (path-strip-extension filename)))))
+         (output
+          (if output-filename
+              output-filename
+              (string-append root (caar target.file-extensions))))
+         (v1
+          (if (source? input)
+              (vector #f (sourcify-deep input input))
+              (read-source input #f #t)))
+         (script-line (vector-ref v1 0))
+         (expr (vector-ref v1 1))
+         (program (expand-source (wrap-program expr)))
+         (module-ref
+          (cond ((assq 'module-ref opts) => cadr)
+                (else
+                 (string->symbol (path-strip-directory root))))))
+
+    (call-with-values
+     (lambda ()
+       (**in-new-compilation-ctx
+        (lambda ()
+          (if script-line
+              (**compilation-ctx-meta-info-add! 'script-line script-line))
+          (**compilation-ctx-module-ref-set! module-ref)
+          (parse-program
+           program
+           (make-global-environment)
+           module-ref
+           vector))))
+     (lambda (v2 comp-ctx)
+
+       (if (null? (**macro-compilation-ctx-supply-modules comp-ctx))
+           (**macro-compilation-ctx-supply-modules-set!
+            comp-ctx
+            (list module-ref)))
+
+       (let* ((lst (vector-ref v2 0))
+              (env (vector-ref v2 1))
+              (c-intf (vector-ref v2 2))
+              (parsed-program (normalize-program lst)))
+
+         (inner parsed-program
+                env
+                root
+                output
+                c-intf
+                comp-ctx))))))
+
+(define (compile-frontend
+         input
+         opts
+         output-filename-gen
+         info-port
+         inner)
+
+  (define target-name (cadr (assq 'target opts)))
+
+  (scheme-global-var-define!
+   (scheme-global-var
+    (string->canonical-symbol "##compilation-options"))
+   opts)
+
+  (env.begin!)
+  (ptree.begin! info-port)
+  (virtual.begin!)
+  (target-select! target-name opts info-port)
+
+  (let ((result-thunk
+         (compile-frontend-aux
+          input
+          opts
+          output-filename-gen
+          info-port
+          inner)))
+
+    (target-unselect!)
+    (virtual.end!)
+    (ptree.end!)
+    (env.end!)
+
+    (and result-thunk
+         (result-thunk))))
+
 (define (compile-program
          input
          opts
          output-filename-gen
-         module-name
-         unique-name
          info-port)
-
-  (define (compiler-body)
-
-    (scheme-global-var-define!
-      (scheme-global-var
-        (string->canonical-symbol "##compilation-options"))
-      opts)
-
-    (env.begin!)
-    (ptree.begin! info-port)
-    (virtual.begin!)
-
-    (let ((target-name (cadr (assq 'target opts))))
-      (target-select! target-name info-port))
-
-    (let* ((output-filename
-            (and output-filename-gen
-                 (output-filename-gen)))
-           (root
-            (if output-filename
-                (path-strip-extension output-filename)
-                (path-strip-directory (path-strip-extension input))))
-           (output
-            (if output-filename
-                output-filename
-                (string-append root (caar target.file-extensions))))
-           (module-name
-            (or module-name
-                (path-strip-directory root)))
-           (unique-name
-            (or unique-name
-                module-name)))
-
-      (if (not (valid-module-name? module-name))
-        (compiler-error
-          "Invalid characters in file name (must be a symbol with no \"#\")")
-        (let ()
-
-          (define (add-loading-of-required-modules ptrees source env comp-scope)
-            (let ((required-modules
-                   (table-ref comp-scope 'required-modules '())))
-              (if (pair? required-modules)
-                  (let ((env
-                         (add-extended-bindings
-                          (add-proper-tail-calls
-                           (add-safe env)))))
-                    (append
-                     (map (lambda (module-ref)
-                            (new-call source env
-                              (new-ref source env
-                                (env-lookup-global-var
-                                 env
-                                 '##load-required-module))
-                              (list (new-cst source env
-                                      module-ref))))
-                          required-modules)
-                     ptrees))
-                  ptrees)))
-
-          (let* ((v1 (read-source input #f #t))
-                 (script-line (vector-ref v1 0))
-                 (expr (vector-ref v1 1))
-                 (program (expand-source (wrap-program expr)))
-                 (x (##in-new-compilation-scope
-                     (lambda ()
-                       (parse-program
-                        program
-                        (make-global-environment)
-                        module-name
-                        vector))))
-                 (v2 (car x))
-                 (comp-scope (cdr x))
-                 (lst (vector-ref v2 0))
-                 (env (vector-ref v2 1))
-                 (c-intf (vector-ref v2 2))
-                 (ptrees (add-loading-of-required-modules lst program env comp-scope))
-                 (parsed-program (normalize-program ptrees)))
-
-            (if compiler-option-expansion
-                (let ((port (current-output-port)))
-                  (display "Expansion:" port)
-                  (newline port)
-                  (let loop ((l parsed-program))
-                    (if (pair? l)
-                        (let ((ptree (car l)))
-                          (newline port)
-                          (pp-expression (parse-tree->expression ptree) port)
-                          (loop (cdr l)))))
-                  (newline port)))
-
-            (let* ((module-procs
-                    (compile-parsed-program module-name
-                                            parsed-program
-                                            env
-                                            c-intf
-                                            info-port))
-                   (module-meta-info
-                    (append
-                     (table->list comp-scope)
-                     (if script-line
-                         (list (cons 'script-line script-line))
-                         '())))
-                   (module-descr
-                    ;; TODO: support type descriptor
-                    (vector (string->symbol module-name)
-                            (car module-procs)
-                            1 ;; preload flag, note that linker may change this
-                            module-meta-info
-                            #f ;; space for foreign pointer to ___module_struct
-                            )))
-
-              (if compiler-option-report
-                  (generate-report env))
-
-              (if compiler-option-gvm
-                  (let ((gvm-port
-                         (open-output-file (string-append root ".gvm"))))
-                    (virtual.dump module-procs gvm-port)
-                    (close-output-port gvm-port)))
-
-              (target.dump
-               module-procs
-               output
-               c-intf
-               module-descr
-               unique-name
-               opts)
-
-              (dump-c-intf module-procs root c-intf)))
-
-          (target-unselect!)
-          (virtual.end!)
-          (ptree.end!)
-          (env.end!)
-
-          output))))
 
   (set! warnings-requested? compiler-option-warnings)
 
-  (let ((result (with-exception-handling compiler-body)))
+  (let ((result-thunk
+         (with-exception-handling
+          (lambda ()
+            (compile-frontend
+             input
+             opts
+             output-filename-gen
+             info-port
+             (lambda (parsed-program
+                      env
+                      root
+                      output
+                      c-intf
+                      comp-ctx)
+
+               (if compiler-option-expansion
+                   (let ((port (current-output-port)))
+                     (display "Expansion:" port)
+                     (newline port)
+                     (let loop ((l parsed-program))
+                       (if (pair? l)
+                           (let ((ptree (car l)))
+                             (newline port)
+                             (pp-expression (parse-tree->expression ptree) port)
+                             (loop (cdr l)))))
+                     (newline port)))
+
+               (if compiler-option-dg
+                   (set! dependency-graph (make-table 'test: eq?)))
+
+               (let* ((meta-info
+                       (**meta-info->alist
+                        (**macro-compilation-ctx-meta-info comp-ctx)))
+                      (supply-modules
+                       (**macro-compilation-ctx-supply-modules comp-ctx))
+                      (demand-modules
+                       (**macro-compilation-ctx-demand-modules comp-ctx))
+                      (module-procs
+                       (compile-parsed-program (car (last-pair supply-modules))
+                                               parsed-program
+                                               env
+                                               c-intf
+                                               info-port))
+                      (module-descr
+                       ;; TODO: support type descriptor
+                       (vector (list->vect supply-modules)
+                               (list->vect demand-modules)
+                               meta-info
+                               1 ;; preload flag (linker may change this)
+                               (car module-procs) ;; module main
+                               #f ;; space for foreign pointer to ___module_struct
+                               )))
+
+                 (if compiler-option-report
+                     (generate-report env))
+
+                 (if compiler-option-gvm
+                     (let ((gvm-port
+                            (open-output-file (string-append root ".gvm"))))
+                       (virtual.dump-gvm module-procs gvm-port)
+                       (close-output-port gvm-port)))
+
+                 (if compiler-option-cfg
+                     (let ((cfg-port
+                            (open-output-file (string-append root ".cfg"))))
+                       (virtual.dump-cfg module-procs cfg-port)
+                       (close-output-port cfg-port)))
+
+                 (if compiler-option-dg
+                     (let ((dg-port
+                            (open-output-file (string-append root ".dg"))))
+                       (virtual.dump-dg root dependency-graph dg-port)
+                       (close-output-port dg-port)
+                       (set! dependency-graph #f)))
+
+                 (let ((result-thunk
+                        (target.dump
+                         module-procs
+                         output
+                         c-intf
+                         module-descr
+                         (or (cond ((assq 'linker-name opts) => cadr)
+                                   (else #f))
+                             (symbol->string
+                              (vector-ref supply-modules
+                                          (- (vector-length supply-modules)
+                                             1)))))))
+
+                   (if result-thunk
+                       (dump-c-intf module-procs root c-intf))
+
+                   result-thunk))))))))
 
     (if info-port
-      (if result
+        (if result-thunk
+            (begin
+              (display "Compilation finished." info-port)
+              (newline info-port))
+            (begin
+              (display "Compilation terminated abnormally." info-port)
+              (newline info-port))))
+
+    result-thunk))
+
+(define (expand-program input . rest)
+  (let ((opts #f)
+        (loc-table #f))
+
+    (if (pair? rest)
         (begin
-          (display "Compilation finished." info-port)
-          (newline info-port))
-        (begin
-          (display "Compilation terminated abnormally." info-port)
-          (newline info-port))))
+          (set! opts (car rest))
+          (if (pair? (cdr rest))
+              (set! loc-table (car (cdr rest))))))
 
-    result))
+    (if (not opts)
+        (set! opts (list (list 'target (c#default-target)))))
 
-(define (valid-module-name? module-name)
+    (set! warnings-requested? compiler-option-warnings)
 
-  ; Valid module names are exactly the valid symbols except those
-  ; containing "#".  A module name can also be a number.
-
-  (define (valid-char? c)
-    (and (not (memv c '(#\# #\; #\( #\) #\  #\[ #\] #\{ #\} #\" #\' #\` #\,)))
-         (not (char-whitespace? c))))
-
-  (let ((n (string-length module-name)))
-    (and (> n 0)                               ; should not be empty
-         (not (string=? module-name "."))      ; should not be "."
-         ;;(not (string->number module-name 10)) ; should not be a number
-         (let loop ((i 0))
-           (if (< i n)
-             (if (valid-char? (string-ref module-name i))
-               (loop (+ i 1))
-               #f)
-             #t)))))
+    (let ((result-thunk
+           (with-exception-handling
+            (lambda ()
+              (compile-frontend
+               input
+               opts
+               #f
+               #f
+               (lambda (parsed-program
+                        env
+                        root
+                        output
+                        c-intf
+                        comp-ctx)
+                 (let ((result
+                        (map (lambda (x)
+                               (parse-tree->expression x loc-table))
+                             parsed-program)))
+                   (lambda () result))))))))
+      (and result-thunk
+           (result-thunk)))))
 
 (define (dump-c-intf module-procs root c-intf)
   (let ((decls (c-intf-decls c-intf))
@@ -616,75 +682,99 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define (compile-parsed-program module-name program env c-intf info-port)
+(define (compile-parsed-program module-ref program env c-intf info-port)
+  (let* ((main-proc-name
+          (string-append (symbol->string module-ref) "#"))
+         (main-proc
+          (make-proc-obj
+           main-proc-name ;; name
+           #f     ;; c-name
+           #t     ;; primitive?
+           #f     ;; code
+           '(0)   ;; call-pat
+           #t     ;; side-effects?
+           '()    ;; strict-pat
+           0      ;; lift-pat
+           '(#f)  ;; type
+           #f))   ;; standard
+         (main-bbs
+          (make-bbs))
+         (const-procs
+          '()))
 
-  (if info-port
-    (display "Compiling:" info-port))
+    (if dependency-graph
+        (table-set! dependency-graph
+                    (string->symbol main-proc-name)
+                    (varset-empty)))
 
-  (set! trace-indentation 0)
+    (if info-port
+        (display "Compiling:" info-port))
 
-  (set! *bbs* (make-bbs))
-  (set! *global-env* env)
+    (set! trace-indentation 0)
 
-  (set! proc-queue '())
-  (set! known-procs '())
+    (set! *proc* main-proc)
+    (set! *bbs* main-bbs)
+    (set! *global-env* env)
 
-  (restore-context
-    (make-context 0 '() (list ret-var) '() (entry-poll) #f))
+    (set! definition-table (make-table 'test: eq?))
+    (set! live-definition-queue '())
+    (set! proc-queue '())
+    (set! known-procs '())
 
-  (let ((procs
+    (restore-context
+     (make-context 0 '() (list ret-var) '() (entry-poll) #f))
 
-          (let loop1 ((l program) (procs '()))
-            (if (not (null? l))
+    (for-each
+     (lambda (ptree)
+       (if (def? ptree)
+           (begin
 
-              (let ((node (car l)))
-                (if (def? node)
-                  (let* ((var (def-var node))
-                         (val (global-single-def var)))
-                    (if (and val (prc? val))
-                      (let ((proc
-                              (make-proc-obj
-                                (symbol->string (var-name var)) ; name
-                                (prc-c-name val)   ; c-name
-                                #t                 ; primitive?
-                                #f                 ; code
-                                (call-pattern val) ; call-pat
-                                #t                 ; side-effects?
-                                '()                ; strict-pat
-                                0                  ; lift-pat
-                                '(#f)              ; type
-                                #f)))              ; standard
-                        (add-constant-var var (make-obj proc))
-                        (loop1 (cdr l) (cons proc procs)))
-                      (loop1 (cdr l) procs)))
-                  (loop1 (cdr l) procs)))
+             (table-set! definition-table ptree (make-definition))
 
-              (let loop2 ((l (c-intf-procs c-intf)) (procs procs))
-                (if (not (null? l))
+             (let* ((var (def-var ptree))
+                    (val (global-single-def var)))
+               (if (and val (prc? val))
+                   (let ((proc
+                          (make-proc-obj
+                           (symbol->string (var-name var)) ;; name
+                           (prc-c-name val)   ;; c-name
+                           #t                 ;; primitive?
+                           #f                 ;; code
+                           (call-pattern val) ;; call-pat
+                           #t                 ;; side-effects?
+                           '()                ;; strict-pat
+                           0                  ;; lift-pat
+                           '(#f)              ;; type
+                           #f)))              ;; standard
+                     (add-constant-var var (make-obj proc))
+                     (set! const-procs (cons proc const-procs))))))))
+     program)
 
-                  (let* ((x (car l))
-                         (name (c-proc-scheme-name x))
-                         (arity (c-proc-arity x))
-                         (sym (string->canonical-symbol name))
-                         (var (env-lookup-global-var *global-env* sym))
-                         (pat (make-pattern arity 0 0 #f))
-                         (proc
-                           (make-proc-obj
-                             name     ; name
-                             #f       ; c-name
-                             #t       ; primitive?
-                             x        ; code
-                             pat      ; call-pat
-                             #t       ; side-effects?
-                             '()      ; strict-pat
-                             0        ; lift-pat
-                             '(#f)    ; type
-                             #f)))    ; standard
-                    (add-constant-var var (make-obj proc))
-                    (set-car! l proc)
-                    (loop2 (cdr l) (cons proc procs)))
+    (let loop1 ((lst (c-intf-procs c-intf)))
+      (if (pair? lst)
 
-                  (reverse procs)))))))
+          (let* ((x (car lst))
+                 (name (c-proc-scheme-name x))
+                 (arity (c-proc-arity x))
+                 (sym (string->canonical-symbol name))
+                 (var (env-lookup-global-var *global-env* sym))
+                 (pat (make-pattern arity 0 0 #f))
+                 (proc
+                  (make-proc-obj
+                   name    ;; name
+                   #f      ;; c-name
+                   #t      ;; primitive?
+                   x       ;; code
+                   pat     ;; call-pat
+                   #t      ;; side-effects?
+                   '()     ;; strict-pat
+                   0       ;; lift-pat
+                   '(#f)   ;; type
+                   #f)))   ;; standard
+            (add-constant-var var (make-obj proc))
+            (set-car! lst proc)
+            (set! const-procs (cons proc const-procs))
+            (loop1 (cdr lst)))))
 
     (let* ((entry-lbl
             (bbs-new-lbl! *bbs*))
@@ -692,95 +782,102 @@
             (bbs-new-lbl! *bbs*))
            (frame
             (current-frame ret-var-set))
-           (node1
+           (ptree1
             (car program)))
 
       (bbs-entry-lbl-num-set! *bbs* entry-lbl)
 
-      (set! entry-bb
-        (make-bb (make-label-entry
-                  entry-lbl
-                  0
-                  '()
+      (set! *bb* (make-bb
+                  (emit-label!
+                   (make-label-entry
+                    entry-lbl
+                    0
+                    '()
+                    #f
+                    #f
+                    #f
+                    frame
+                    (node->comment ptree1)))
+                  *bbs*))
+
+      (emit-instr!
+       (make-jump (make-lbl body-lbl)
+                  #f
                   #f
                   #f
                   #f
                   frame
-                  (node->comment node1))
-                 *bbs*))
+                  (node->comment ptree1)))
 
-      (bb-put-branch! entry-bb
-        (make-jump (make-lbl body-lbl)
-                   #f
-                   #f
-                   #f
-                   frame
-                   (node->comment node1)))
+      (set! entry-bb *bb*)
 
-      (set! *bb*
-        (make-bb (make-label-simple body-lbl frame (node->comment node1))
-                 *bbs*))
+      (set! *bb* (make-bb
+                  (emit-label!
+                   (make-label-simple body-lbl frame (node->comment ptree1)))
+                  *bbs*))
 
-      (let loop3 ((l program))
-        (let ((node (car l)))
-          (if (def? node)
-            (gen-define (def-var node) (def-val node) info-port)
-            (gen-node node
-                      ret-var-set
-                      (if (null? (cdr l))
-                        (make-reason-tail)
-                        (make-reason-side))))
-          (if (null? (cdr l))
-            (if (def? node)
-              (gen-return node
-                          ret-var-set
-                          (make-reason-tail)
-                          (make-obj void-object)))
-            (loop3 (cdr l)))))
+      (let loop2 ((lst program))
+        (let ((ptree (car lst)))
+          (if (def? ptree)
+              (gen-definition ptree info-port)
+              (gen-node ptree
+                        ret-var-set
+                        (if (pair? (cdr lst))
+                            (make-reason-side)
+                            (make-reason-tail))))
+          (if (pair? (cdr lst))
+              (loop2 (cdr lst))
+              (if (def? ptree)
+                  (gen-return ptree
+                              ret-var-set
+                              (make-reason-tail)
+                              (make-obj void-object))))))
 
-      (let loop4 ()
+      (let loop3 ()
         (if (pair? proc-queue)
-          (let ((proc-info (car proc-queue)))
-            (set! proc-queue (cdr proc-queue))
-            (gen-proc proc-info info-port)
-            (trace-unindent info-port)
-            (loop4))))
+            (let ((proc-info (car proc-queue)))
+              (set! proc-queue (cdr proc-queue))
+              (gen-proc proc-info info-port)
+              (trace-unindent info-port)
+              (loop3))
+            (if (pair? live-definition-queue)
+                (let ((live-def (car live-definition-queue)))
+                  (set! live-definition-queue (cdr live-definition-queue))
+                  (if (not (eq? (definition-reached? live-def) 'cancel))
+                      ((definition-generate live-def)))
+                  (loop3)))))
 
       (if info-port
-        (begin
-          (newline info-port)
-          (newline info-port)))
+          (begin
+            (newline info-port)
+            (newline info-port)))
 
-      (bbs-purify! *bbs*)
+      (proc-obj-code-set! main-proc (bbs-purify *bbs*))
 
-      (let ((proc
-              (make-proc-obj
-                (string-append module-prefix module-name) ; name
-                #f           ; c-name
-                #t           ; primitive?
-                *bbs*        ; code
-                '(0)         ; call-pat
-                #t           ; side-effects?
-                '()          ; strict-pat
-                0            ; lift-pat
-                '(#f)        ; type
-                #f)))        ; standard
+      (set! *bb* '())
+      (set! *bbs* '())
+      (set! *proc* '())
+      (set! *global-env* '())
 
-        (set! *bb* '())
-        (set! *bbs* '())
-        (set! *global-env* '())
+      (set! definition-table '())
+      (set! live-definition-queue '())
+      (set! proc-queue '())
+      (set! known-procs '())
 
-        (set! proc-queue '())
-        (set! known-procs '())
+      (clear-context)
 
-        (clear-context)
-
-        (cons proc procs)))))
+      (cons main-proc
+            (reverse
+             (keep proc-obj-code const-procs))))))
 
 (define *bb* '())
 (define *bbs* '())
+(define *proc* '())
 (define *global-env* '())
 
+(define dependency-graph #f)
+(define definition-table '())
+(define live-definition-queue '())
 (define proc-queue '())
 (define known-procs '())
 
@@ -798,76 +895,263 @@
 (define (trace-unindent info-port)
   (set! trace-indentation (- trace-indentation 1)))
 
+(define (emit-label! gvm-instr)
+
+  (case (label-type gvm-instr)
+
+    ((entry)
+     (for-each (lambda (obj) (emit-obj! (obj-val obj)))
+               (label-entry-opts gvm-instr))
+     (let ((keys (label-entry-keys gvm-instr)))
+       (and keys
+            (for-each (lambda (x) (emit-obj! (obj-val (cdr x))))
+                      keys)))))
+
+  gvm-instr)
+
+(define (emit-instr! gvm-instr)
+
+  (define (non-branch)
+    (bb-put-non-branch! *bb* gvm-instr))
+
+  (define (branch)
+    (bb-put-branch! *bb* gvm-instr))
+
+  (case (gvm-instr-type gvm-instr)
+
+    ((apply)
+     (emit-opnds! (apply-opnds gvm-instr))
+     (emit-opnd! (apply-loc gvm-instr))
+     (non-branch))
+
+    ((copy)
+     (emit-opnd! (copy-opnd gvm-instr))
+     (emit-opnd! (copy-loc gvm-instr))
+     (non-branch))
+
+    ((close)
+     (for-each (lambda (parms)
+                 (emit-opnd! (closure-parms-loc parms))
+                 (emit-opnds! (closure-parms-opnds parms)))
+               (close-parms gvm-instr))
+     (non-branch))
+
+    ((ifjump)
+     (emit-opnds! (ifjump-opnds gvm-instr))
+     (branch))
+
+    ((switch)
+     (emit-opnd! (switch-opnd gvm-instr))
+     (for-each (lambda (c) (emit-obj! (switch-case-obj c)))
+               (switch-cases gvm-instr))
+     (branch))
+
+    ((jump)
+     (emit-opnd! (jump-opnd gvm-instr))
+     (branch))))
+
+(define (emit-opnds! opnds)
+  (for-each emit-opnd! opnds))
+
+(define (emit-opnd! opnd)
+  (cond ((not opnd))
+        ((obj? opnd)
+         (emit-obj! (obj-val opnd)))
+        ((clo? opnd)
+         (emit-opnd! (clo-base opnd)))
+        ((glo? opnd)
+         (reach-global-var! (glo-name opnd)))))
+
+(define (emit-obj! obj)
+  (if (proc-obj? obj)
+      (reach-global-var! (string->symbol (proc-obj-name obj)))))
+
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define (gen-define var node info-port)
-  (if (prc? node)
+(define (make-definition)
+  (vector #f #f))
 
-    (let ((p-bbs         *bbs*)
-          (p-bb          *bb*)
-          (p-proc-queue  proc-queue)
-          (p-known-procs known-procs)
-          (p-context     (current-context)))
+(define (definition-reached? def)               (vector-ref def 0))
+(define (definition-reached?-set! def reached?) (vector-set! def 0 reached?))
+(define (definition-generate def)               (vector-ref def 1))
+(define (definition-generate-set! def generate) (vector-set! def 1 generate))
 
-      (set! *bbs* (make-bbs))
-      (set! proc-queue '())
-      (set! known-procs '())
+(define (reach-definition! ptree)
+  (if (def? ptree)
+      (let ((def (table-ref definition-table ptree #f)))
+        (if (and def ;; def = #f when definition is "not core"
+                 (not (definition-reached? def)))
+            (begin
+              (definition-reached?-set! def #t)
+              (set! live-definition-queue
+                    (cons def live-definition-queue)))))))
 
-      (let* ((proc-info (schedule-gen-proc node #f))
-             (entry-lbl-num (proc-info-lbl1 proc-info)))
+(define (reach-global-var! name)
+  (let ((var (env-lookup-global-var *global-env* name)))
+    (register-dependency var)
+    (for-each reach-definition! (ptset->list (var-sets var)))))
 
-        (define (do-body)
-          (let loop ()
-            (if (pair? proc-queue)
-              (let ((proc-info (car proc-queue)))
-                (set! proc-queue (cdr proc-queue))
-                (gen-proc proc-info info-port)
-                (trace-unindent info-port)
-                (loop))))
-          (trace-unindent info-port)
-          (bbs-purify! *bbs*))
+(define (register-dependency var)
+  (if dependency-graph
+      (let ((referrer (string->symbol (proc-obj-name *proc*))))
+        (table-set!
+         dependency-graph
+         referrer
+         (varset-adjoin (table-ref dependency-graph referrer) var)))))
 
-        (bbs-entry-lbl-num-set! *bbs* entry-lbl-num)
-        (if (constant-var? var)
-          (let-constant-var var (make-lbl entry-lbl-num)
-            (lambda ()
-              (add-known-proc proc-info)
-              (do-body)))
-          (do-body))
-        (let ((bbs *bbs*)
-              (x (var-constant var)))
-          (set! *bbs* p-bbs)
-          (set! *bb* p-bb)
-          (set! proc-queue p-proc-queue)
-          (set! known-procs p-known-procs)
-          (restore-context p-context)
-          (if x
-;;;         (let ((proc (obj-val (cdr x))))
-            (let ((proc (obj-val x)))
-              (proc-obj-code-set! proc bbs))
-            (let ((proc
-                    (make-proc-obj
-                      (symbol->string (var-name var)) ; name
-                      (prc-c-name node)   ; c-name
-                      #f                  ; primitive?
-                      bbs                 ; code
-                      (call-pattern node) ; call-pat
-                      #t                  ; side-effects?
-                      '()                 ; strict-pat
-                      0                   ; lift-pat
-                      '(#f)               ; type
-                      #f)))               ; standard
-              (put-copy 1 (make-obj proc)
-                        (make-glo (var-name var))
-                        #f
-                        ret-var-set
-                        (node->comment node)))))))
+(define (gen-definition ptree info-port)
 
-    (let* ((dst (make-glo (var-name var)))
-           (src (gen-node node
-                          ret-var-set
-                          (make-reason-need dst))))
-      (put-copy 2 src dst #f ret-var-set (node->comment node)))))
+  (define (gen update)
+    (let ((var (def-var ptree))
+          (val (def-val ptree)))
+
+      (if dependency-graph
+          (table-set! dependency-graph (var-name var) (varset-empty)))
+
+      (if (not (prc? val))
+
+          (let* ((dst (make-glo (var-name var)))
+                 (src (gen-node val
+                                ret-var-set
+                                (make-reason-need dst))))
+
+            (put-copy src dst #f ret-var-set (node->comment val))
+
+            (update))
+
+          (let* ((p-proc-queue  proc-queue)
+                 (p-known-procs known-procs)
+                 (p-proc        *proc*)
+                 (p-bbs         *bbs*)
+                 (p-bb          *bb*)
+                 (p-context     (current-context))
+                 (var-is-const
+                  (var-constant var))
+                 (proc
+                  (if var-is-const
+                      (obj-val var-is-const)
+                      (make-proc-obj
+                       (symbol->string (var-name var)) ;; name
+                       (prc-c-name val)                ;; c-name
+                       #f                              ;; primitive?
+                       #f                              ;; code
+                       (call-pattern val)              ;; call-pat
+                       #t                              ;; side-effects?
+                       '()                             ;; strict-pat
+                       0                               ;; lift-pat
+                       '(#f)                           ;; type
+                       #f)))                           ;; standard
+                 (bbs
+                  (make-bbs)))
+
+            (set! *proc* proc)
+            (set! *bbs* bbs)
+            (set! proc-queue '())
+            (set! known-procs '())
+
+            (let* ((proc-info (schedule-gen-proc val #f))
+                   (entry-lbl-num (proc-info-lbl1 proc-info)))
+
+              (define (do-body)
+                (let loop ()
+                  (if (pair? proc-queue)
+                      (let ((proc-info (car proc-queue)))
+                        (set! proc-queue (cdr proc-queue))
+                        (gen-proc proc-info info-port)
+                        (trace-unindent info-port)
+                        (loop))))
+                (trace-unindent info-port))
+
+              (bbs-entry-lbl-num-set! *bbs* entry-lbl-num)
+
+              (if (constant-var? var)
+                  (let-constant-var var (make-lbl entry-lbl-num)
+                                    (lambda ()
+                                      (add-known-proc proc-info)
+                                      (do-body)))
+                  (do-body))
+
+              (proc-obj-code-set! proc (bbs-purify *bbs*))
+
+              (set! proc-queue p-proc-queue)
+              (set! known-procs p-known-procs)
+              (set! *proc* p-proc)
+              (set! *bbs* p-bbs)
+              (set! *bb* p-bb)
+              (restore-context p-context)
+
+              (if (not var-is-const)
+                  (begin
+
+                    (put-copy (make-obj proc)
+                              (make-glo (var-name var))
+                              #f
+                              ret-var-set
+                              (node->comment val))
+
+                    (update))))))))
+
+  (define (delayed-gen def)
+    (let* ((p-proc
+            *proc*)
+           (p-bbs
+            *bbs*)
+           (p-bb
+            *bb*)
+           (p-context
+            (current-context))
+           (next-lbl
+            (bbs-new-lbl! *bbs*))
+           (frame
+            (current-frame ret-var-set)))
+
+      (define (jump-to-next-lbl)
+        (let ((val (def-val ptree)))
+
+          (merge-contexts-and-seal-bb
+           p-context
+           ret-var-set
+           val
+           'internal
+           (node->comment val))
+
+          (emit-instr!
+           (make-jump (make-lbl next-lbl)
+                      #f
+                      #f
+                      #f
+                      #f
+                      frame
+                      (node->comment val)))))
+
+      (define (generate)
+
+        (set! *proc* p-proc)
+        (set! *bbs* p-bbs)
+        (set! *bb* p-bb)
+        (restore-context p-context)
+
+        (gen jump-to-next-lbl))
+
+    (jump-to-next-lbl)
+
+    (set! *bb* (make-bb
+                (emit-label!
+                 (make-label-simple next-lbl frame (node->comment ptree)))
+                *bbs*))
+
+    (definition-generate-set! def generate)))
+
+  (let ((def (table-ref definition-table ptree)))
+    (if (optimize-dead-definitions?
+         (var-name (def-var ptree))
+         (node-env ptree))
+
+        (delayed-gen def) ;; delay generation of this definition
+
+        (begin
+          (definition-reached?-set! def 'cancel) ;; cancel delayed generation
+          (gen (lambda () #f)))))) ;; generate now
 
 (define (call-pattern node)
   (let ((nb-parms (length (prc-parms node)))
@@ -935,7 +1219,8 @@
               live))
 
 (define (make-poll since-entry? delta)
-  (cons since-entry? delta))
+  (cons since-entry?  ;; a path to here since the entry-point has a poll?
+        delta))       ;; upper bound on number of instructions since last poll
 
 (define (poll-since-entry? x) (car x))
 (define (poll-delta x) (cdr x))
@@ -943,14 +1228,16 @@
 (define (entry-poll)
   (make-poll #f (- poll-period poll-head)))
 
-(define (return-poll poll)
+(define (return-poll poll where)
   (let ((delta (poll-delta poll)))
     (make-poll (poll-since-entry? poll)
-               (+ poll-head (max delta poll-tail)))))
+               (if (eq? where 'internal) ;; return point of call to primitive
+                   delta
+                   (+ poll-head (max delta poll-tail))))))
 
 (define (poll-merge poll other-poll)
   (make-poll
-    (or (poll-since-entry? poll) ;; shouldn't it be "and"?
+    (or (poll-since-entry? poll)
         (poll-since-entry? other-poll))
     (max (poll-delta poll)
          (poll-delta other-poll))))
@@ -1075,11 +1362,11 @@
     (if (< nb-slots new-nb-slots)
       (begin
         (push-slot)
-        (zzzbb-put-non-branch! *bb* "IN extend-slots2"
-          (make-copy #f
-                     (make-stk nb-slots)
-                     (current-frame live)
-                     comment))
+        (emit-instr!
+         (make-copy #f
+                    (make-stk nb-slots)
+                    (current-frame live)
+                    comment))
         (loop)))))
 
 (define (extend-slots new-nb-slots live comment)
@@ -1269,12 +1556,12 @@
         (write (string->canonical-symbol (prc-name proc)) info-port)
         (write "unknown" info-port)))
     (set! *bb* (proc-info-bb proc-info))
-    (let ((lbl (bb-lbl-num *bb*)))
-      (restore-context (proc-info-context proc-info))
-      (gen-node (prc-body proc)
-                (varset-union (proc-body-live-varset proc)
-                              ret-var-set)
-                (make-reason-tail)))))
+    (proc-info-bb-set! proc-info #f)
+    (restore-context (proc-info-context proc-info))
+    (gen-node (prc-body proc)
+              (varset-union (proc-body-live-varset proc)
+                            ret-var-set)
+              (make-reason-tail))))
 
 (define (proc-body-live-varset proc)
   (let* ((body (prc-body proc))
@@ -1297,43 +1584,46 @@
          (frame-lbl2 frame-lbl1)
          (closed? (not (not closed-list)))
          (bb1 (make-bb
+               (emit-label!
                 (make-label-entry
-                  lbl1
-                  (length (prc-parms proc))
-                  (map make-obj (prc-opts proc))
-                  (and (prc-keys proc)
-                       (map (lambda (x)
-                              (cons (car x) (make-obj (cdr x))))
-                            (prc-keys proc)))
-                  (prc-rest? proc)
-                  closed?
-                  frame-lbl1
-                  (node->comment proc))
-                *bbs*))
+                 lbl1
+                 (length (prc-parms proc))
+                 (map make-obj (prc-opts proc))
+                 (and (prc-keys proc)
+                      (map (lambda (x)
+                             (cons (car x) (make-obj (cdr x))))
+                           (prc-keys proc)))
+                 (prc-rest? proc)
+                 closed?
+                 frame-lbl1
+                 (node->comment proc)))
+               *bbs*))
          (bb2 (make-bb
+               (emit-label!
                 (make-label-simple
-                  lbl2
-                  frame-lbl2
-                  (node->comment proc))
-                *bbs*))
+                 lbl2
+                 frame-lbl2
+                 (node->comment proc)))
+               *bbs*))
          (proc-info (make-proc-info proc lbl1 lbl2 bb2 context-lbl2
                                     (target.label-info
                                      (length (prc-parms proc))
                                      closed?))))
     (context-entry-bb-set! context-lbl1 bb1)
     (bb-put-branch! bb1
-      (make-jump (make-lbl lbl2) #f #f #f frame-lbl2 (node->comment proc)))
+      (make-jump (make-lbl lbl2) #f #f #f #f frame-lbl2 (node->comment proc)))
     (set! proc-queue (cons proc-info proc-queue))
     proc-info))
 
 (define (make-proc-info proc lbl1 lbl2 bb context pcontext)
   (vector proc lbl1 lbl2 bb context pcontext))
-(define (proc-info-proc x) (vector-ref x 0))
-(define (proc-info-lbl1 x) (vector-ref x 1))
-(define (proc-info-lbl2 x) (vector-ref x 2))
-(define (proc-info-bb x) (vector-ref x 3))
-(define (proc-info-context x) (vector-ref x 4))
-(define (proc-info-pcontext x) (vector-ref x 5))
+(define (proc-info-proc info) (vector-ref info 0))
+(define (proc-info-lbl1 info) (vector-ref info 1))
+(define (proc-info-lbl2 info) (vector-ref info 2))
+(define (proc-info-bb info) (vector-ref info 3))
+(define (proc-info-bb-set! info x) (vector-set! info 3 x))
+(define (proc-info-context info) (vector-ref info 4))
+(define (proc-info-pcontext info) (vector-ref info 5))
 
 ;;;----------------------------------------------------------------------------
 
@@ -1454,7 +1744,7 @@
                 (src (gen-node (set-val node)
                                (varset-adjoin live var)
                                (make-reason-need dst))))
-           (put-copy 3 src dst #f live (node->comment node))
+           (put-copy src dst #f live (node->comment node))
            (gen-return node live reason (make-obj void-object))))
 
         ((def? node)
@@ -1491,14 +1781,14 @@
                       (let ((slot (make-stk nb-slots))
                             (var (make-temp-var 'closure)))
                         (put-var slot var)
-                        (zzzbb-put-non-branch! *bb* "IN gen-node"
-                          (make-close
-                            (list (make-closure-parms
-                                    slot
-                                    (lbl-num proc-lbl)
-                                    (map var->opnd closed-list)))
-                            (current-frame (varset-adjoin live var))
-                            (node->comment node)))
+                        (emit-instr!
+                         (make-close
+                          (list (make-closure-parms
+                                 slot
+                                 (lbl-num proc-lbl)
+                                 (map var->opnd closed-list)))
+                          (current-frame (varset-adjoin live var))
+                          (node->comment node)))
                         slot)))))
              (gen-return node live reason opnd))))
 
@@ -1515,21 +1805,22 @@
 (define (gen-return node live reason opnd)
   (cond ((reason-tail? reason)
          (let ((var (make-temp-var 'result)))
-           (put-copy 4 opnd
+           (put-copy opnd
                      target.proc-result
                      var
                      ret-var-set
                      (node->comment node))
            (let ((ret-opnd (var->opnd ret-var)))
-             (seal-bb (intrs-enabled? (node-env node)) 'return)
+             (seal-bb node 'return)
              (shrink-slots 0)
-             (bb-put-branch! *bb*
-               (make-jump ret-opnd
-                          #f
-                          #f
-                          #f
-                          (current-frame (varset-singleton var))
-                          (node->comment node))))))
+             (emit-instr!
+              (make-jump ret-opnd
+                         #f
+                         #f
+                         #f
+                         #f
+                         (current-frame (varset-singleton var))
+                         (node->comment node))))))
         ((reason-pred? reason)
          (if (obj? opnd)
            (let* ((false?
@@ -1538,25 +1829,25 @@
                    (bbs-new-lbl! *bbs*))
                   (dummy-bb
                    (make-bb
-                    (make-label-simple
-                     dummy-lbl
-                     (current-frame
-                      (if false?
-                        (reason-pred-false-live reason)
-                        (reason-pred-true-live reason)))
-                     (node->comment node))
+                    (emit-label!
+                     (make-label-simple
+                      dummy-lbl
+                      (current-frame
+                       (if false?
+                           (reason-pred-false-live reason)
+                           (reason-pred-true-live reason)))
+                      (node->comment node)))
                     *bbs*))
                   (context
                    (current-context)))
              (if false?
                (make-branchpoints context dummy-bb context *bb*)
                (make-branchpoints context *bb* context dummy-bb)))
-           (branchpoints-invert
-            (gen-conditional node
-                             live
-                             (reason-pred-invert reason)
-                             **not-proc-obj
-                             (list opnd)))))
+           (gen-conditional node
+                            live
+                            reason
+                            **identity-proc-obj
+                            (list opnd))))
         (else ; (or (reason-need? reason) (reason-side? reason))
          opnd)))
 
@@ -1567,27 +1858,29 @@
           (bbs-new-lbl! *bbs*))
          (true-bb
           (make-bb
-           (make-label-simple
-            true-lbl
-            (current-frame (reason-pred-true-live reason))
-            (node->comment node))
+           (emit-label!
+            (make-label-simple
+             true-lbl
+             (current-frame (reason-pred-true-live reason))
+             (node->comment node)))
            *bbs*))
          (false-bb
           (make-bb
-           (make-label-simple
-            false-lbl
-            (current-frame (reason-pred-false-live reason))
-            (node->comment node))
+           (emit-label!
+            (make-label-simple
+             false-lbl
+             (current-frame (reason-pred-false-live reason))
+             (node->comment node)))
            *bbs*)))
-    (bb-put-branch! *bb*
-      (make-ifjump
-       test
-       opnds
-       true-lbl
-       false-lbl
-       #f
-       (current-frame live)
-       (node->comment node)))
+    (emit-instr!
+     (make-ifjump
+      test
+      opnds
+      true-lbl
+      false-lbl
+      #f
+      (current-frame live)
+      (node->comment node)))
     (let ((context (current-context)))
       (make-branchpoints context true-bb context false-bb))))
 
@@ -1611,7 +1904,7 @@
      node
      (lambda (case-var branches nb-cases)
        (if (and (>= nb-cases min-cases-for-switch)
-                (reason-tail? reason));;;;;;;;;;;;;;;;;;
+                (reason-tail? reason));;TODO: also optimize when not in tail pos
          (gen-switch node live reason case-var branches)
          (gen-tst node live reason))))
     (gen-tst node live reason)))
@@ -1634,38 +1927,40 @@
          (frame
           (current-frame all-live)))
 
-    (bb-put-branch! *bb*
-      (make-switch
-       opnd
-       (let loop ((branches (cdr rev-branches))
-                  (branch-lbls (cdr rev-branch-lbls))
-                  (cases '()))
-         (if (null? branches)
-           cases
-           (let* ((branch (car branches))
-                  (lbl (car branch-lbls))
-                  (objs (cdr branch)))
-             (loop (cdr branches)
-                   (cdr branch-lbls)
-                   (append (map (lambda (obj)
-                                  (make-switch-case obj lbl))
-                                objs)
-                           cases)))))
-       default-branch-lbl
-       #f
-       frame
-       (node->comment node)))
+    (emit-instr!
+     (make-switch
+      opnd
+      (let loop ((branches (cdr rev-branches))
+                 (branch-lbls (cdr rev-branch-lbls))
+                 (cases '()))
+        (if (null? branches)
+            cases
+            (let* ((branch (car branches))
+                   (lbl (car branch-lbls))
+                   (objs (cdr branch)))
+              (loop (cdr branches)
+                    (cdr branch-lbls)
+                    (append (map (lambda (obj)
+                                   (make-switch-case obj lbl))
+                                 objs)
+                            cases)))))
+      default-branch-lbl
+      #f
+      frame
+      (node->comment node)))
 
     (let ((context (current-context)))
 
       (for-each
        (lambda (branch-node branch-lbl)
          (restore-context context)
-         (set! *bb* (make-bb (make-label-simple
-                              branch-lbl
-                              frame
-                              (node->comment node))
-                             *bbs*))
+         (set! *bb* (make-bb
+                     (emit-label!
+                      (make-label-simple
+                       branch-lbl
+                       frame
+                       (node->comment node)))
+                     *bbs*))
          (gen-node branch-node live reason))
        rev-branch-nodes
        rev-branch-lbls))))
@@ -1687,22 +1982,25 @@
                   (and (eq? case-var var)
                        (list val)))))))
 
-  (define (extract-cases pre)
+  (define (extract-cases pre cs)
     (cond ((disj? pre)
-           (let ((x1 (extract-cases (disj-pre pre))))
-             (and x1
-                  (let ((x2 (extract-cases (disj-alt pre))))
-                    (and x2
-                         (append x1 x2))))))
+           (let ((cs2 (extract-cases (disj-pre pre) cs)))
+             (and cs2
+                  (extract-cases (disj-alt pre) cs2))))
           ((app? pre)
            (let ((proc (app->specialized-proc pre))
                  (args (app-args pre)))
              (and (eq? proc **eq?-proc-obj)
                   (= (length args) 2)
-                  (let ((arg1 (car args))
-                        (arg2 (cadr args)))
-                    (or (try-ref-cst arg1 arg2)
-                        (try-ref-cst arg2 arg1))))))
+                  (let* ((arg1 (car args))
+                         (arg2 (cadr args))
+                         (x (or (try-ref-cst arg1 arg2)
+                                (try-ref-cst arg2 arg1))))
+                    (and x
+                         (let ((val (car x)))
+                           (if (memq val cs) ;; avoid repeated eq? cases
+                               cs
+                               (cons val cs))))))))
           (else
            #f)))
 
@@ -1711,7 +2009,7 @@
       (let ((pre (tst-pre node))
             (con (tst-con node))
             (alt (tst-alt node)))
-        (let ((cs (extract-cases pre)))
+        (let ((cs (extract-cases pre '())))
           (if cs
             (extract-case
              alt
@@ -2002,36 +2300,39 @@
 (define (join-execution-paths-aux node live context1 bb1 context2 bb2)
   (restore-context context2)
   (set! *bb* bb2)
-  (seal-bb (intrs-enabled? (node-env node)) 'internal)
+  (seal-bb node 'internal)
   (let ((join-lbl (bbs-new-lbl! *bbs*)))
-    (bb-put-branch! *bb*
-      (make-jump (make-lbl join-lbl)
-                 #f
-                 #f
-                 #f
-                 (current-frame live)
-                 (node->comment node)))
+    (emit-instr!
+     (make-jump (make-lbl join-lbl)
+                #f
+                #f
+                #f
+                #f
+                (current-frame live)
+                (node->comment node)))
     (let ((context2* (current-context)))
       (restore-context context1)
       (set! *bb* bb1)
       (merge-contexts-and-seal-bb
        context2*
        live
-       (intrs-enabled? (node-env node))
+       node
        'internal
        (node->comment node))
-      (bb-put-branch! *bb*
-        (make-jump (make-lbl join-lbl)
-                   #f
-                   #f
-                   #f
-                   (current-frame live)
-                   (node->comment node)))
+      (emit-instr!
+       (make-jump (make-lbl join-lbl)
+                  #f
+                  #f
+                  #f
+                  #f
+                  (current-frame live)
+                  (node->comment node)))
       (set! *bb* (make-bb
-                  (make-label-simple
-                   join-lbl
-                   (current-frame live)
-                   (node->comment node))
+                  (emit-label!
+                   (make-label-simple
+                    join-lbl
+                    (current-frame live)
+                    (node->comment node)))
                   *bbs*)))))
 
 (define (join-execution-paths-aux2 node live context1 bb1 context2 bb2)
@@ -2315,11 +2616,11 @@
 
                           (set! output (cons (list dst '<- src) output))
 
-                          (zzzbb-put-non-branch! *bb* "IN join-execution-paths-aux2"
-                            (make-copy s
-                                       d
-                                       (current-frame live)
-                                       comment))))
+                          (emit-instr!
+                           (make-copy s
+                                      d
+                                      (current-frame live)
+                                      comment))))
 
                       (define (do-cycles)
                         (for-each
@@ -2357,15 +2658,16 @@
                                     live
                                     (node->comment node))
 
-                      (seal-bb (intrs-enabled? (node-env node)) 'internal)
+                      (seal-bb node 'internal)
 
-                      (bb-put-branch! *bb*
-                        (make-jump (make-lbl join-lbl)
-                                   #f
-                                   #f
-                                   #f
-                                   new-frame
-                                   (node->comment node)))
+                      (emit-instr!
+                       (make-jump (make-lbl join-lbl)
+                                  #f
+                                  #f
+                                  #f
+                                  #f
+                                  new-frame
+                                  (node->comment node)))
 
                       (cons (current-context) *bb*))))
 
@@ -2375,10 +2677,11 @@
                   (restore-context new-context)
 
                   (set! *bb* (make-bb
-                              (make-label-simple
-                               join-lbl
-                               new-frame
-                               (node->comment node))
+                              (emit-label!
+                               (make-label-simple
+                                join-lbl
+                                new-frame
+                                (node->comment node)))
                               *bbs*))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2408,7 +2711,7 @@
 ;; context (i.e. reg and stack values and frame size) to 'other-context' only
 ;; considering the variables in 'live'.
 
-(define (merge-contexts-and-seal-bb other-context live poll? where comment)
+(define (merge-contexts-and-seal-bb other-context live node where comment)
 ;(display "*************")(newline);*************
 ;(display "1 regs  : ")(pp (map (lambda (x) (if (var? x) (var-name x) x)) regs))
 ;(display "1 slots : ")(pp (map (lambda (x) (if (var? x) (var-name x) x)) slots))
@@ -2438,8 +2741,8 @@
                        (not (memq var regs))       ; and not in any other
                        (not (memq var slots)))     ; register or stack slot
                 (let ((top (make-stk (+ nb-slots 1)))) ; save on top of stack
-                  (put-copy 5 r top var live-v comment)))
-              (put-copy 6 (var->opnd other-var) r other-var live-v comment)))
+                  (put-copy r top var live-v comment)))
+              (put-copy (var->opnd other-var) r other-var live-v comment)))
           (loop1 (- i 1)))))
 
     (let loop2 ((i 1))
@@ -2461,13 +2764,13 @@
                        (not (memq var regs))       ; and not in any other
                        (not (memq var slots)))     ; register or stack slot
                 (let ((top (make-stk (+ nb-slots 1)))) ; save on top of stack
-                  (put-copy 7 s top var live-v comment)))
+                  (put-copy s top var live-v comment)))
 ;(display "Z regs  : ")(pp (map (lambda (x) (if (var? x) (var-name x) x)) regs));*************
 ;(display "Z slots : ")(pp (map (lambda (x) (if (var? x) (var-name x) x)) slots))
-              (put-copy 8 (var->opnd other-var) s other-var live-v comment))
+              (put-copy (var->opnd other-var) s other-var live-v comment))
             (if (> i nb-slots)
               (let ((top (make-stk (+ nb-slots 1))))
-                (put-copy 9 (make-obj void-object)
+                (put-copy (make-obj void-object)
                           top
                           empty-var
                           live-v
@@ -2495,7 +2798,7 @@
             (put-var (make-stk i) empty-var))
           (loop4 (+ i 1)))))
 
-    (seal-bb poll? where)
+    (seal-bb node where)
 
     (set! poll (poll-merge poll other-poll))
 
@@ -2506,42 +2809,63 @@
       (compiler-internal-error
         "merge-contexts-and-seal-bb, entry-bb's do not agree"))))
 
-(define (seal-bb poll? where)
-
-  (define (last-pair l)
-    (if (pair? (cdr l)) (last-pair (cdr l)) l))
+(define (seal-bb node where)
 
   (define (poll-at split-point)
-    (let loop ((i 0) (l1 (bb-non-branch-instrs *bb*)) (l2 '()))
-      (if (< i split-point)
-        (loop (+ i 1) (cdr l1) (cons (car l1) l2))
-        (let* ((label-instr
-                (bb-label-instr *bb*))
-               (non-branch-instrs1
-                (reverse l2))
-               (non-branch-instrs2
-                l1)
-               (last-instr
-                (car (last-pair (cons label-instr non-branch-instrs1))))
-               (frame
-                (gvm-instr-frame last-instr))
-               (new-lbl
-                (bbs-new-lbl! *bbs*)))
-          (bb-non-branch-instrs-set! *bb* non-branch-instrs1)
-          (bb-put-branch! *bb*
-            (make-jump (make-lbl new-lbl)
-                       #f
-                       #t
-                       #f
-                       frame
-                       (gvm-instr-comment last-instr)))
-          (set! *bb* (make-bb (make-label-simple
-                               new-lbl
-                               frame
-                               (gvm-instr-comment last-instr))
-                              *bbs*))
-          (bb-non-branch-instrs-set! *bb* non-branch-instrs2)
-          (set! poll (make-poll #t 0))))))
+    (let loop ((i 0)
+               (lst1 (bb-non-branch-instrs *bb*))
+               (lst2 '()))
+      (if (and (pair? lst1)
+               (or (< i split-point)
+                   (let* ((instr
+                           (car lst1))
+                          (node
+                           (comment-get (gvm-instr-comment instr) 'node))
+                          (cant-poll-here?
+                           (not (intrs-enabled? (node-env node)))))
+                     ;; extend poll interval to outside code that
+                     ;; is with interrupts disabled
+                     cant-poll-here?)))
+
+          (loop (+ i 1)
+                (cdr lst1)
+                (cons (car lst1) lst2))
+
+          (let* ((label-instr
+                  (bb-label-instr *bb*))
+                 (non-branch-instrs1
+                  (reverse lst2))
+                 (non-branch-instrs2
+                  lst1)
+                 (last-instr
+                  (car (last-pair (cons label-instr non-branch-instrs1))))
+                 (frame
+                  (gvm-instr-frame last-instr))
+                 (new-lbl
+                  (bbs-new-lbl! *bbs*)))
+
+            (bb-non-branch-instrs-set! *bb* non-branch-instrs1)
+
+            (emit-instr!
+             (make-jump (make-lbl new-lbl)
+                        #f
+                        #f
+                        #t
+                        #f
+                        frame
+                        (gvm-instr-comment last-instr)))
+
+            (set! *bb* (make-bb
+                        (emit-label!
+                         (make-label-simple
+                          new-lbl
+                          frame
+                          (gvm-instr-comment last-instr)))
+                        *bbs*))
+
+            (bb-non-branch-instrs-set! *bb* non-branch-instrs2)
+
+            (set! poll (make-poll #t 0))))))
 
   (define (poll-at-end)
     (poll-at (length (bb-non-branch-instrs *bb*))))
@@ -2554,19 +2878,22 @@
           (poll-at (max (- poll-period delta) 0))
           (impose-polling-constraints)))))
 
-  (if poll? (impose-polling-constraints))
+  (if (intrs-enabled? (node-env node))
+      (impose-polling-constraints))
 
   (let* ((n (+ (length (bb-non-branch-instrs *bb*)) 1))
          (delta (+ (poll-delta poll) n))
          (since-entry? (poll-since-entry? poll)))
-    (if (and poll?
+    (if (and (intrs-enabled? (node-env node))
              (case where
                ((call)
                 (> delta (- poll-period poll-head)))
                ((tail-call)
                 (> delta poll-tail))
                ((return)
-                (and since-entry? (> delta (+ poll-head poll-tail))))
+                (and since-entry?
+                     (poll-on-return? (node-env node))
+                     (> delta (+ poll-head poll-tail))))
                ((internal)
                 #f)
                (else
@@ -2665,31 +2992,33 @@
                             result-var
                             live
                             (node->comment node))
-          (seal-bb (intrs-enabled? (node-env node)) 'internal)
+          (seal-bb node 'internal)
           (let* ((true-lbl
                   (bbs-new-lbl! *bbs*))
                  (false-lbl
                   (bbs-new-lbl! *bbs*))
                  (true-bb
                   (make-bb
-                   (make-label-simple
-                    true-lbl
-                    (current-frame (reason-pred-true-live reason))
-                    (node->comment node))
+                   (emit-label!
+                    (make-label-simple
+                     true-lbl
+                     (current-frame (reason-pred-true-live reason))
+                     (node->comment node)))
                    *bbs*))
                  (false-bb
                   (make-bb
-                   (make-label-simple
-                    false-lbl
-                    (current-frame (reason-pred-false-live reason))
-                    (node->comment node))
+                   (emit-label!
+                    (make-label-simple
+                     false-lbl
+                     (current-frame (reason-pred-false-live reason))
+                     (node->comment node)))
                    *bbs*)))
-            (bb-put-branch! *bb*
+            (emit-instr!
               (make-ifjump
-               **not-proc-obj
+               **identity-proc-obj
                (list target.proc-result)
-               false-lbl
                true-lbl
+               false-lbl
                #f
                (current-frame (varset-adjoin live result-var))
                (node->comment node)))
@@ -2813,12 +3142,17 @@
                           ((proc-obj-testable? proc) (node-env node)))))
 
           (if (and (reason-pred? reason)
-                   (eq? proc **not-proc-obj))
+                   (or (eq? proc **not-proc-obj)
+                       (eq? proc **identity-proc-obj)))
 
-            (branchpoints-invert
-             (gen-node (car args)
-                       live
-                       (reason-pred-invert reason)))
+            (if (eq? proc **not-proc-obj)
+              (branchpoints-invert
+               (gen-node (car args)
+                         live
+                         (reason-pred-invert reason)))
+              (gen-node (car args)
+                        live
+                        reason))
 
             (let ((eval-order (arg-eval-order #f args))
                   (vars (map (lambda (x) (cons x #f)) args)))
@@ -2885,16 +3219,16 @@
                              (var (make-temp-var 'result)))
                         (if (not (reason-side? reason))
                           (put-var loc var))
-                        (zzzbb-put-non-branch! *bb* "IN gen-call"
-                          (make-apply
-                           proc
-                           args
-                           (if (reason-side? reason) #f loc)
-                           (current-frame
-                            (if (reason-side? reason)
-                              live
-                              (varset-adjoin live var)))
-                           (node->comment node)))
+                        (emit-instr!
+                         (make-apply
+                          proc
+                          args
+                          (if (reason-side? reason) #f loc)
+                          (current-frame
+                           (if (reason-side? reason)
+                               live
+                               (varset-adjoin live var)))
+                          (node->comment node)))
                         (gen-return node live reason loc))))))))
 
           (let* ((reason2
@@ -2941,7 +3275,11 @@
                   (compute-live-vars-at-each-expr
                    (car live-vars-at-each-reg)
                    in-stk
-                   reason2)))
+                   reason2))
+                 (where
+                  (if (reason-tail? reason2)
+                      'tail-call
+                      (if proc 'internal 'call))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 #;
@@ -3044,7 +3382,7 @@
 
                       (begin
                         (if (> i nb-slots)
-                          (put-copy 10 (make-obj void-object)
+                          (put-copy (make-obj void-object)
                                     slot
                                     empty-var
                                     liv
@@ -3063,6 +3401,7 @@
                                  (cdr live-vars-at-each-reg))
                                 (oper-var
                                  '()))
+
                       (if (not (null? l))
 
                         ; ==== SECOND: evaluate operator and args that go in registers
@@ -3127,30 +3466,38 @@
                                      (cdr live-vars-at-next-regs)
                                      oper-var))
 
-                            (let ((reg (make-reg pos)))
+                            (if (and (eq? arg 'return)
+                                     (not (reason-tail? reason2)))
 
-                              (if (all-args-trivial? (cdr l))
-                                (save-opnd-to-reg opnd
-                                                  reg
-                                                  var
-                                                  needed
-                                                  (node->comment
-                                                   (if (eq? arg 'return)
-                                                     node
-                                                     arg)))
-                                (save-in-slot 111 opnd
-                                              var
-                                              needed
-                                              (node->comment
-                                               (if (eq? arg 'return)
-                                                 node
-                                                 arg))))
+                                (loop2 (cdr l)
+                                       liv
+                                       (cdr live-vars-at-next-regs)
+                                       oper-var)
 
-                              (stretchable-vector-set! reg-map pos var)
-                              (loop2 (cdr l)
-                                     (varset-adjoin liv var)
-                                     (cdr live-vars-at-next-regs)
-                                     oper-var))
+                                (let ((reg (make-reg pos)))
+
+                                  (if (all-args-trivial? (cdr l))
+                                      (save-opnd-to-reg opnd
+                                                        reg
+                                                        var
+                                                        needed
+                                                        (node->comment
+                                                         (if (eq? arg 'return)
+                                                             node
+                                                             arg)))
+                                      (save-in-slot opnd
+                                                    var
+                                                    needed
+                                                    (node->comment
+                                                     (if (eq? arg 'return)
+                                                         node
+                                                         arg))))
+
+                                  (stretchable-vector-set! reg-map pos var)
+                                  (loop2 (cdr l)
+                                         (varset-adjoin liv var)
+                                         (cdr live-vars-at-next-regs)
+                                         oper-var)))
 
 ))
 
@@ -3197,10 +3544,7 @@
                                                  empty-var)
                                         (loop4 (- i 1)))))))
 
-                              (seal-bb (intrs-enabled? (node-env node))
-                                       (if (reason-tail? reason2)
-                                         'tail-call
-                                         'call))
+                              (seal-bb node where)
 
                               (if (and (not (intrs-enabled? (node-env node)))
                                        (not (reason-tail? reason2))
@@ -3209,14 +3553,25 @@
                                  (source-locat (node-source node))
                                  "Nontail call with interrupts disabled"))
 
-                              (bb-put-branch! *bb*
-                                (make-jump
-                                 opnd
-                                 (if local-proc-info #f nb-args)
-                                 #f
-                                 (safe? (node-env node))
-                                 (current-frame liv)
-                                 (node->comment node)))
+                              (emit-instr!
+                               (make-jump
+                                opnd
+                                return-lbl
+                                (if local-proc-info #f nb-args)
+                                #f
+                                (and (safe? (node-env node))
+                                     (not local-proc-info)
+                                     (not (and (obj? opnd)
+                                               (let ((val (obj-val opnd)))
+                                                 (and (proc-obj? val)
+                                                      (proc-obj-primitive? val))))))
+                                (current-frame
+                                 (if return-lbl
+                                     (let ((ret-v (make-temp-var 0)))
+                                       (put-var (make-reg 0) ret-v)
+                                       (varset-adjoin liv ret-v))
+                                     liv))
+                                (node->comment node)))
 
                               ; ==== FIFTH: put return label if there is one
 
@@ -3228,16 +3583,57 @@
 
                                 (if (reason-tail? reason2)
                                   target.proc-result
-                                  (begin
-                                    (set! poll (return-poll poll))
-                                    (set! *bb*
-                                      (make-bb
-                                       (make-label-return
-                                        return-lbl
-                                        (current-frame
-                                         (varset-adjoin live result-var))
-                                        (node->comment node))
-                                       *bbs*))
+                                  (let ((frame
+                                         (current-frame
+                                          (varset-adjoin live result-var))))
+
+                                    (set! poll (return-poll poll where))
+
+                                    (set! *bb* (make-bb
+                                                (emit-label!
+                                                 (make-label-return
+                                                  return-lbl
+                                                  frame
+                                                  (node->comment node)))
+                                                *bbs*))
+
+                                    (if (dead-end-calls? (node-env node))
+                                        (let* ((lbl1 (bbs-new-lbl! *bbs*))
+                                               (lbl2 (bbs-new-lbl! *bbs*)))
+
+                                          (emit-instr!
+                                           (make-jump (make-lbl lbl1)
+                                                      #f
+                                                      #f
+                                                      #f
+                                                      #f
+                                                      frame
+                                                      (node->comment node)))
+
+                                          (set! *bb* (make-bb
+                                                      (emit-label!
+                                                       (make-label-simple
+                                                        lbl1
+                                                        frame
+                                                        (node->comment node)))
+                                                      *bbs*))
+
+                                          (emit-instr!
+                                           (make-jump (make-lbl lbl1)
+                                                      #f
+                                                      #f
+                                                      #f
+                                                      #f
+                                                      frame
+                                                      (node->comment node)))
+
+                                          (set! *bb* (make-bb
+                                                      (emit-label!
+                                                       (make-label-simple
+                                                        lbl2
+                                                        frame
+                                                        (node->comment node)))
+                                                      *bbs*))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 #;
@@ -3274,13 +3670,13 @@
 (define (save-opnd opnd live comment)
   (let ((dest (or ;(highest-dead-reg live) ; it is better to not use registers
                   (lowest-dead-slot live))))
-    (put-copy 12 opnd dest (get-var opnd) live comment)))
+    (put-copy opnd dest (get-var opnd) live comment)))
 
 (define (save-regs-to-stk regs live comment)
   (for-each (lambda (i)
               (let ((slot (lowest-dead-slot live))
                     (opnd (make-reg i)))
-                (put-copy 13 opnd slot (get-var opnd) live comment)))
+                (put-copy opnd slot (get-var opnd) live comment)))
             regs))
 
 (define (save-opnd-to-reg opnd reg var live comment)
@@ -3288,12 +3684,12 @@
     (if (and reg-var
              (live-reg-var? reg-var (live-vars live)))
       (save-opnd reg (opnd-needed opnd live) comment))
-    (put-copy 14 opnd reg var live comment)))
+    (put-copy opnd reg var live comment)))
 
 (define (save-opnd-to-stk opnd stk var live comment)
   (if (memq (stk-num stk) (live-slots live))
     (save-opnd stk (opnd-needed opnd live) comment))
-  (put-copy 15 opnd stk var live comment))
+  (put-copy opnd stk var live comment))
 
 (define (all-args-trivial? l)
   (if (null? l)
@@ -3617,22 +4013,22 @@
                      (put-var slot var)
                      (loop3 (cdr l))))))
 
-            (zzzbb-put-non-branch! *bb* "IN gen-let"
-              (make-close
-                (map (lambda (var)
-                       (let* ((closed-list
-                               (sort-variables
-                                (varset->list
-                                 (closed-vars var const-proc-vars))))
-                              (proc-info
-                               (schedule-gen-proc (var->val var) closed-list)))
-                         (make-closure-parms
-                          (var->opnd var)
-                          (proc-info-lbl1 proc-info)
-                          (map var->opnd closed-list))))
-                     clo-vars-list)
-                (current-frame liv)
-                (node->comment node)))))
+            (emit-instr!
+             (make-close
+              (map (lambda (var)
+                     (let* ((closed-list
+                             (sort-variables
+                              (varset->list
+                               (closed-vars var const-proc-vars))))
+                            (proc-info
+                             (schedule-gen-proc (var->val var) closed-list)))
+                       (make-closure-parms
+                        (var->opnd var)
+                        (proc-info-lbl1 proc-info)
+                        (map var->opnd closed-list))))
+                   clo-vars-list)
+              (current-frame liv)
+              (node->comment node)))))
 
         (gen-node node live reason)))))
 
@@ -3653,11 +4049,11 @@
               (not (memq (stk-num opnd) (live-slots live))))
          (put-var opnd var))
         (else
-         (save-in-slot 222 opnd var live comment))))
+         (save-in-slot opnd var live comment))))
 
-(define (save-in-slot n opnd var live comment);;;;;;;;;;;;;;;;;;;;;;;;;
+(define (save-in-slot opnd var live comment)
   (let ((slot (lowest-dead-slot live)))
-    (put-copy n opnd slot var live comment)))
+    (put-copy opnd slot var live comment)))
 
 (define (save-var opnd var live comment)
   (cond ((or (obj? opnd) (lbl? opnd))
@@ -3667,21 +4063,21 @@
          (get-var opnd))
         (else
          (let ((dest (or (highest-dead-reg live) (lowest-dead-slot live))))
-           (put-copy 17 opnd dest var live comment)
+           (put-copy opnd dest var live comment)
            var))))
 
-(define (put-copy n opnd loc var live comment);;;;;;;;;;;;;;;;;;;;;;;
+(define (put-copy opnd loc var live comment)
   (if (and (stk? loc) (> (stk-num loc) nb-slots))
     (begin
       (extend-slots (- (stk-num loc) 1) live comment)
       (push-slot)))
   (if var (put-var loc var))
   (if (not (eq? opnd loc))
-    (zzzbb-put-non-branch! *bb* (string-append "IN put-copy " (number->string n))
-      (make-copy opnd
-                 loc
-                 (current-frame (if var (varset-adjoin live var) live))
-                 comment))))
+    (emit-instr!
+     (make-copy opnd
+                loc
+                (current-frame (if var (varset-adjoin live var) live))
+                comment))))
 
 (define (var-useless? var)
   (and (ptset-empty? (var-refs var))
@@ -3753,7 +4149,7 @@
                             (not (varset-member? (list-ref regs j)
                                                  live-v)))
                       (let ((reg (make-reg j)))
-                        (put-copy 19 (var->opnd var)
+                        (put-copy (var->opnd var)
                                   reg
                                   var
                                   live-v
@@ -3768,7 +4164,7 @@
                       (save-opnd slot
                                  live-v
                                  (node->comment node)))
-                    (put-copy 20 (var->opnd var)
+                    (put-copy (var->opnd var)
                               slot
                               var
                               live-v
@@ -3785,15 +4181,16 @@
                        empty-var)
               (loop3 (- i 1))))))
 
-      (seal-bb (intrs-enabled? (node-env node)) 'call)
+      (seal-bb node 'call)
 
-      (bb-put-branch! *bb*
-        (make-jump (make-lbl task-lbl)
-                   #f
-                   #f
-                   #f
-                   (current-frame live-starting-task)
-                   (node->comment node)))
+      (emit-instr!
+       (make-jump (make-lbl task-lbl)
+                  #f
+                  #f
+                  #f
+                  #f
+                  (current-frame live-starting-task)
+                  (node->comment node)))
 
       (let ((task-context
               (make-context (- nb-slots frame-start)
@@ -3807,16 +4204,17 @@
                             (drop slots (- nb-slots frame-start))
                             '()
                             closed
-                            (return-poll poll)
+                            (return-poll poll 'internal)
                             entry-bb)))
 
         (restore-context task-context)
         (set! *bb* (make-bb
+                    (emit-label!
                      (make-label-task-entry
-                       task-lbl
-                       (current-frame live-starting-task)
-                       (node->comment node))
-                     *bbs*))
+                      task-lbl
+                      (current-frame live-starting-task)
+                      (node->comment node)))
+                    *bbs*))
 
         (gen-node val ret-var-set (make-reason-tail))
 
@@ -3825,11 +4223,12 @@
           (put-var target.proc-result result-var)
 
           (set! *bb* (make-bb
+                      (emit-label!
                        (make-label-task-return
-                         return-lbl
-                         (current-frame (varset-adjoin live result-var))
-                         (node->comment node))
-                       *bbs*))
+                        return-lbl
+                        (current-frame (varset-adjoin live result-var))
+                        (node->comment node)))
+                      *bbs*))
 
           (gen-return node live reason target.proc-result))))))
 

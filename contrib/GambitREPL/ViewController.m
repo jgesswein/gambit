@@ -2,7 +2,7 @@
 //  ViewController.m
 //
 //  Created by Marc Feeley on 11-03-06.
-//  Copyright 2011-2012 UniversitÃ© de MontrÃ©al. All rights reserved.
+//  Copyright 2011-2019 UniversitÃ© de MontrÃ©al. All rights reserved.
 //
 #define DEBUG_UI_not
 
@@ -32,16 +32,16 @@ ViewController *theViewController = nil;
  * ___VERSION must match the version number of the Gambit header file.
  */
 
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
 /*
  * Define SCHEME_LIBRARY_LINKER as the name of the Scheme library
- * prefixed with "____20_" and suffixed with "__".  This is the
+ * prefixed with "___LNK_" and suffixed with "__".  This is the
  * function that initializes the Scheme library.
  */
 
-#define SCHEME_LIBRARY_LINKER ____20_program__
+#define SCHEME_LIBRARY_LINKER ___LNK_program__
 
 ___BEGIN_C_LINKAGE
 extern ___mod_or_lnk SCHEME_LIBRARY_LINKER (___global_state_struct*);
@@ -49,7 +49,7 @@ ___END_C_LINKAGE
 
 
 extern char **main_argv;
-___UCS_2 ucs2_gambcdir[1024];
+___UCS_2 ucs2_gambitdir[1024];
 
 void gambit_setup()
 {
@@ -64,9 +64,10 @@ void gambit_setup()
   int last_dir_sep;
   int i;
 
-  if (___NONNULLCHARSTRINGLIST_to_NONNULLUCS_2STRINGLIST
+  if (___NONNULLSTRINGLIST_to_NONNULLUCS_2STRINGLIST
         (main_argv,
-         &ucs2_argv)
+         &ucs2_argv,
+         ___CHAR_ENCODING_UTF_8)
       != ___FIX(___NO_ERR))
     exit(1);
 
@@ -81,9 +82,9 @@ void gambit_setup()
     }
 
   for (i=0; i<last_dir_sep; i++)
-    ucs2_gambcdir[i] = ucs2_argv[0][i];
+    ucs2_gambitdir[i] = ucs2_argv[0][i];
 
-  ucs2_gambcdir[i] = '\0';
+  ucs2_gambitdir[i] = '\0';
 
   // Set debugging settings so that all threads with uncaught
   // exceptions start a REPL.
@@ -107,12 +108,12 @@ void gambit_setup()
   setup_params.version        = ___VERSION;
   setup_params.linker         = SCHEME_LIBRARY_LINKER;
   setup_params.argv           = ucs2_argv;
-  setup_params.gambcdir       = ucs2_gambcdir;
+  setup_params.gambitdir      = ucs2_gambitdir;
   setup_params.debug_settings = debug_settings;
 
   ___setup (&setup_params);
 
-  ___disable_heartbeat_interrupts ();
+  ___disable_interrupts_pstate (___PSTATE);
 }
 
 
@@ -661,13 +662,13 @@ void set_navigation(int n) {
 }
 
 
-- (void)queue_action:(void(^)())action {
+- (void)queue_action:(void(^)(void))action {
 
   [queuedActions addObject:[action copy]];
 }
 
 
-- (void)queue_action_asap:(void(^)())action {
+- (void)queue_action_asap:(void(^)(void))action {
 
   [self queue_action:action];
 
@@ -697,7 +698,7 @@ void set_navigation(int n) {
 
   [self queue_action:^{ [self schedule_next_heartbeat_tick:heartbeat()]; }];
 
-  ___enable_heartbeat_interrupts ();
+  ___enable_interrupts_pstate (___PSTATE);
 
   while ([queuedActions count] > 0)
     {
@@ -712,7 +713,7 @@ void set_navigation(int n) {
       );
     }
 
-  ___disable_heartbeat_interrupts ();
+  ___disable_interrupts_pstate (___PSTATE);
 }
 
 
@@ -1569,7 +1570,7 @@ void popup_alert(NSString *title, NSString *msg, NSString *cancel_button, NSStri
 #else
 
   // Hack to work around an iOS bug found here:
-  // http://stackoverflow.com/questions/18340360/strange-uitextview-behavior-setting-range-within-textviewdidchangeselection
+  // http://stackoverflow.com/questions/18340360
 
   dispatch_async(dispatch_get_main_queue(), ^{
       inputTextViewEnable = NO;

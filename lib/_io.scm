@@ -2,11 +2,7 @@
 
 ;;; File: "_io.scm"
 
-;;; Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved.
-
-;;;============================================================================
-
-(##include "header.scm")
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -28,16 +24,19 @@
          (lambda () (raise-exception)))
         (raise-exception))))
 
+(define-prim (read-error? obj)
+  (macro-datum-parsing-exception? obj))
+
 (implement-library-type-unterminated-process-exception)
 
 (define-prim (##raise-unterminated-process-exception port proc . args)
   (##extract-procedure-and-arguments
-   port
    proc
    args
+   port
    #f
    #f
-   (lambda (port procedure arguments dummy2 dummy3)
+   (lambda (procedure arguments port dummy2 dummy3)
      (##raise-io-exception
       port
       (macro-make-unterminated-process-exception procedure arguments)))))
@@ -46,30 +45,15 @@
 
 (define-prim (##raise-nonempty-input-port-character-buffer-exception port proc . args)
   (##extract-procedure-and-arguments
-   port
    proc
    args
+   port
    #f
    #f
-   (lambda (port procedure arguments dummy2 dummy3)
+   (lambda (procedure arguments port dummy2 dummy3)
      (##raise-io-exception
       port
       (macro-make-nonempty-input-port-character-buffer-exception procedure arguments)))))
-
-(implement-library-type-no-such-file-or-directory-exception)
-
-(define-prim (##raise-no-such-file-or-directory-exception proc . args)
-  (##extract-procedure-and-arguments
-   proc
-   args
-   #f
-   #f
-   #f
-   (lambda (procedure arguments dummy1 dummy2 dummy3)
-     (macro-raise
-      (macro-make-no-such-file-or-directory-exception
-       procedure
-       arguments)))))
 
 (define-prim (##raise-os-io-exception port message code proc . args)
   (##extract-procedure-and-arguments
@@ -81,9 +65,14 @@
    (lambda (procedure arguments message code port)
      (##raise-io-exception
       port
-      (if (##fx= code ##err-code-ENOENT)
-          (macro-make-no-such-file-or-directory-exception procedure arguments)
-          (macro-make-os-exception procedure arguments message code))))))
+      (cond ((##fx= code ##err-code-ENOENT)
+             (macro-make-no-such-file-or-directory-exception procedure arguments))
+            ((##fx= code ##err-code-EEXIST)
+             (macro-make-file-exists-exception procedure arguments))
+            ((##fx= code ##err-code-EACCES)
+             (macro-make-permission-denied-exception procedure arguments))
+            (else
+             (macro-make-os-exception procedure arguments message code)))))))
 
 (define-prim (##raise-io-exception port exc)
   (let ((handler (macro-port-io-exception-handler port)))
@@ -91,12 +80,23 @@
         (handler exc)
         (macro-raise exc))))
 
+(define-prim (file-error? obj)
+  (or (macro-no-such-file-or-directory-exception? obj)
+      (macro-file-exists-exception? obj)
+      (macro-permission-denied-exception? obj)))
+
 ;;;----------------------------------------------------------------------------
 
 ;;; Define type checking procedures.
 
 (define-fail-check-type settings
   'settings)
+
+(define-fail-check-type tls-version
+  'tls-version)
+
+(define-fail-check-type tls-options
+  'tls-options)
 
 (define-fail-check-type exact-integer-or-string-or-settings
   'exact-integer-or-string-or-settings)
@@ -118,7 +118,8 @@
               shift
               close-parens
               level
-              limit)
+              limit
+              max-unescaped-char)
   (macro-make-writeenv
    style
    port
@@ -129,7 +130,8 @@
    shift
    close-parens
    level
-   limit))
+   limit
+   max-unescaped-char))
 
 ;;;----------------------------------------------------------------------------
 
@@ -141,6 +143,7 @@
               wrapper
               unwrapper
               allow-script?
+              case-conversion?
               read-cont)
   (macro-make-readenv
    port
@@ -148,7 +151,10 @@
    wrapper
    unwrapper
    allow-script?
-   '()
+   (if (##eq? case-conversion? '()) ;; default to readtable?
+       (macro-readtable-case-conversion? readtable)
+       case-conversion?)
+   (##make-table-aux)
    #f
    0
    read-cont))
@@ -212,15 +218,17 @@
           (macro-default-stderr-redir)
           (macro-default-pseudo-term)
           (macro-default-show-console)
-          (macro-default-server-address)
-          (macro-default-port-number)
-          (macro-default-socket-type)
+          '() ;; address
+          '() ;; port-number
+          '() ;; local-address
+          '() ;; local-port-number
           (macro-default-coalesce)
           (macro-default-keep-alive)
           (macro-default-backlog)
           (macro-default-reuse-address)
           (macro-default-broadcast)
-          (macro-default-ignore-hidden))))
+          (macro-default-ignore-hidden)
+          (macro-default-tls-context))))
     (##parse-psettings!
      allowed-settings
      settings
@@ -457,16 +465,6 @@
           (else
            #f)))
 
-  (define (socket-type value)
-    (cond ((or (##eq? value 'TCP) (##eq? value 'tcp))
-           (macro-socket-type-TCP))
-          ((or (##eq? value 'UDP) (##eq? value 'udp))
-           (macro-socket-type-UDP))
-          ((or (##eq? value 'RAW) (##eq? value 'raw))
-           (macro-socket-type-RAW))
-          (else
-           #f)))
-
   (define (coalesce value)
     (cond ((##eq? value #t)
            (macro-coalesce))
@@ -517,6 +515,11 @@
            (macro-ignore-dot-and-dot-dot))
           (else
            #f)))
+
+  (define (tls-context value)
+    (if (##foreign? value)
+        value
+        #f))
 
   (let loop ((lst settings))
     (macro-force-vars (lst)
@@ -909,13 +912,13 @@
                                         (loop rest2))
                                       (error name))))
 
-                               ((##eq? name 'server-address:)
+                               ((or (##eq? name 'server-address:) ;; keep for backward compatibility
+                                    (##eq? name 'address:)
+                                    (##eq? name 'local-address:))
                                 (cond ((##string? value)
                                        (let ((address-and-port-number
                                               (##string->address-and-port-number
-                                               value
-                                               (macro-default-server-address)
-                                               #f)))
+                                               value)))
                                          (if address-and-port-number
                                              (let ((address
                                                     (##car
@@ -923,40 +926,47 @@
                                                    (port-number
                                                     (##cdr
                                                      address-and-port-number)))
-                                               (macro-psettings-server-address-set!
-                                                psettings
-                                                address)
-                                               (if port-number
-                                                   (macro-psettings-port-number-set!
+                                               (if (##eq? name 'local-address:)
+                                                   (macro-psettings-local-address-set!
                                                     psettings
-                                                    port-number))
+                                                    address)
+                                                   (macro-psettings-address-set!
+                                                    psettings
+                                                    address))
+                                               (if (##not (##null? port-number))
+                                                   (if (##eq? name 'local-address:)
+                                                       (macro-psettings-local-port-number-set!
+                                                        psettings
+                                                        port-number)
+                                                       (macro-psettings-port-number-set!
+                                                        psettings
+                                                        port-number)))
                                                (loop rest2))
                                              (error name))))
                                       ((##ip-address? value)
-                                       (macro-psettings-server-address-set!
-                                        psettings
-                                        value)
+                                       (if (##eq? name 'local-address:)
+                                           (macro-psettings-local-address-set!
+                                            psettings
+                                            value)
+                                           (macro-psettings-address-set!
+                                            psettings
+                                            value))
                                        (loop rest2))
                                       (else
                                        (error name))))
 
-                               ((##eq? name 'port-number:)
+                               ((or (##eq? name 'port-number:)
+                                    (##eq? name 'local-port-number:))
                                 (let ((x (port-number value)))
                                   (if x
                                       (begin
-                                        (macro-psettings-port-number-set!
-                                         psettings
-                                         x)
-                                        (loop rest2))
-                                      (error name))))
-
-                               ((##eq? name 'socket-type:)
-                                (let ((x (socket-type value)))
-                                  (if x
-                                      (begin
-                                        (macro-psettings-socket-type-set!
-                                         psettings
-                                         x)
+                                        (if (##eq? name 'local-port-number:)
+                                            (macro-psettings-local-port-number-set!
+                                             psettings
+                                             x)
+                                            (macro-psettings-port-number-set!
+                                             psettings
+                                             x))
                                         (loop rest2))
                                       (error name))))
 
@@ -1019,6 +1029,11 @@
                                          x)
                                         (loop rest2))
                                       (error name))))
+                               ((##eq? name 'tls-context:)
+                                (macro-psettings-tls-context-set!
+                                 psettings
+                                 (tls-context value))
+                                (loop rest2))
 
                                (else
                                 (error name)))))
@@ -1178,9 +1193,19 @@
   (macro-force-vars (obj)
     (macro-output-port? obj)))
 
+(define-prim (textual-port? obj)
+  (macro-force-vars (obj)
+    (macro-character-port? obj)))
+
+(define-prim (binary-port? obj)
+  (macro-force-vars (obj)
+    (macro-byte-port? obj)))
+
 (implement-check-type-port)
 (define-fail-check-type input-port 'input-port)
 (define-fail-check-type output-port 'output-port)
+(define-fail-check-type object-input-port 'object-input-port)
+(define-fail-check-type object-output-port 'object-output-port)
 (define-fail-check-type character-input-port 'character-input-port)
 (define-fail-check-type character-output-port 'character-output-port)
 (define-fail-check-type byte-port 'byte-port)
@@ -1193,16 +1218,26 @@
 
 ;;; I/O condition variables.
 
-(define-prim (##make-io-condvar name for-writing?)
+(define-macro (macro-io-condvar-for-reading) 0)
+(define-macro (macro-io-condvar-for-writing) 2)
+(define-macro (macro-io-condvar-for-event)   4)
+
+(define-prim (##make-io-condvar name kind)
   (let ((cv (##make-condvar name)))
-    (macro-btq-owner-set! cv (if for-writing? 2 0))
+    (macro-btq-owner-set! cv kind)
     cv))
+
+(define-prim (##make-io-condvar-for-reading name)
+  (##make-io-condvar name (macro-io-condvar-for-reading)))
+
+(define-prim (##make-io-condvar-for-writing name)
+  (##make-io-condvar name (macro-io-condvar-for-writing)))
+
+(define-prim (##make-io-condvar-for-event name)
+  (##make-io-condvar name (macro-io-condvar-for-event)))
 
 (define-prim (##io-condvar? cv)
   (##fixnum? (macro-btq-owner cv)))
-
-(define-prim (##io-condvar-for-writing? cv)
-  (##not (##fx= 0 (##fxand 2 (macro-btq-owner cv)))))
 
 (define-prim (##io-condvar-port cv)
   (macro-condvar-specific cv))
@@ -1237,6 +1272,9 @@
     (define (name port)
       'dummy)
 
+    (define (wait port direction)
+      #t)
+
     (define (read-datum port re)
       #!eof)
 
@@ -1258,15 +1296,12 @@
     (define (set-wtimeout port timeout thunk)
       (##void))
 
-    (macro-make-port
+    (macro-make-object-port
      mutex
      rkind
      wkind
      name
-     read-datum
-     write-datum
-     newline
-     force-output
+     wait
      close
      roptions
      rtimeout
@@ -1277,10 +1312,28 @@
      wtimeout-thunk
      set-wtimeout
      #f ;; io-exception-handler
+     read-datum
+     write-datum
+     newline
+     force-output
      )))
 
-(define (open-dummy)
+(define-prim (##open-dummy)
   (##make-dummy-port))
+
+(define-prim (open-dummy)
+  (##make-dummy-port))
+
+;;;----------------------------------------------------------------------------
+
+;; Function to determine appropriate character buffer length.
+
+(define-prim (##port-char-buf-len kind unbuffered?)
+  (if unbuffered?
+      1
+      (if (##fx= kind (macro-u8vector-kind))
+          32
+          512)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -1288,7 +1341,6 @@
 
 (define-prim (##make-device-port device-name rdevice wdevice psettings)
 
-  (define char-buf-len 512) ;; character buffer length
   (define byte-buf-len 1024) ;; byte buffer length
 
   (let* ((mutex
@@ -1323,9 +1375,8 @@
           #f)
          (char-rbuf
           (and (##not (##fx= rkind (macro-none-kind)))
-               (##make-string (if (macro-unbuffered? roptions)
-                                  1
-                                  char-buf-len))))
+               (##make-string
+                (##port-char-buf-len rkind (macro-unbuffered? roptions)))))
          (char-rlo
           0)
          (char-rhi
@@ -1342,9 +1393,8 @@
           #f)
          (char-wbuf
           (and (##not (##fx= wkind (macro-none-kind)))
-               (##make-string (if (macro-unbuffered? woptions)
-                                  1
-                                  char-buf-len))))
+               (##make-string
+                (##port-char-buf-len wkind (macro-unbuffered? woptions)))))
          (char-wlo
           0)
          (char-whi
@@ -1381,10 +1431,17 @@
           ##byte-wbuf-drain)
          (rdevice-condvar
           (and (##not (##fx= rkind (macro-none-kind)))
-               (##make-rdevice-condvar rdevice)))
+               (##make-io-condvar-for-reading rdevice)))
          (wdevice-condvar
           (and (##not (##fx= wkind (macro-none-kind)))
-               (##make-wdevice-condvar wdevice))))
+               (##make-io-condvar-for-writing wdevice)))
+         (event-condvar
+          (cond ((##fx= rkind (macro-process-kind))
+                 (##make-io-condvar-for-event rdevice))
+                ((##fx= wkind (macro-process-kind))
+                 (##make-io-condvar-for-event wdevice))
+                (else
+                 #f))))
 
     (define (name port)
 
@@ -1394,6 +1451,15 @@
       (##declare (not interrupts-enabled))
 
       (macro-device-port-name port))
+
+    (define (wait port direction)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##wait-device port direction))
 
     (define (read-datum port re)
 
@@ -1420,7 +1486,7 @@
 
       (##declare (not interrupts-enabled))
 
-      (##write-char #\newline port))
+      (macro-write-char #\newline port))
 
     (define (force-output port level prim arg1 arg2 arg3 arg4)
 
@@ -1447,8 +1513,7 @@
         (if (##fixnum? code1)
             code1
             (let* ((wdevice-condvar (macro-device-port-wdevice-condvar port))
-                   (wdevice (macro-condvar-name wdevice-condvar))
-                   (code2 (##os-device-force-output wdevice level)))
+                   (code2 (##os-device-force-output wdevice-condvar level)))
               (cond ((##fx= code2 ##err-code-EINTR)
 
                      ;; the force was interrupted, so try again
@@ -1581,8 +1646,7 @@
       (let loop ()
 
         (let* ((wdevice-condvar (macro-device-port-wdevice-condvar port))
-               (wdevice (macro-condvar-name wdevice-condvar))
-               (result (##os-device-stream-width wdevice)))
+               (result (##os-device-stream-width wdevice-condvar)))
           (if (##fx= result ##err-code-EINTR)
               (loop)
               (begin
@@ -1597,10 +1661,7 @@
             rkind
             wkind
             name
-            read-datum
-            write-datum
-            newline
-            force-output
+            wait
             close
             roptions
             rtimeout
@@ -1611,6 +1672,10 @@
             wtimeout-thunk
             set-wtimeout
             #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
             char-rbuf
             char-rlo
             char-rhi
@@ -1642,18 +1707,15 @@
             byte-wbuf-drain
             rdevice-condvar
             wdevice-condvar
+            event-condvar ;; only used for process ports
             device-name)))
       (if rdevice-condvar
           (##io-condvar-port-set! rdevice-condvar port))
       (if wdevice-condvar
           (##io-condvar-port-set! wdevice-condvar port))
+      (if event-condvar
+          (##io-condvar-port-set! event-condvar port))
       port)))
-
-(define-prim (##make-rdevice-condvar rdevice)
-  (##make-io-condvar rdevice #f))
-
-(define-prim (##make-wdevice-condvar wdevice)
-  (##make-io-condvar wdevice #t))
 
 (define-prim (##make-device-port-from-single-device
               device-name
@@ -1675,6 +1737,23 @@
                                device
                                device
                                psettings)))))
+
+(define-prim (##wait-device port direction)
+
+  ;; It is assumed that the thread **does not** have exclusive
+  ;; access to the port.
+
+  (##declare (not interrupts-enabled))
+
+  (if (##fx= direction (macro-direction-in))
+
+      (##wait-for-io!
+       (macro-device-port-rdevice-condvar port)
+       (macro-port-rtimeout port))
+
+      (##wait-for-io!
+       (macro-device-port-wdevice-condvar port)
+       (macro-port-wtimeout port))))
 
 (define-prim (##close-device port rdevice-condvar wdevice-condvar prim)
 
@@ -1720,13 +1799,13 @@
     (let ((result
            (if (##eq? position (macro-absent-obj))
                (##os-device-stream-seek
-                (macro-condvar-name (macro-device-port-rdevice-condvar port))
+                (macro-device-port-rdevice-condvar port)
                 0
                 1)
                (begin
                  (##flush-input-buffering port)
                  (##os-device-stream-seek
-                  (macro-condvar-name (macro-device-port-rdevice-condvar port))
+                  (macro-device-port-rdevice-condvar port)
                   position
                   (if (##eq? whence (macro-absent-obj)) 0 whence))))))
       (if (and (##fixnum? result)
@@ -1778,13 +1857,13 @@
     (let ((result
            (if (##eq? position (macro-absent-obj))
                (##os-device-stream-seek
-                (macro-condvar-name (macro-device-port-wdevice-condvar port))
+                (macro-device-port-wdevice-condvar port)
                 0
                 1)
                (begin
                  (##force-output port)
                  (##os-device-stream-seek
-                  (macro-condvar-name (macro-device-port-wdevice-condvar port))
+                  (macro-device-port-wdevice-condvar port)
                   position
                   (if (##eq? whence (macro-absent-obj)) 0 whence))))))
       (if (and (##fixnum? result)
@@ -1826,53 +1905,6 @@
                2
                (output-port-byte-position port position whence)
                (##output-port-byte-position port position whence)))))))
-
-(define-prim (##device-port-wait-for-input! port)
-
-  ;; TODO: generalize this to all other types of ports.
-
-  ;; The thread will wait until there is data available to read on the
-  ;; port's device or the port's timeout is reached.  The value #f is
-  ;; returned when the timeout is reached.  The value #t is returned
-  ;; when there is data available to read on the port's device or the
-  ;; thread was interrupted (for example with thread-interrupt!).
-
-  ;; It is assumed that the thread **does not** have exclusive
-  ;; access to the port.
-
-  (##declare (not interrupts-enabled))
-
-  (##wait-for-io!
-   (macro-device-port-rdevice-condvar port)
-   (macro-port-rtimeout port)))
-
-(define-prim (##device-port-wait-for-output! port)
-
-  ;; Complement to ##device-port-wait-for-input! . 
-
-  ;; The thread will wait until the port's device is writeable in the
-  ;; sense that more data can be written to it, or the port's timeout
-  ;; is reached.  The value #f is returned when the timeout is reached.
-  ;; The value #t is returned when the port's device is writeable or
-  ;; the thread was interrupted (for example with thread-interrupt!).
-
-  ;; An example of when a port is not writeable is when a TCP client
-  ;; port has full OS transmit buffers. For such a port, a
-  ;; ##device-port-wait-for-output! on it will return when space has
-  ;; become available in the buffers.
-  ;;
-  ;; Additionally, waiting for writability on a TCP client port is a way
-  ;; to ensure that the connection has been established at all in the
-  ;; first place. This may be of relevance to determine in some lowlevel
-  ;; use scenarios, as Gambit does TCP connect:s asynchronously in such
-  ;; a way that open-tcp-client returns the TCP client port object
-  ;; actually prior to the connection having been established.
-
-  (##declare (not interrupts-enabled))
-
-  (##wait-for-io!
-   (macro-device-port-wdevice-condvar port)
-   (macro-port-wtimeout port)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -2007,7 +2039,7 @@
             (macro-byte-port-rhi port))
            (n
             (##os-device-stream-read
-             (macro-condvar-name (macro-device-port-rdevice-condvar port))
+             (macro-device-port-rdevice-condvar port)
              byte-rbuf
              byte-rhi
              (let ((rbuf-len (##u8vector-length byte-rbuf)))
@@ -2145,7 +2177,7 @@
 
           (let ((n
                  (##os-device-stream-write
-                  (macro-condvar-name (macro-device-port-wdevice-condvar port))
+                  (macro-device-port-wdevice-condvar port)
                   (macro-byte-port-wbuf port)
                   byte-wlo
                   byte-whi)))
@@ -2217,6 +2249,80 @@
                   drain-output
                   allowed-settings)
 
+  ;; Vector ports (either actual vector, string or u8vector port) have a
+  ;; representation that supports various functionality:
+  ;;
+  ;; - input-only port: data is obtained from an initial vector
+  ;;
+  ;; - output-only port: data is accumulated into a resulting vector
+  ;;
+  ;; - input-output port: data written to the port can be read
+  ;;                      from the port in FIFO fashion
+  ;;
+  ;; - pipe port: each end of the pipe has a corresponding port and
+  ;;              output on one port causes data to be available on
+  ;;              the peer port (pipe ports can be unidirectional
+  ;;              or bidirectional)
+  ;;
+  ;; For efficiency, the buffering of data in the port is implemented
+  ;; as a list of limited-size chunks of data stored in a FIFO
+  ;; structure.  Writing to the port stores data into the chunk at the
+  ;; tail of the FIFO and reading from the port fetches data from the
+  ;; chunk at the head of the FIFO.  This allows the garbage
+  ;; collection of the data that has been read (at the granularity of
+  ;; chunks) and it simplifies accumulating data that is written to
+  ;; the port.  In the case of a pipe port, the FIFO is shared by the
+  ;; port and its peer port (a bidirectional pipe port has 2
+  ;; independent FIFOs).
+  ;;
+  ;; The read buffer of an input port (called rbuf) is the chunk at
+  ;; the head of the FIFO.  The counters rlo and rhi delimit the
+  ;; section of this chunk that contains data not yet read.  The write
+  ;; buffer of an output port (called wbuf) is the last chunk in the
+  ;; FIFO.  The counter whi indicates the point in the write buffer
+  ;; where new data should be added.
+  ;;
+  ;; Note that in the case of a pipe port, rbuf, rlo and rhi are part
+  ;; of the input port and the FIFO, wbuf and whi are part of the
+  ;; peer's output port.  In the case of a non-pipe input-output port,
+  ;; the "peer" is actually the port itself.  It is possible for rbuf
+  ;; and wbuf to be the same chunk.  This happens when there is little
+  ;; data left to read.
+  ;;
+  ;; As an example, for a string port created from the initial string
+  ;; "abcdefghijklmnopqrstuvwxyz" and a chunk size of 10, once the port
+  ;; is setup the structure will be:
+  ;;
+  ;;    __port__    __________________________peer__________________________
+  ;;
+  ;;                      +---------------------------------------+
+  ;;                FIFO  |                                       v
+  ;;                    +-|-+---+     +---+---+     +---+---+     +---+---+
+  ;;                    |   |  -+---> |   |  -+---> |   |  -+---> |   | ()|
+  ;;                    +---+---+     +-|-+---+     +-|-+---+     +-|-+---+
+  ;;                                    v             v             v
+  ;;    rbuf -------------------------> "abcdefghij"  "klmnopqrst"  "uvwxyz"
+  ;;                                     ^         ^                ^      ^
+  ;;    rlo -----------------------------+         |                |      |
+  ;;    rhi ---------------------------------------+             wbuf    whi
+  ;;
+  ;; To write data, the wbuf is accessed at the index indicated by
+  ;; whi.  If whi reaches the end of the chunk, a freshly allocated
+  ;; chunk is added to the tail of the FIFO and this chunk becomes the
+  ;; new wbuf and whi is set to 0.  To read data, the rbuf is accessed
+  ;; at the index indicated by rlo and rlo is increased.  When more
+  ;; data needs to be read than there is between rlo and rhi either
+  ;;
+  ;; - rbuf and wbuf are the same chunk: rhi is set to whi (this may
+  ;;   allow the read to continue)
+  ;;
+  ;; - rbuf and wbuf are not the same chunk: the chunk at the head of
+  ;;   the FIFO is removed, any data in rbuf between rlo and rhi is
+  ;;   appended to the beginning of the next chunk and it becomes the
+  ;;   new rbuf (if the FIFO is now empty and rlo != rhi then wbuf is
+  ;;   also set to this chunk and rhi and whi are adjusted
+  ;;   appropriately)
+
   (define (sym . lst)
     (string->symbol
      (apply string-append
@@ -2250,6 +2356,7 @@
     (define ##vect-set!               (sym "##" name '-set!))
     (define ##vect-length             (sym "##" name '-length))
     (define ##vect-shrink!            (sym "##" name '-shrink!))
+    (define ##vect-append             (sym "##" name '-append))
     (define ##subvect                 (sym '##sub name))
     (define ##subvect-move!           (sym '##sub name '-move!))
     (define ##subvect->fifo           (sym '##sub name '->fifo))
@@ -2269,6 +2376,13 @@
     (define open-input-vect           (sym 'open-input- name))
     (define open-output-vect          (sym 'open-output- name))
     (define get-output-vect           (sym 'get-output- name))
+
+    (define ##call-with-input-vect    (sym '##call-with-input- name))
+    (define ##call-with-output-vect   (sym '##call-with-output- name))
+    (define ##call-with-output-vect-aux (sym '##call-with-output- name '-aux))
+    (define ##with-input-from-vect    (sym '##with-input-from- name))
+    (define ##with-output-to-vect     (sym '##with-output-to- name))
+    (define ##with-output-to-vect-aux (sym '##with-output-to- name '-aux))
 
     (define call-with-input-vect      (sym 'call-with-input- name))
     (define call-with-output-vect     (sym 'call-with-output- name))
@@ -2369,69 +2483,153 @@
               (##declare (not interrupts-enabled))
 
               (let loop ()
-
-                #;
-                (if (##u8vector? (,',macro-vect-port-rbuf port))
-                    (pp (##list (,',macro-vect-port-rlo port)
-                                (,',macro-vect-port-rhi port)
-                                (,',macro-vect-port-wlo port)
-                                (,',macro-vect-port-whi port)
-                                (,',macro-vect-port-rbuf port)
-                                (,',macro-vect-port-wbuf port)
-                                )
-                        ##stdout-port))
-
                 (let* ((peer (,',macro-vect-port-peer port))
                        (vect-rbuf (,',macro-vect-port-rbuf port))
                        (vect-wbuf (,',macro-vect-port-wbuf peer)))
                   (if (##not (##eq? vect-rbuf vect-wbuf))
+
+                      ;; there are at least two chunks in the FIFO
+
                       (let ((vect-rhi (,',macro-vect-port-rhi port))
                             (len (,',##vect-length vect-rbuf)))
+
                         (cond ((##fx< vect-rhi len)
+
+                               ;; some elements in rbuf can be read
+                               ;; beyond rhi so make them available
+                               ;; and indicate that something was
+                               ;; added to the read buffer
+
                                (,',macro-vect-port-rhi-set! port len)
                                #t)
+
                               (else
-                               (let ((new-vect-rbuf
-                                      (macro-fifo-advance!
-                                       (,',macro-vect-port-fifo port))))
+
+                               ;; it is necessary to get data from the next
+                               ;; chunk in the FIFO
+
+                               ,',(if (eq? name 'string)
+                                      `(begin
+
+                                         ;; keep track of number of
+                                         ;; characters read
+
+                                         (macro-character-port-rchars-set!
+                                          port
+                                          (##fx+ (macro-character-port-rchars port)
+                                                 (macro-character-port-rhi port))))
+                                      #f)
+
+                               (let* ((next-chunk
+                                       (macro-fifo-advance!
+                                        (,',macro-vect-port-fifo peer)))
+                                      (vect-rlo
+                                       (,',macro-vect-port-rlo port)))
+
+                                 ;; keep track of amount of data buffered
                                  (,',macro-vect-port-wlo-set!
-                                  port
-                                  (##fx- (,',macro-vect-port-wlo port) len))
-                                 (,',macro-vect-port-rbuf-set!
-                                  port
-                                  new-vect-rbuf)
+                                  peer
+                                  (##fx- (,',macro-vect-port-wlo peer)
+                                         vect-rlo))
 
-                                 ,',(if (eq? name 'string)
-                                        `(begin
+                                 (if (##fx= vect-rlo vect-rhi)
 
-                                           ;; keep track of number of characters read
+                                     ;; no data must be carried over
 
-                                           (macro-character-port-rchars-set!
-                                            port
-                                            (##fx+ (macro-character-port-rchars port)
-                                                   (macro-character-port-rhi port))))
+                                     (let ((new-vect-rbuf next-chunk))
 
-                                        #f)
+                                       ;; install new read buffer
+                                       (,',macro-vect-port-rbuf-set!
+                                        port
+                                        new-vect-rbuf))
 
+                                     ;; data must be carried over from
+                                     ;; current read buffer
+
+                                     (let ((new-vect-rbuf
+                                            (,',##vect-append
+                                             (,',##subvect vect-rbuf vect-rlo vect-rhi)
+                                             next-chunk)))
+
+                                       ;; update chunk in FIFO
+                                       (macro-fifo-elem-set!
+                                        (macro-fifo-next
+                                         (,',macro-vect-port-fifo peer))
+                                        new-vect-rbuf)
+
+                                       ;; install new read buffer
+                                       (,',macro-vect-port-rbuf-set!
+                                        port
+                                        new-vect-rbuf)
+
+                                       ;; if needed update write buffer and whi
+
+                                       (if (##eq? next-chunk vect-wbuf)
+                                           (let ((new-whi
+                                                  (##fx+
+                                                   (,',macro-vect-port-whi peer)
+                                                   (##fx- vect-rhi vect-rlo))))
+
+                                             (,',macro-vect-port-whi-set!
+                                              peer
+                                              new-whi)
+
+                                             (,',macro-vect-port-wbuf-set!
+                                              peer
+                                              new-vect-rbuf)))))
+
+                                 ;; reset rlo and rhi to zero (note that next
+                                 ;; iteration of loop will set rhi correctly)
                                  (,',macro-vect-port-rlo-set! port 0)
                                  (,',macro-vect-port-rhi-set! port 0)
+
+                                 ;; signal any thread that may be waiting
+                                 ;; to write data on peer's output port
                                  (##condvar-signal-no-reschedule!
                                   (,',macro-vect-port-wcondvar peer)
                                   #t)
+
+                                 ;; try again
                                  (loop)))))
+
+                      ;; the FIFO contains a single chunk which is
+                      ;; both the rbuf and wbuf
+
                       (let* ((vect-rhi (,',macro-vect-port-rhi port))
                              (vect-whi (,',macro-vect-port-whi peer)))
+
                         (cond ((##fx< vect-rhi vect-whi)
+
+                               ;; some elements in rbuf can be read
+                               ;; beyond rhi so make them available
+                               ;; and indicate that something was
+                               ;; added to the read buffer
+
                                (,',macro-vect-port-rhi-set! port vect-whi)
                                #t)
+
                               ((macro-closed? (macro-port-woptions peer))
+
+                               ;; the peer's output port is closed so indicate
+                               ;; that no new data can be read (end-of-file),
+                               ;; but unclose the peer if the permanent-close
+                               ;; option is #f (this way an end-of-file can
+                               ;; be generated multiple times)
+
                                (if (##not (macro-perm-close?
                                            (macro-port-woptions peer)))
                                    (macro-port-woptions-set!
                                     peer
                                     (macro-unclose! (macro-port-woptions peer))))
                                #f)
+
                               (block?
+
+                               ;; the peer's output port is still open
+                               ;; so block the current thread, waiting
+                               ;; for new data to be added to the
+                               ;; peer's output port
+
                                (let ((continue?
                                       (or (##mutex-signal-and-condvar-wait!
                                            (macro-port-mutex port)
@@ -2442,7 +2640,13 @@
                                  (if continue?
                                      (loop)
                                      ##err-code-EAGAIN)))
+
                               (else
+
+                               ;; it is not OK to block, so indicate
+                               ;; that the operation should be tried
+                               ;; again
+
                                ##err-code-EAGAIN)))))))
 
             (define (,',vect-wbuf-drain port)
@@ -2458,8 +2662,6 @@
 
               (##declare (not interrupts-enabled))
 
-              ;;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
               (let loop ()
                 (let* ((peer
                         (,',macro-vect-port-peer port))
@@ -2467,9 +2669,14 @@
                         (,',macro-vect-port-buffering-limit port)))
                   (if (and buffering-limit
                            (let ((unread
-                                  (##fx- (,',macro-vect-port-wlo peer)
+                                  (##fx- (,',macro-vect-port-wlo port)
                                          (,',macro-vect-port-rlo peer))))
                              (##fx< buffering-limit unread)))
+
+                      ;; buffering limit has been reached, so block
+                      ;; the thread until some reads decrease the
+                      ;; amount of data buffered
+
                       (let ((continue?
                              (or (##mutex-signal-and-condvar-wait!
                                   (macro-port-mutex port)
@@ -2480,31 +2687,54 @@
                         (if continue?
                             (loop)
                             ##err-code-EAGAIN))
+
+                      ;; buffering limit is not yet reached, so allocate
+                      ;; a new write buffer and add it to the FIFO
+
                       (let* ((new-vect-wbuf
                               (,',##make-vect chunk-size))
                              (vect-wbuf
                               (,',macro-vect-port-wbuf port))
                              (vect-whi
                               (,',macro-vect-port-whi port)))
+
+                        ;; keep track of amount of data buffered
                         (,',macro-vect-port-wlo-set!
-                         peer
-                         (##fx+ (,',macro-vect-port-wlo peer) vect-whi))
-                        ,',(if (eq? name 'vector)
-                               #f
-                               `(macro-character-port-wchars-set!
-                                 port
-                                 (##fx+
-                                  (macro-character-port-wchars port)
-                                  vect-whi)))
+                         port
+                         (##fx+ (,',macro-vect-port-wlo port) vect-whi))
+
+                        ,',(if (eq? name 'string)
+                               `(begin
+                                  ;; keep track of number of
+                                  ;; characters written
+                                  (macro-character-port-wchars-set!
+                                   port
+                                   (##fx+
+                                    (macro-character-port-wchars port)
+                                    vect-whi)))
+                               #f)
+
+                        ;; trim write buffer so it only contains
+                        ;; written data
                         (,',##vect-shrink! vect-wbuf vect-whi)
+
+                        ;; install the new write buffer
                         (,',macro-vect-port-whi-set! port 0)
                         (,',macro-vect-port-wbuf-set! port new-vect-wbuf)
+
+                        ;; add new chunk to FIFO
                         (macro-fifo-insert-at-tail!
-                         (,',macro-vect-port-fifo peer)
+                         (,',macro-vect-port-fifo port)
                          new-vect-wbuf)
+
+                        ;; signal peer side in case it is blocked
+                        ;; on a read
                         (##condvar-signal-no-reschedule!
                          (,',macro-vect-port-rcondvar peer)
                          #t)
+
+                        ;; indicate that the write buffer was
+                        ;; successfully drained
                         #f)))))
 
             (define (name port)
@@ -2515,6 +2745,15 @@
               (##declare (not interrupts-enabled))
 
               '(,',name))
+
+            (define (wait port direction)
+
+              ;; It is assumed that the thread **does not** have exclusive
+              ;; access to the port.
+
+              (##declare (not interrupts-enabled))
+
+              #t) ;; TODO: implement with actual wait
 
             (define (force-output port level prim arg1 arg2 arg3 arg4)
 
@@ -2550,7 +2789,7 @@
 
               (##declare (not interrupts-enabled))
 
-              ((macro-port-force-output port)
+              ((macro-object-port-force-output port)
                port
                0
                prim
@@ -2859,8 +3098,8 @@
          (let ((peer
                 (,macro-vect-port-peer port)))
 
-           ((macro-port-force-output peer)
-            peer
+           ((macro-object-port-force-output port)
+            port
             0
             ,get-output-vect
             port
@@ -2871,12 +3110,12 @@
            (macro-port-mutex-lock! port) ;; get exclusive access to port
 
            (let* ((vect-fifo
-                   (,macro-vect-port-fifo peer))
+                   (,macro-vect-port-fifo port))
                   (result
                    (,##fifo->vect
                     vect-fifo
                     (,macro-vect-port-rlo peer)
-                    (##fx+ (,macro-vect-port-wlo peer)
+                    (##fx+ (,macro-vect-port-wlo port)
                            (,macro-vect-port-whi port))))
                   (new-vect-buf
                    (macro-fifo-advance-to-tail! vect-fifo)))
@@ -2896,12 +3135,19 @@
                            (loop (##fx+ i 1)))))
                   #f)
 
+             ,(if (eq? name 'string)
+                  `(macro-character-port-wchars-set!
+                    port
+                    (##fx+ (macro-character-port-wchars port)
+                           (,macro-vect-port-whi port)))
+                  #f)
+
              (,macro-vect-port-rbuf-set! peer new-vect-buf)
              (,macro-vect-port-rlo-set! peer 0)
              (,macro-vect-port-rhi-set! peer 0)
 
              (,macro-vect-port-wbuf-set! port new-vect-buf)
-             (,macro-vect-port-wlo-set! peer 0) ;;;;;;;;;;;; peer or port ?
+             (,macro-vect-port-wlo-set! port 0)
              (,macro-vect-port-whi-set! port 0)
 
              (macro-port-mutex-unlock! port)
@@ -2916,40 +3162,75 @@
              (,get-output-vect port)
              (,##get-output-vect port))))
 
+       (define-prim (,##call-with-input-vect init-or-settings proc)
+         (,##open-vect-generic
+          (macro-direction-in)
+          (lambda (port)
+            (let ((results ;; may get bound to a multiple-values object
+                   (proc port)))
+              (##close-input-port port)
+              results))
+          ,call-with-input-vect
+          init-or-settings
+          proc))
+
        (define-prim (,call-with-input-vect init-or-settings proc)
          (macro-force-vars (init-or-settings proc)
            (macro-check-procedure
              proc
              2
              (,call-with-input-vect init-or-settings proc)
-             (,##open-vect-generic
-              (macro-direction-in)
-              (lambda (port)
-                (let ((results ;; may get bound to a multiple-values object
-                       (proc port)))
-                  (##close-input-port port)
-                  results))
-              ,call-with-input-vect
-              init-or-settings
-              proc))))
+             (,##call-with-input-vect init-or-settings proc))))
 
-       (define-prim (,call-with-output-vect init-or-settings proc)
-         (macro-force-vars (init-or-settings proc)
-           (macro-check-procedure
-             proc
-             2
-             (,call-with-output-vect init-or-settings proc)
-             (,##open-vect-generic
-              (macro-direction-out)
-              (lambda (port)
-                (let ((results ;; may get bound to a multiple-values object
-                       (proc port)))
-                  (##force-output port)
-                  (##close-output-port port)
-                  (,##get-output-vect port)))
-              ,call-with-output-vect
-              init-or-settings
-              proc))))
+       (define-prim (,##call-with-output-vect-aux init-or-settings proc)
+         (,##open-vect-generic
+          (macro-direction-out)
+          (lambda (port)
+            (let ((results ;; may get bound to a multiple-values object
+                   (proc port)))
+              (##force-output port)
+              (##close-output-port port)
+              (,##get-output-vect port)))
+          ,call-with-output-vect
+          init-or-settings
+          proc))
+
+       (define-prim (,##call-with-output-vect
+                     arg1
+                     #!optional
+                     (arg2 (macro-absent-obj)))
+         (if (##eq? arg2 (macro-absent-obj))
+             (,##call-with-output-vect-aux '() arg1)
+             (,##call-with-output-vect-aux arg1 arg2)))
+
+       (define-prim (,call-with-output-vect
+                     arg1
+                     #!optional
+                     (arg2 (macro-absent-obj)))
+         (macro-force-vars (arg1 arg2)
+           (if (##eq? arg2 (macro-absent-obj))
+               (macro-check-procedure
+                 arg1
+                 1
+                 (,call-with-output-vect arg1)
+                 (,##call-with-output-vect-aux '() arg1))
+               (macro-check-procedure
+                 arg2
+                 2
+                 (,call-with-output-vect arg1 arg2)
+                 (,##call-with-output-vect-aux arg1 arg2)))))
+
+       (define-prim (,##with-input-from-vect init-or-settings thunk)
+         (,##open-vect-generic
+          (macro-direction-in)
+          (lambda (port)
+            (let ((results ;; may get bound to a multiple-values object
+                   (macro-dynamic-bind input-port port thunk)))
+              (##close-input-port port)
+              results))
+          ,with-input-from-vect
+          init-or-settings
+          thunk))
 
        (define-prim (,with-input-from-vect init-or-settings thunk)
          (macro-force-vars (init-or-settings thunk)
@@ -2957,34 +3238,45 @@
              thunk
              2
              (,with-input-from-vect init-or-settings thunk)
-             (,##open-vect-generic
-              (macro-direction-in)
-              (lambda (port)
-                (let ((results ;; may get bound to a multiple-values object
-                       (macro-dynamic-bind input-port port thunk)))
-                  (##close-input-port port)
-                  results))
-              ,with-input-from-vect
-              init-or-settings
-              thunk))))
+             (,##with-input-from-vect init-or-settings thunk))))
 
-       (define-prim (,with-output-to-vect init-or-settings thunk)
-         (macro-force-vars (init-or-settings thunk)
-           (macro-check-procedure
-             thunk
-             2
-             (,with-output-to-vect init-or-settings thunk)
-             (,##open-vect-generic
-              (macro-direction-out)
-              (lambda (port)
-                (let ((results ;; may get bound to a multiple-values object
-                       (macro-dynamic-bind output-port port thunk)))
-                  (##force-output port)
-                  (##close-output-port port)
-                  (,##get-output-vect port)))
-              ,with-output-to-vect
-              init-or-settings
-              thunk)))))))
+       (define-prim (,##with-output-to-vect-aux init-or-settings thunk)
+         (,##open-vect-generic
+          (macro-direction-out)
+          (lambda (port)
+            (let ((results ;; may get bound to a multiple-values object
+                   (macro-dynamic-bind output-port port thunk)))
+              (##force-output port)
+              (##close-output-port port)
+              (,##get-output-vect port)))
+          ,with-output-to-vect
+          init-or-settings
+          thunk))
+
+       (define-prim (,##with-output-to-vect
+                     arg1
+                     #!optional
+                     (arg2 (macro-absent-obj)))
+         (if (##eq? arg2 (macro-absent-obj))
+             (,##with-output-to-vect-aux '() arg1)
+             (,##with-output-to-vect-aux arg1 arg2)))
+
+       (define-prim (,with-output-to-vect
+                     arg1
+                     #!optional
+                     (arg2 (macro-absent-obj)))
+         (macro-force-vars (arg1 arg2)
+           (if (##eq? arg2 (macro-absent-obj))
+               (macro-check-procedure
+                 arg1
+                 1
+                 (,with-output-to-vect arg1)
+                 (,##with-output-to-vect-aux '() arg1))
+               (macro-check-procedure
+                 arg2
+                 2
+                 (,with-output-to-vect arg1 arg2)
+                 (,##with-output-to-vect-aux arg1 arg2))))))))
 
 (define-prim (##vect-port-options options kind buffering)
   (##psettings-options->options
@@ -3064,9 +3356,9 @@
          (vector-wlo
           (##fx- len vector-whi))
          (vector-rcondvar
-          (##make-io-condvar #f #f))
+          (##make-io-condvar-for-reading #f))
          (vector-wcondvar
-          (##make-io-condvar #f #t))
+          (##make-io-condvar-for-writing #f))
          (vector-buffering-limit
           #f))
 
@@ -3162,7 +3454,7 @@
                 (if (macro-unbuffered? (macro-port-woptions port))
                     (begin
                       (macro-port-mutex-unlock! port)
-                      ((macro-port-force-output port)
+                      ((macro-object-port-force-output port)
                        port
                        0
                        write
@@ -3202,10 +3494,7 @@
             rkind
             wkind
             name
-            read-datum
-            write-datum
-            newline
-            force-output
+            wait
             close
             roptions
             rtimeout
@@ -3216,6 +3505,10 @@
             wtimeout-thunk
             set-wtimeout
             #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
             vector-rbuf
             vector-rlo
             vector-rhi
@@ -3323,9 +3616,9 @@
          (output-readtable
           (##psettings->output-readtable psettings))
          (string-rcondvar
-          (##make-io-condvar #f #f))
+          (##make-io-condvar-for-reading #f))
          (string-wcondvar
-          (##make-io-condvar #f #t))
+          (##make-io-condvar-for-writing #f))
          (string-width
           (##psettings->output-width psettings))
          (string-buffering-limit
@@ -3356,7 +3649,7 @@
 
       (##declare (not interrupts-enabled))
 
-      (##write-char #\newline port))
+      (macro-write-char #\newline port))
 
     (define (output-width port)
 
@@ -3375,10 +3668,7 @@
             rkind
             wkind
             name
-            read-datum
-            write-datum
-            newline
-            force-output
+            wait
             close
             roptions
             rtimeout
@@ -3389,6 +3679,10 @@
             wtimeout-thunk
             set-wtimeout
             #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
             string-rbuf
             string-rlo
             string-rhi
@@ -3449,10 +3743,7 @@
 
 (define-prim (##make-u8vector-port src start end psettings)
 
-  (define char-buf-len 32) ;; character buffer length
   (define chunk-size 64)
-;;;  (define char-buf-len 3) ;; character buffer length
-;;;  (define chunk-size 6)
 
   (let* ((direction
           (macro-psettings-direction psettings))
@@ -3490,9 +3781,8 @@
           #f)
          (char-rbuf
           (and (##not (##fx= rkind (macro-none-kind)))
-               (##make-string (if (macro-unbuffered? roptions)
-                                  1
-                                  char-buf-len))))
+               (##make-string
+                (##port-char-buf-len rkind (macro-unbuffered? roptions)))))
          (char-rlo
           0)
          (char-rhi
@@ -3509,9 +3799,8 @@
           #f)
          (char-wbuf
           (and (##not (##fx= wkind (macro-none-kind)))
-               (##make-string (if (macro-unbuffered? woptions)
-                                  1
-                                  char-buf-len))))
+               (##make-string
+                (##port-char-buf-len wkind (macro-unbuffered? woptions)))))
          (char-wlo
           0)
          (char-whi
@@ -3528,28 +3817,6 @@
           (##psettings->input-readtable psettings))
          (output-readtable
           (##psettings->output-readtable psettings))
-#|
-;;;;;;;;;;;;;;;;;;;;;;;;
-         (byte-rbuf
-          (and (##not (##fx= rkind (macro-none-kind)))
-               (##make-u8vector byte-buf-len)))
-         (byte-rlo
-          0)
-         (byte-rhi
-          0)
-         (byte-rbuf-fill
-          ##byte-rbuf-fill)
-         (byte-wbuf
-          (and (##not (##fx= wkind (macro-none-kind)))
-               (##make-u8vector byte-buf-len)))
-         (byte-wlo
-          0)
-         (byte-whi
-          0)
-         (byte-wbuf-drain
-          ##byte-wbuf-drain)
-;;;;;;;;;;;;;;;;;;;;;;;;
-|#
          (u8vector-rbuf
           (macro-fifo-elem (macro-fifo-next u8vector-fifo)))
          (u8vector-rlo
@@ -3563,9 +3830,9 @@
          (u8vector-wlo
           (##fx- len u8vector-whi))
          (u8vector-rcondvar
-          (##make-io-condvar #f #f))
+          (##make-io-condvar-for-reading #f))
          (u8vector-wcondvar
-          (##make-io-condvar #f #t))
+          (##make-io-condvar-for-writing #f))
          (u8vector-width
           (##psettings->output-width psettings))
          (u8vector-buffering-limit
@@ -3596,7 +3863,7 @@
 
        (##declare (not interrupts-enabled))
 
-       (##write-char #\newline port))
+       (macro-write-char #\newline port))
 
      (define (output-width port)
 
@@ -3630,10 +3897,7 @@
              rkind
              wkind
              name
-             read-datum
-             write-datum
-             newline
-             force-output
+             wait
              close
              roptions
              rtimeout
@@ -3644,6 +3908,10 @@
              wtimeout-thunk
              set-wtimeout
              #f ;; io-exception-handler
+             read-datum
+             write-datum
+             newline
+             force-output
              char-rbuf
              char-rlo
              char-rhi
@@ -3684,6 +3952,160 @@
 
 ;;;----------------------------------------------------------------------------
 
+;; Implementation of marktables based on eq? tables.
+
+;; Marktables are used to detect sharing and cycles during printing.
+;; The printer first does a marking phase to determine for every
+;; (non-trivial) subobject if it is shared or cyclical.  Then the
+;; printer uses this information in the printing phase to print labels
+;; when necessary.
+;;
+;; During the marking phase a state is kept for every subobject visited.
+;; The state transitions are:
+;;
+;;  state
+;;
+;;   -1    the subobject has not yet been visited
+;;
+;;   -2    the subobject has been visited once, and not all its children
+;;         have been visited recursively (i.e. the subobject could still be
+;;         part of a cycle, or be shared)
+;;
+;;   -3    the subobject has been visited once, and all its children have been
+;;         visited recursively (i.e. the subobject is not part of a cycle, but
+;;         it may be discovered later that it is shared)
+;;
+;;   -5    the subobject has been visited a second time but only after all its
+;;         children have been visited (i.e. the subobject is shared but it is
+;;         not part of a cycle)
+;;
+;;   -9    the subobject has been visited a second time before all its
+;;         children were visited recursively (i.e. the subobject is part
+;;         of a cycle)
+;;
+;; Negative numbers are used to encode the state to differentiate from
+;; the (non-negative) labels that are assigned during the printing phase.
+;; The bit negation of powers of 2 are used for the last 4 states to
+;; simplify creating a set of these states.
+;;
+;; Here are the state transitions for the events "begin visiting subobject"
+;; and "end visiting subobject":
+;;
+;;  state    begin/end
+;;   -1  -->   -2 / -3  (only case that triggers visiting children)
+;;   -2  -->   -9 / -3
+;;   -3  -->   -5 / -5
+;;   -5  -->   -5 / -5
+;;   -9  -->   -9 / -9
+
+(##define-macro (macro-not-yet-visited)                      -1)
+(##define-macro (macro-children-being-visited)               -2)
+(##define-macro (macro-not-part-of-a-cycle-and-maybe-shared) -3)
+(##define-macro (macro-not-part-of-a-cycle-and-is-shared)    -5)
+(##define-macro (macro-part-of-a-cycle)                      -9)
+
+(##define-macro (macro-cycle-or-shared? state-set)
+  `(##not (##fx= -1
+                 (##fxior ,state-set
+                          (##fxand (macro-not-part-of-a-cycle-and-is-shared)
+                                   (macro-part-of-a-cycle))))))
+
+(##define-macro (macro-marktable-count mt)          `(##vector-ref ,mt 0))
+(##define-macro (macro-marktable-count-set! mt x)   `(##vector-set! ,mt 0 ,x))
+(##define-macro (macro-marktable-table mt)          `(##vector-ref ,mt 1))
+(##define-macro (macro-marktable-table-set! mt x)   `(##vector-set! ,mt 1 ,x))
+(##define-macro (macro-marktable-shared? mt)        `(##vector-ref ,mt 2))
+(##define-macro (macro-marktable-shared?-set! mt x) `(##vector-set! ,mt 2 ,x))
+(##define-macro (macro-marktable-seen mt)           `(##vector-ref ,mt 3))
+(##define-macro (macro-marktable-seen-set! mt x)    `(##vector-set! ,mt 3 ,x))
+(##define-macro (macro-marktable-mask mt)           `(##vector-ref ,mt 3))
+(##define-macro (macro-marktable-mask-set! mt x)    `(##vector-set! ,mt 3 ,x))
+
+(##define-macro (macro-marktable-write-table! mt t obj x)
+  `(if (macro-marktable-shared? ,mt) ;; shared table?
+       (let ((t-copy (##table-copy ,t)))
+         (macro-marktable-table-set! ,mt t-copy)
+         (macro-marktable-shared?-set! ,mt #f)
+         (##table-set! t-copy ,obj ,x))
+       (##table-set! ,t ,obj ,x)))
+
+(define-prim (##make-marktable)
+  (##declare (not interrupts-enabled))
+  (##vector -1   ;; label counter
+            #f   ;; lazily allocated table
+            #f   ;; shared?
+            -1)) ;; set of states seen (inverted bit set), and then mask
+
+(define-prim (##marktable-table-get! mt)
+  (##declare (not interrupts-enabled))
+  (or (macro-marktable-table mt)
+      (let ((t (##make-table-aux 0 #f #f #f ##eq?)))
+        (macro-marktable-table-set! mt t)
+        t)))
+
+(define-prim (##marktable-mark! mt obj begin?)
+  (##declare (not interrupts-enabled))
+  (let* ((t (##marktable-table-get! mt))
+         (state (##table-ref t obj (macro-not-yet-visited))))
+    (if (##fx> state (macro-not-part-of-a-cycle-and-is-shared)) ;; change state?
+        ;; equivalent:
+        ;; (not (or (##fx= state (macro-not-part-of-a-cycle-and-is-shared))
+        ;;          (##fx= state (macro-part-of-a-cycle))))
+
+        (let ((new-state ;; state transition
+               (cond ((##fx= state (macro-not-yet-visited))
+                      (if begin?
+                          (macro-children-being-visited)
+                          (macro-not-part-of-a-cycle-and-maybe-shared)))
+                     ((##fx= state (macro-children-being-visited))
+                      (if begin?
+                          (macro-part-of-a-cycle)
+                          (macro-not-part-of-a-cycle-and-maybe-shared)))
+                     (else
+                      (macro-not-part-of-a-cycle-and-is-shared)))))
+
+          (macro-marktable-seen-set!
+           mt
+           (##fxand (macro-marktable-seen mt) new-state))
+
+          (macro-marktable-write-table! mt t obj new-state)
+
+          (##fx= new-state (macro-children-being-visited)))
+
+        #f)))
+
+(define-prim (##marktable-lookup! mt obj stamp?)
+  (##declare (not interrupts-enabled))
+  (let* ((t (##marktable-table-get! mt))
+         (x (##table-ref t obj (macro-not-yet-visited))))
+    (if (##fx< x 0) ;; first time visited during printing phase
+        (and stamp? ;; allocate a label if we need to
+             (macro-cycle-or-shared? (##fxior x (macro-marktable-mask mt)))
+             (let ((label (##fx+ (macro-marktable-count mt) 1)))
+               (macro-marktable-count-set! mt label)
+               (macro-marktable-write-table! mt t obj label)
+               (##cons obj label))) ;; return id
+        x))) ;; return the label
+
+(define-prim (##marktable-save mt)
+  (##declare (not interrupts-enabled))
+  (let ((state
+         (##vector (macro-marktable-count mt)
+                   (##marktable-table-get! mt)
+                   (macro-marktable-shared? mt)
+                   (macro-marktable-seen mt))))
+    (macro-marktable-shared?-set! mt #t) ;; set "shared table" flag
+    state))
+
+(define-prim (##marktable-restore! mt state)
+  (##declare (not interrupts-enabled))
+  (macro-marktable-count-set!   mt (##vector-ref state 0))
+  (macro-marktable-table-set!   mt (##vector-ref state 1))
+  (macro-marktable-shared?-set! mt (##vector-ref state 2))
+  (macro-marktable-seen-set!    mt (##vector-ref state 3)))
+
+;;;----------------------------------------------------------------------------
+
 ;;; Implementation of generic object port procedures.
 
 (define-prim (##port-of-kind? obj kind)
@@ -3710,7 +4132,9 @@
   (##declare (not interrupts-enabled))
   ((macro-port-name port) port))
 
-(define-prim (##read port)
+(define-prim (##read
+              #!optional
+              (port (macro-current-input-port)))
 
   (##declare (not interrupts-enabled))
 
@@ -3728,8 +4152,9 @@
                    noop
                    noop
                    #f
+                   '()
                    read-cont)))
-            ((macro-port-read-datum port) port re)))
+            ((macro-object-port-read-datum port) port re)))
 
         (let ((handler (macro-port-io-exception-handler port)))
           (if (##procedure? handler) ;; optimization: only capture continuation when using custom exception handler
@@ -3738,7 +4163,7 @@
                  (read-with-cont port read-cont)))
               (read-with-cont port #f))))
 
-      ((macro-port-read-datum port) port #f)))
+      ((macro-object-port-read-datum port) port #f)))
 
 (define-prim (read
               #!optional
@@ -3748,44 +4173,96 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-input-port)
                port)))
-      (macro-check-input-port p 1 (read p)
+      (macro-check-object-input-port p 1 (read p)
         (##read p)))))
 
 (define-prim (##write-generic-to-character-port style port rt force? limit obj)
 
   (##declare (not interrupts-enabled))
 
-  (let* ((mt
-          (and (macro-readtable-sharing-allowed? rt)
-               (##make-marktable)))
-         (width
-          (##output-port-width port)))
+  (let* ((sharing-allowed?
+          (macro-readtable-sharing-allowed? rt))
+         (mt1
+          (and (if (##eq? sharing-allowed? 'default)
+                   (or (##eq? style 'write-shared)
+                       (##eq? style 'write)
+                       (##eq? style 'display)
+                       (##eq? style 'pretty-print))
+                   sharing-allowed?)
+               (##make-marktable))))
 
-    (if mt
-        (let ((we1 (##make-writeenv 'mark port rt mt force? width 0 0 0 limit)))
-          ((macro-port-write-datum port) port obj we1)))
+    (define (make-we style mt)
+      (##make-writeenv
+       style
+       port
+       rt
+       mt
+       force?
+       (##output-port-width port)
+       0
+       0
+       0
+       limit
+       (or (macro-readtable-max-unescaped-char rt)
+           (macro-max-unescaped-char (macro-port-woptions port)))))
 
-    (let ((we2 (##make-writeenv style port rt mt force? width 0 0 0 limit)))
-      ((macro-port-write-datum port) port obj we2)
+    (let* ((mt2
+            (and mt1
+                 (let ((we1 (make-we 'mark mt1)))
+                   ((macro-object-port-write-datum port) port obj we1)
+                   (let* ((seen
+                           (macro-marktable-seen mt1))
+                          (mask
+                           ;; only use labels for cycles, unless sharing matters
+                           (##fxior
+                            seen
+                            (if (if (##eq? sharing-allowed? 'default)
+                                    (##eq? style 'write-shared)
+                                    sharing-allowed?)
+                                (##fxand
+                                 (macro-not-part-of-a-cycle-and-is-shared)
+                                 (macro-part-of-a-cycle))
+                                (macro-part-of-a-cycle)))))
+                     (if (##fx= -1 mask)
+                         #f
+                         (begin
+                           (macro-marktable-mask-set! mt1 mask)
+                           mt1))))))
+           (we2
+            (make-we style mt2)))
+      ((macro-object-port-write-datum port) port obj we2)
       (##fx- limit (macro-writeenv-limit we2)))))
 
-(define-prim (##write
+(define-prim (##write-with-style
               obj
               port
-              #!optional
-              (max-length ##max-fixnum)
-              (force? (macro-if-forces #t #f)))
+              max-length
+              force?
+              style)
   (if (macro-character-output-port? port)
       (begin
         (##write-generic-to-character-port
-         'write
+         style
          port
          (macro-character-port-output-readtable port)
          force?
          max-length
          obj)
         (##void))
-      ((macro-port-write-datum port) port obj #f)))
+      ((macro-object-port-write-datum port) port obj #f)))
+
+(define-prim (##write
+              obj
+              #!optional
+              (port (macro-current-output-port))
+              (max-length ##max-fixnum)
+              (force? (macro-if-auto-forcing #t #f)))
+  (##write-with-style
+   obj
+   port
+   max-length
+   force?
+   'write))
 
 (define-prim (write
               obj
@@ -3796,26 +4273,73 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port p 2 (write obj p)
+      (macro-check-object-output-port p 2 (write obj p)
         (##write obj p)))))
+
+(define-prim (##write-shared
+              obj
+              #!optional
+              (port (macro-current-output-port))
+              (max-length ##max-fixnum)
+              (force? (macro-if-auto-forcing #t #f)))
+  (##write-with-style
+   obj
+   port
+   max-length
+   force?
+   'write-shared))
+
+(define-prim (write-shared
+              obj
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (obj port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-output-port)
+               port)))
+      (macro-check-object-output-port p 2 (write-shared obj p)
+        (##write-shared obj p)))))
+
+(define-prim (##write-simple
+              obj
+              #!optional
+              (port (macro-current-output-port))
+              (max-length ##max-fixnum)
+              (force? (macro-if-auto-forcing #t #f)))
+  (##write-with-style
+   obj
+   port
+   max-length
+   force?
+   'write-simple))
+
+(define-prim (write-simple
+              obj
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (obj port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-output-port)
+               port)))
+      (macro-check-object-output-port p 2 (write-simple obj p)
+        (##write-simple obj p)))))
 
 (define-prim (##display
               obj
-              port
               #!optional
+              (port (macro-current-output-port))
               (max-length ##max-fixnum)
-              (force? (macro-if-forces #t #f)))
-  (if (macro-character-output-port? port)
-      (begin
-        (##write-generic-to-character-port
-         'display
-         port
-         (macro-character-port-output-readtable port)
-         force?
-         max-length
-         obj)
-        (##void))
-      ((macro-port-write-datum port) port obj #f)))
+              (force? (macro-if-auto-forcing #t #f)))
+  (##write-generic-to-character-port
+   'display
+   port
+   (macro-character-port-output-readtable port)
+   force?
+   max-length
+   obj)
+  (##void))
 
 (define-prim (display
               obj
@@ -3826,26 +4350,23 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port p 2 (display obj p)
+      (macro-check-character-output-port p 2 (display obj p)
         (##display obj p)))))
 
 (define-prim (##pretty-print
               obj
-              port
               #!optional
+              (port (macro-current-output-port))
               (max-length ##max-fixnum)
-              (force? (macro-if-forces #t #f)))
-  (if (macro-character-output-port? port)
-      (begin
-        (##write-generic-to-character-port
-         'pretty-print
-         port
-         (macro-character-port-output-readtable port)
-         force?
-         max-length
-         obj)
-        (##newline port))
-      ((macro-port-write-datum port) port obj #f)))
+              (force? (macro-if-auto-forcing #t #f)))
+  (##write-generic-to-character-port
+   'pretty-print
+   port
+   (macro-character-port-output-readtable port)
+   force?
+   max-length
+   obj)
+  (##newline port))
 
 (define-prim (pretty-print
               obj
@@ -3856,26 +4377,32 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port p 2 (pretty-print obj p)
+      (macro-check-character-output-port p 2 (pretty-print obj p)
         (##pretty-print obj p)))))
 
-(define-prim (##print
+(define-prim (##print-aux
               obj
-              port
               #!optional
+              (port (macro-current-output-port))
               (max-length ##max-fixnum)
-              (force? (macro-if-forces #t #f)))
-  (if (macro-character-output-port? port)
-      (begin
-        (##write-generic-to-character-port
-         'print
-         port
-         (macro-character-port-output-readtable port)
-         force?
-         max-length
-         obj)
-        (##void))
-      ((macro-port-write-datum port) port obj #f)))
+              (force? (macro-if-auto-forcing #t #f)))
+  (##write-generic-to-character-port
+   'print
+   port
+   (macro-character-port-output-readtable port)
+   force?
+   max-length
+   obj)
+  (##void))
+
+(macro-case-target
+
+ ((C)
+
+(define-prim (##print
+              #!key (port (macro-current-output-port))
+              #!rest body)
+  (##print-aux body port))
 
 (define-prim (print
               #!key (port (macro-absent-obj))
@@ -3885,8 +4412,14 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port p 2 (print port: p . body)
-        (##print body p)))))
+      (macro-check-character-output-port p 2 (print port: p . body)
+        (##print-aux body p)))))
+
+(define-prim (##println
+              #!key (port (macro-current-output-port))
+              #!rest body)
+  (##print-aux body port)
+  (##newline port))
 
 (define-prim (println
               #!key (port (macro-absent-obj))
@@ -3896,14 +4429,26 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port p 2 (println port: p . body)
+      (macro-check-character-output-port p 2 (println port: p . body)
         (begin
-          (##print body p)
+          (##print-aux body p)
           (##newline p))))))
 
-(define-prim (##newline port)
+))
+
+(define-prim (##newline1 port)
   (##declare (not interrupts-enabled))
-  ((macro-port-newline port) port))
+  ((macro-object-port-newline port) port))
+
+(define-prim (##newline0)
+  (##newline1 (macro-current-output-port)))
+
+(define-prim (##newline
+              #!optional
+              (port (macro-absent-obj)))
+  (if (##eq? port (macro-absent-obj))
+      (##newline0)
+      (##newline1 port)))
 
 (define-prim (newline
               #!optional
@@ -3913,7 +4458,7 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port p 1 (newline p)
+      (macro-check-object-output-port p 1 (newline p)
         (##newline p)))))
 
 (define-prim (##flush-input-buffering port)
@@ -3925,11 +4470,11 @@
   (##void))
 
 (define-prim (##force-output
-              port
               #!optional
+              (port (macro-current-output-port))
               (level (macro-absent-obj)))
   (##declare (not interrupts-enabled))
-  ((macro-port-force-output port)
+  ((macro-object-port-force-output port)
    port
    (if (##eq? level (macro-absent-obj)) 0 level)
    force-output
@@ -3937,6 +4482,22 @@
    level
    (macro-absent-obj)
    (macro-absent-obj)))
+
+(define-prim (##force-output-catching-exceptions port)
+
+  ;; Ignoring exceptions helps avoid infinite loops when forcing the
+  ;; output of predefined ports at program exit (for example the
+  ;; disk might be full while forcing stdout redirected to a file
+  ;; and an attempt to write an error message on stdout for this
+  ;; exception would also raise an exception).
+  ;; Also avoid installing exception catcher when thread system
+  ;; is not yet initialized.
+
+  (if (macro-current-thread)
+      (##with-exception-catcher
+       (lambda (e) #f)
+       (lambda ()
+         (##force-output port)))))
 
 (define-prim (force-output
               #!optional
@@ -3947,7 +4508,7 @@
            (if (##eq? port (macro-absent-obj))
                (macro-current-output-port)
                port)))
-      (macro-check-output-port
+      (macro-check-object-output-port
         p
         1
         (force-output p level)
@@ -3960,6 +4521,81 @@
               2
               (force-output p level)
               (##force-output p level)))))))
+
+(define-prim (flush-output-port
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-output-port)
+               port)))
+      (macro-check-object-output-port
+        p
+        1
+        (flush-output-port p)
+        (##force-output p)))))
+
+(define-prim (##wait-input-port port)
+
+  ;; The thread will wait until there is data available to read on the
+  ;; port's device or the port's timeout is reached.  The value #f is
+  ;; returned when the timeout is reached.  The value #t is returned
+  ;; when there is data available to read on the port's device or the
+  ;; thread was interrupted (for example with thread-interrupt!).
+
+  ;; It is assumed that the thread **does not** have exclusive
+  ;; access to the port.
+
+  (##declare (not interrupts-enabled))
+
+  ((macro-port-wait port) port (macro-direction-in)))
+
+;;(define-prim (wait-input-port port)
+;;  (macro-force-vars (port)
+;;    (macro-check-input-port port 1 (wait-input-port port)
+;;      (##wait-input-port port))))
+
+(define-prim (##wait-output-port port)
+
+  ;; Complement to ##wait-input-port .
+
+  ;; The thread will wait until the port's device is writeable in the
+  ;; sense that more data can be written to it, or the port's timeout
+  ;; is reached.  The value #f is returned when the timeout is reached.
+  ;; The value #t is returned when the port's device is writeable or
+  ;; the thread was interrupted (for example with thread-interrupt!).
+
+  ;; An example of when a port is not writeable is when a TCP client
+  ;; port has full OS transmit buffers. For such a port, a
+  ;; ##wait-output-port on it will return when space has
+  ;; become available in the buffers.
+  ;;
+  ;; Additionally, waiting for writability on a TCP client port is a way
+  ;; to ensure that the connection has been established at all in the
+  ;; first place. This may be of relevance to determine in some lowlevel
+  ;; use scenarios, as Gambit does TCP connect:s asynchronously in such
+  ;; a way that open-tcp-client returns the TCP client port object
+  ;; actually prior to the connection having been established.
+
+  (##declare (not interrupts-enabled))
+
+  ((macro-port-wait port) port (macro-direction-out)))
+
+;;(define-prim (wait-output-port port)
+;;  (macro-force-vars (port)
+;;    (macro-check-output-port port 1 (wait-output-port port)
+;;      (##wait-output-port port))))
+
+;;TODO: deprecated interface
+(define-prim (##device-port-wait-for-input! port)
+  (##declare (not interrupts-enabled))
+  (##wait-input-port port))
+
+;;TODO: deprecated interface
+(define-prim (##device-port-wait-for-output! port)
+  (##declare (not interrupts-enabled))
+  (##wait-output-port port))
 
 (define-prim (##close-input-port port)
   (##declare (not interrupts-enabled))
@@ -3988,33 +4624,57 @@
     (macro-check-port port 1 (close-port port)
       (##close-port port))))
 
+(define-prim (input-port-open? port)
+  (macro-force-vars (port)
+    (macro-check-input-port port 1 (input-port-open? port)
+      #t))) ;; in general, it is not possible to know if a port is "open"
+
+(define-prim (output-port-open? port)
+  (macro-force-vars (port)
+    (macro-check-output-port port 1 (output-port-open? port)
+      #t))) ;; in general, it is not possible to know if a port is "open"
+
+(define-prim (##input-port-readtable port)
+  (macro-character-port-input-readtable port))
+
 (define-prim (input-port-readtable port)
   (macro-force-vars (port)
     (macro-check-character-input-port port 1 (input-port-readtable port)
-      (macro-character-port-input-readtable port))))
+      (##input-port-readtable port))))
+
+(define-prim (##input-port-readtable-set! port rt)
+  (macro-character-port-input-readtable-set! port rt)
+  (##void))
 
 (define-prim (input-port-readtable-set! port rt)
   (macro-force-vars (port rt)
     (macro-check-character-input-port port 1 (input-port-readtable-set! port rt)
       (macro-check-readtable rt 2 (input-port-readtable-set! port rt)
-        (begin
-          (macro-character-port-input-readtable-set! port rt)
-          (##void))))))
+        (##input-port-readtable-set! port rt)))))
+
+(define-prim (##output-port-readtable port)
+  (macro-character-port-output-readtable port))
 
 (define-prim (output-port-readtable port)
   (macro-force-vars (port)
     (macro-check-character-output-port port 1 (output-port-readtable port)
-      (macro-character-port-output-readtable port))))
+      (##output-port-readtable port))))
+
+(define-prim (##output-port-readtable-set! port rt)
+  (macro-character-port-output-readtable-set! port rt)
+  (##void))
 
 (define-prim (output-port-readtable-set! port rt)
   (macro-force-vars (port rt)
     (macro-check-character-output-port port 1 (output-port-readtable-set! port rt)
       (macro-check-readtable rt 2 (output-port-readtable-set! port rt)
-        (begin
-          (macro-character-port-output-readtable-set! port rt)
-          (##void))))))
+        (##output-port-readtable-set! port rt)))))
 
-(define-prim (##input-port-timeout-set! port absrel-timeout thunk)
+(define-prim (##input-port-timeout-set!
+              port
+              absrel-timeout
+              #!optional
+              (thunk (lambda () #f)))
   (##declare (not interrupts-enabled))
   (let ((timeout (##absrel-timeout->timeout absrel-timeout)))
     ((macro-port-set-rtimeout port) port timeout thunk)))
@@ -4025,25 +4685,27 @@
               #!optional
               (t (macro-absent-obj)))
   (macro-force-vars (port absrel-timeout t)
-    (let ((thunk
-           (if (##eq? t (macro-absent-obj))
-               (lambda () #f)
-               t)))
-      (macro-check-input-port
-        port
-        1
+    (macro-check-input-port
+      port
+      1
+      (input-port-timeout-set! port absrel-timeout t)
+      (macro-check-absrel-time-or-false
+        absrel-timeout
+        2
         (input-port-timeout-set! port absrel-timeout t)
-        (macro-check-absrel-time-or-false
-          absrel-timeout
-          2
-          (input-port-timeout-set! port absrel-timeout t)
-          (macro-check-procedure
-            thunk
-            3
-            (input-port-timeout-set! port absrel-timeout t)
-            (##input-port-timeout-set! port absrel-timeout thunk)))))))
+        (if (##eq? t (macro-absent-obj))
+            (##input-port-timeout-set! port absrel-timeout t)
+            (macro-check-procedure
+              t
+              3
+              (input-port-timeout-set! port absrel-timeout t)
+              (##input-port-timeout-set! port absrel-timeout t)))))))
 
-(define-prim (##output-port-timeout-set! port absrel-timeout thunk)
+(define-prim (##output-port-timeout-set!
+              port
+              absrel-timeout
+              #!optional
+              (thunk (lambda () #f)))
   (##declare (not interrupts-enabled))
   (let ((timeout (##absrel-timeout->timeout absrel-timeout)))
     ((macro-port-set-wtimeout port) port timeout thunk)))
@@ -4054,23 +4716,21 @@
               #!optional
               (t (macro-absent-obj)))
   (macro-force-vars (port absrel-timeout t)
-    (let ((thunk
-           (if (##eq? t (macro-absent-obj))
-               (lambda () #f)
-               t)))
-      (macro-check-output-port
-        port
-        1
+    (macro-check-output-port
+      port
+      1
+      (output-port-timeout-set! port absrel-timeout t)
+      (macro-check-absrel-time-or-false
+        absrel-timeout
+        2
         (output-port-timeout-set! port absrel-timeout t)
-        (macro-check-absrel-time-or-false
-          absrel-timeout
-          2
-          (output-port-timeout-set! port absrel-timeout t)
-          (macro-check-procedure
-            thunk
-            3
-            (output-port-timeout-set! port absrel-timeout t)
-            (##output-port-timeout-set! port absrel-timeout thunk)))))))
+        (if (##eq? t (macro-absent-obj))
+            (##output-port-timeout-set! port absrel-timeout)
+            (macro-check-procedure
+              t
+              3
+              (output-port-timeout-set! port absrel-timeout t)
+              (##output-port-timeout-set! port absrel-timeout t)))))))
 
 (define-prim (##port-io-exception-handler-set! port handler)
   (##declare (not interrupts-enabled))
@@ -4190,7 +4850,11 @@
     (macro-check-character-output-port port 1 (output-port-width port)
       (##output-port-width port))))
 
-(define-prim (##object->truncated-string obj max-length)
+(define-prim (##object->truncated-string
+              obj
+              max-length
+              #!optional
+              (char-encoding-limit (macro-absent-obj)))
   (let* ((port
           (##open-output-string))
          (we
@@ -4199,42 +4863,59 @@
            port
            (macro-character-port-output-readtable port)
            #f
-           (macro-if-forces #t #f)
+           (macro-if-auto-forcing #t #f)
            0
            0
            0
            0
-           max-length)))
+           max-length
+           (cond ((##char? char-encoding-limit)
+                  char-encoding-limit)
+                 ((macro-output-port? char-encoding-limit)
+                  (macro-max-unescaped-char
+                   (macro-port-woptions char-encoding-limit)))
+                 ((macro-readtable? char-encoding-limit)
+                  (macro-readtable-max-unescaped-char char-encoding-limit))
+                 (else
+                  (##integer->char ##max-char))))))
     (##wr we obj)
     (##get-output-string port)))
 
-(define-prim (##object->string obj #!optional (max-length ##max-fixnum))
+(define-prim (##object->string
+              obj
+              #!optional
+              (max-length ##max-fixnum)
+              (char-encoding-limit (macro-absent-obj)))
   (if (##fx< 0 max-length)
       (let ((str
              (##object->truncated-string
               obj
               (if (##fx< max-length ##max-fixnum)
                   (##fx+ max-length 1)
-                  ##max-fixnum))))
+                  ##max-fixnum)
+              char-encoding-limit)))
         (##string->limited-string str max-length))
       (##string)))
 
-(define-prim (object->string obj #!optional (m (macro-absent-obj)))
-  (macro-force-vars (obj m)
-    (if (##eq? m (macro-absent-obj))
+(define-prim (object->string
+              obj
+              #!optional
+              (ml (macro-absent-obj)))
+  (macro-force-vars (obj ml)
+    (if (##eq? ml (macro-absent-obj))
         (##object->string obj)
         (let ()
 
           (define (type-error)
-            (##fail-check-exact-integer 2 object->string obj m))
+            (##fail-check-exact-integer 2 object->string obj ml))
 
           (define (range-error)
-            (##raise-range-exception 2 object->string obj m))
+            (##raise-range-exception 2 object->string obj ml))
 
-          (if (macro-exact-int? m)
-              (if (or (##not (##fixnum? m)) (##fxnegative? m))
+          (if (macro-exact-int? ml)
+              (if (or (##not (##fixnum? ml)) (##fxnegative? ml))
                   (range-error)
-                  (##object->string obj m))
+                  (##object->string obj ml))
               (type-error))))))
 
 (define-prim (##string->limited-string str max-length)
@@ -4283,7 +4964,7 @@
       (input-port-characters-buffered port)
       (##input-port-characters-buffered port))))
 
-(define-prim (##char-ready? port)
+(define-prim (##char-ready?1 port)
 
   (##declare (not interrupts-enabled))
 
@@ -4319,6 +5000,16 @@
                     (macro-port-mutex-unlock! port)
                     #t)))))))
 
+(define-prim (##char-ready?0)
+  (##char-ready?1 (macro-current-input-port)))
+
+(define-prim (##char-ready?
+              #!optional
+              (port (macro-absent-obj)))
+  (if (##eq? port (macro-absent-obj))
+      (##char-ready?0)
+      (##char-ready?1 port)))
+
 (define-prim (char-ready?
               #!optional
               (port (macro-absent-obj)))
@@ -4328,9 +5019,9 @@
                (macro-current-input-port)
                port)))
       (macro-check-character-input-port p 1 (char-ready? p)
-        (##char-ready? p)))))
+        (##char-ready?1 p)))))
 
-(define-prim (##peek-char port)
+(define-prim (##peek-char1 port)
 
   (##declare (not interrupts-enabled))
 
@@ -4390,6 +5081,22 @@
                        (macro-port-mutex-unlock! port)
                        #!eof))))))))
 
+(define-prim (##peek-char1? port)
+  #f)
+
+(define-prim (##peek-char0)
+  (##peek-char1 (macro-current-input-port)))
+
+(define-prim (##peek-char0?)
+  (##peek-char1? (macro-current-input-port)))
+
+(define-prim (##peek-char
+              #!optional
+              (port (macro-absent-obj)))
+  (if (##eq? port (macro-absent-obj))
+      (##peek-char0)
+      (##peek-char1 port)))
+
 (define-prim (peek-char
               #!optional
               (port (macro-absent-obj)))
@@ -4399,9 +5106,9 @@
                (macro-current-input-port)
                port)))
       (macro-check-character-input-port p 1 (peek-char p)
-        (##peek-char p)))))
+        (##peek-char1 p)))))
 
-(define-prim (##read-char port)
+(define-prim (##read-char1 port)
 
   (##declare (not interrupts-enabled))
 
@@ -4486,6 +5193,22 @@
                        (macro-port-mutex-unlock! port)
                        #!eof))))))))
 
+(define-prim (##read-char1? port)
+  #f)
+
+(define-prim (##read-char0)
+  (##read-char1 (macro-current-input-port)))
+
+(define-prim (##read-char0?)
+  (##read-char1? (macro-current-input-port)))
+
+(define-prim (##read-char
+              #!optional
+              (port (macro-absent-obj)))
+  (if (##eq? port (macro-absent-obj))
+      (##read-char0)
+      (##read-char1 port)))
+
 (define-prim (read-char
               #!optional
               (port (macro-absent-obj)))
@@ -4495,15 +5218,16 @@
                (macro-current-input-port)
                port)))
       (macro-check-character-input-port p 1 (read-char p)
-        (##read-char p)))))
+        (##read-char1 p)))))
 
 (define-prim (##read-substring
               str
               start
               end
-              port
               #!optional
-              (need (macro-absent-obj)))
+              (port (macro-current-input-port))
+              (need (macro-absent-obj))
+              (raise-os-exception? #t))
 
   (##declare (not interrupts-enabled))
 
@@ -4577,16 +5301,18 @@
                          (if (or (##fx< 0 n)
                                  (##fx= code ##err-code-EAGAIN))
                              n
-                             (##raise-os-io-exception
-                              port
-                              #f
-                              code
-                              read-substring
-                              str
-                              start
-                              end
-                              port
-                              need)))
+                             (if raise-os-exception?
+                                 (##raise-os-io-exception
+                                  port
+                                  #f
+                                  code
+                                  read-substring
+                                  str
+                                  start
+                                  end
+                                  port
+                                  need)
+                                 code)))
 
                         (code
 
@@ -4619,31 +5345,65 @@
         str
         1
         (read-substring str start end port need)
-        (macro-check-index-range-incl
-          start
-          2
-          0
-          (##string-length str)
+        (macro-check-mutable
+          str
+          1
           (read-substring str start end port need)
           (macro-check-index-range-incl
-            end
-            3
             start
+            2
+            0
             (##string-length str)
             (read-substring str start end port need)
-            (macro-check-character-input-port
-              p
-              4
+            (macro-check-index-range-incl
+              end
+              3
+              start
+              (##string-length str)
               (read-substring str start end port need)
-              (if (##eq? need (macro-absent-obj))
-                  (##read-substring str start end p)
-                  (macro-check-index
-                    need
-                    5
-                    (read-substring str start end port need)
-                    (##read-substring str start end p need))))))))))
+              (macro-check-character-input-port
+                p
+                4
+                (read-substring str start end port need)
+                (if (##eq? need (macro-absent-obj))
+                    (##read-substring str start end p)
+                    (macro-check-index
+                      need
+                      5
+                      (read-substring str start end port need)
+                      (##read-substring str start end p need)))))))))))
 
-(define-prim (##read-line port separator include-separator? max-length)
+(define-prim (read-string
+              k
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (k port)
+    (macro-check-index
+      k
+      1
+      (read-string k port)
+      (let* ((p
+              (if (##eq? port (macro-absent-obj))
+                  (macro-current-input-port)
+                  port))
+             (str
+              (##make-string k))
+             (n
+              (##read-substring str 0 k p #f #f)))
+        (cond ((##fx> n 0)
+               (##string-shrink! str n)
+               str)
+              ((##fx= n 0)
+               #!eof)
+              (else
+               (##raise-os-io-exception port #f n read-string k port)))))))
+
+(define-prim (##read-line
+              #!optional
+              (port (macro-current-input-port))
+              (separator #\newline)
+              (include-separator? #f)
+              (max-length ##max-fixnum))
 
   (define max-chunk-length 512)
 
@@ -4653,7 +5413,7 @@
           (if (##fx< i ml)
               (let ((c (macro-read-char port)))
                 (if (##char? c)
-                    (if (##eq? c separator)
+                    (if (##eq? c separator) ;; note: separator is a char or #f
                         (if include-separator?
                             (let ((s (##make-string (##fx+ i 1))))
                               (##string-set! s i c)
@@ -4678,7 +5438,7 @@
                  (chunk1 (read-chunk 1 m1)))
             (##string-set! chunk1 0 first)
             (if (or (##fx< (##string-length chunk1) m1)
-                    (##eq? (##string-ref chunk1 (##fx- m1 1))
+                    (##eq? (##string-ref chunk1 (##fx- m1 1)) ;; note: separator is a char or #f
                            separator)
                     (##fx= ml m1))
                 chunk1
@@ -4688,7 +5448,7 @@
                          (new-chunk (read-chunk 0 m2))
                          (new-chunks (##cons new-chunk chunks)))
                     (if (or (##fx< (##string-length new-chunk) m2)
-                            (##eq? (##string-ref new-chunk (##fx- m2 1))
+                            (##eq? (##string-ref new-chunk (##fx- m2 1)) ;; note: separator is a char or #f
                                    separator)
                             (##fx= ml m2))
                         (##append-strings (##reverse new-chunks))
@@ -4696,7 +5456,7 @@
                               new-chunks)))))))
 
         (if (##char? first)
-            (if (##eq? first separator)
+            (if (##eq? first separator) ;; note: separator is a char or #f
                 (if include-separator?
                     (##string first)
                     (##string))
@@ -4737,7 +5497,10 @@
           (read-line port separator include-separator? max-length)
           (##read-line p sep inc-sep? ml))))))
 
-(define-prim (##read-all port-or-readenv reader)
+(define-prim (##read-all
+              #!optional
+              (port-or-readenv (macro-current-input-port))
+              (reader ##read))
   (let ((fifo (macro-make-fifo)))
     (let loop ()
       (let ((obj (reader port-or-readenv)))
@@ -4760,7 +5523,7 @@
            (if (##eq? reader (macro-absent-obj))
                ##read
                reader)))
-      (macro-check-input-port p 1 (read-all port reader)
+      (macro-check-object-input-port p 1 (read-all port reader)
         (macro-check-procedure r 2 (read-all port r)
           (##read-all p r))))))
 
@@ -4768,7 +5531,9 @@
               path
               readtable
               wrap
-              unwrap)
+              unwrap
+              #!optional
+              (case-conversion? '()))
 
   (define (fail)
     (##fail-check-string 1 open-input-file path))
@@ -4786,14 +5551,17 @@
             path
             readtable
             wrap
-            unwrap))))))
+            unwrap
+            case-conversion?))))))
 
 (define-prim (##read-all-as-a-begin-expr-from-psettings
               psettings
               path-or-settings
               readtable
               wrap
-              unwrap)
+              unwrap
+              #!optional
+              (case-conversion? '()))
 
   (define (fail)
     (##fail-check-string-or-settings 1 open-input-file path-or-settings))
@@ -4820,7 +5588,8 @@
                   wrap
                   unwrap
                   start-syntax
-                  #t))))
+                  #t
+                  case-conversion?))))
          open-input-file
          path-or-settings))))
 
@@ -4830,7 +5599,9 @@
               wrap
               unwrap
               start-syntax
-              close-port?)
+              close-port?
+              #!optional
+              (case-conversion? '()))
   (##with-exception-catcher
    (lambda (exc)
      (if close-port?
@@ -4841,7 +5612,7 @@
             (##readtable-copy-shallow readtable)))
        (macro-readtable-start-syntax-set! rt start-syntax)
        (let* ((re
-               (##make-readenv port rt wrap unwrap 'script #f))
+               (##make-readenv port rt wrap unwrap #t case-conversion? #f))
               (head
                (##cons (wrap re '##begin)
                        '())) ;; tail will be replaced with expressions read
@@ -4849,32 +5620,24 @@
                (wrap re head))
               (first
                (##read-datum-or-eof re))
-              (script-line
-               (and (##eq? first (##script-marker))
-                    (##read-line port #\newline #f ##max-fixnum)))
-              (language-and-tail
-               (##extract-language-and-tail script-line)))
-         (if language-and-tail
-             (let ((language (##car language-and-tail)))
-               (##readtable-setup-for-language! rt language)))
-         (let* ((rest
-                 (if (##eof-object? first)
-                     '()
-                     (##read-all re ##read-datum-or-eof)))
-                (port-name
-                 (##port-name port)))
-           (if close-port?
-               (##close-input-port port))
-           (cond ((##eof-object? first)
-                  (##vector #f expr port-name))
-                 ((##eq? first (##script-marker))
-                  (##set-cdr! head rest)
-                  (##vector script-line expr port-name))
-                 (else
-                  (##set-cdr! head (##cons first rest))
-                  (##vector #f expr port-name)))))))))
+              (rest
+               (if (##eof-object? first)
+                   '()
+                   (##read-all re ##read-datum-or-eof))))
+         (if close-port?
+             (##close-input-port port))
+         (if (##not (##eof-object? first))
+             (##set-cdr! head
+                         (if (##eq? first (##script-marker))
+                             rest
+                             (##cons first rest))))
+         (let* ((sl (macro-readenv-script-line re))
+                (script-line (and (##string? sl) sl)))
+           (##vector script-line
+                     expr
+                     (##port-name port))))))))
 
-(define-prim (##write-char c port)
+(define-prim (##write-char2 c port)
 
   (##declare (not interrupts-enabled))
 
@@ -4904,7 +5667,7 @@
                 (if (macro-unbuffered? (macro-port-woptions port))
                     (begin
                       (macro-port-mutex-unlock! port)
-                      ((macro-port-force-output port)
+                      ((macro-object-port-force-output port)
                        port
                        0
                        write-char
@@ -4938,7 +5701,7 @@
                               (macro-port-woptions port)))
                       (begin
                         (macro-port-mutex-unlock! port)
-                        ((macro-port-force-output port)
+                        ((macro-object-port-force-output port)
                          port
                          0
                          write-char
@@ -4961,6 +5724,23 @@
                       (##raise-os-io-exception port #f code3 write-char c port)))
                 (loop)))))))
 
+(define-prim (##write-char2? c port)
+  #f)
+
+(define-prim (##write-char1 c)
+  (##write-char2 c (macro-current-output-port)))
+
+(define-prim (##write-char1? c)
+  (##write-char2? c (macro-current-output-port)))
+
+(define-prim (##write-char
+              c
+              #!optional
+              (port (macro-absent-obj)))
+  (if (##eq? port (macro-absent-obj))
+      (##write-char1 c)
+      (##write-char2 c port)))
+
 (define-prim (write-char
               c
               #!optional
@@ -4972,7 +5752,7 @@
                port)))
       (macro-check-char c 1 (write-char c port)
         (macro-check-character-output-port p 2 (write-char c p)
-          (##write-char c p))))))
+          (##write-char2 c p))))))
 
 (define-prim (##write-substring str start end port)
   (##declare (not interrupts-enabled))
@@ -5017,6 +5797,43 @@
 (define-prim (##write-string str port)
   (##declare (not interrupts-enabled))
   (##write-substring str 0 (##string-length str) port))
+
+(define-prim (write-string
+              str
+              #!optional
+              (port (macro-absent-obj))
+              (start (macro-absent-obj))
+              (end (macro-absent-obj)))
+  (macro-force-vars (str port start end)
+    (macro-check-string
+      str
+      1
+      (write-string str port start end)
+      (let ((p
+             (if (##eq? port (macro-absent-obj))
+                 (macro-current-output-port)
+                 port)))
+        (macro-check-character-output-port
+          p
+          2
+          (write-string str port start end)
+          (if (##eq? start (macro-absent-obj))
+              (##write-substring str 0 (##string-length str) p)
+              (macro-check-index-range-incl
+                start
+                3
+                0
+                (##string-length str)
+                (write-string str port start end)
+                (if (##eq? end (macro-absent-obj))
+                    (##write-substring str start (##string-length str) p)
+                    (macro-check-index-range-incl
+                      end
+                      4
+                      start
+                      (##string-length str)
+                      (write-string str port start end)
+                      (##write-substring str start end p))))))))))
 
 ;;;----------------------------------------------------------------------------
 
@@ -5063,7 +5880,61 @@
       (input-port-bytes-buffered port)
       (##input-port-bytes-buffered port))))
 
-(define-prim (##read-u8 port)
+(define-prim (##u8-ready?1 port)
+
+  (##declare (not interrupts-enabled))
+
+  (macro-lock-and-check-input-port-character-buffer-empty
+   port
+   (u8-ready? port)
+   (let* ((byte-rlo
+           (macro-byte-port-rlo port))
+          (byte-rhi
+           (macro-byte-port-rhi port)))
+     (if (##fx< byte-rlo byte-rhi)
+         (begin
+           (macro-port-mutex-unlock! port)
+           #t)
+         (let ((code ((macro-byte-port-rbuf-fill port)
+                      port
+                      1
+                      #f)))
+           (if (##fixnum? code)
+               (if (##fx= code ##err-code-EAGAIN)
+                   (begin
+                     (macro-port-mutex-unlock! port)
+                     #f) ;; a call to read-u8 would block
+                   (begin
+                     (macro-port-mutex-unlock! port)
+                     (##raise-os-io-exception port #f code u8-ready? port)))
+               (begin
+                 (macro-port-mutex-unlock! port)
+                 #t)))))))
+
+(define-prim (##u8-ready?0)
+  (##u8-ready?1 (macro-current-input-port)))
+
+(define-prim (##u8-ready?
+              #!optional
+              (port (macro-absent-obj)))
+  (if (##eq? port (macro-absent-obj))
+      (##u8-ready?0)
+      (##u8-ready?1 port)))
+
+(define-prim (u8-ready?
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-input-port)
+               port)))
+      (macro-check-byte-input-port p 1 (u8-ready? p)
+        (##u8-ready?1 p)))))
+
+(define-prim (##read-u8
+              #!optional
+              (port (macro-current-input-port)))
 
   (##declare (not interrupts-enabled))
 
@@ -5136,9 +6007,10 @@
               u8vect
               start
               end
-              port
               #!optional
-              (need (macro-absent-obj)))
+              (port (macro-current-input-port))
+              (need (macro-absent-obj))
+              (raise-os-exception? #t))
 
   (##declare (not interrupts-enabled))
 
@@ -5192,16 +6064,18 @@
                           (if (or (##fx< 0 n)
                                   (##fx= code ##err-code-EAGAIN))
                               n
-                              (##raise-os-io-exception
-                               port
-                               #f
-                               code
-                               read-subu8vector
-                               u8vect
-                               start
-                               end
-                               port
-                               need)))
+                              (if raise-os-exception?
+                                  (##raise-os-io-exception
+                                   port
+                                   #f
+                                   code
+                                   read-subu8vector
+                                   u8vect
+                                   start
+                                   end
+                                   port
+                                   need)
+                                  code)))
 
                          (code
 
@@ -5234,31 +6108,125 @@
         u8vect
         1
         (read-subu8vector u8vect start end port need)
-        (macro-check-index-range-incl
-          start
-          2
-          0
-          (##u8vector-length u8vect)
+        (macro-check-mutable
+          u8vect
+          1
           (read-subu8vector u8vect start end port need)
           (macro-check-index-range-incl
-            end
-            3
             start
+            2
+            0
             (##u8vector-length u8vect)
             (read-subu8vector u8vect start end port need)
-            (macro-check-byte-input-port
-              p
-              4
+            (macro-check-index-range-incl
+              end
+              3
+              start
+              (##u8vector-length u8vect)
               (read-subu8vector u8vect start end port need)
-              (if (##eq? need (macro-absent-obj))
-                  (##read-subu8vector u8vect start end p)
-                  (macro-check-index
-                    need
-                    5
-                    (read-subu8vector u8vect start end port need)
-                    (##read-subu8vector u8vect start end p need))))))))))
+              (macro-check-byte-input-port
+                p
+                4
+                (read-subu8vector u8vect start end port need)
+                (if (##eq? need (macro-absent-obj))
+                    (##read-subu8vector u8vect start end p)
+                    (macro-check-index
+                      need
+                      5
+                      (read-subu8vector u8vect start end port need)
+                      (##read-subu8vector u8vect start end p need)))))))))))
 
-(define-prim (##write-u8 b port)
+(define-prim (read-bytevector
+              k
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (k port)
+    (macro-check-index
+      k
+      1
+      (read-bytevector k port)
+      (let ((p
+             (if (##eq? port (macro-absent-obj))
+                 (macro-current-input-port)
+                 port)))
+        (macro-check-byte-input-port
+          p
+          2
+          (read-bytevector k port)
+          (let* ((u8vect
+                  (##make-u8vector k))
+                 (n
+                  (##read-subu8vector u8vect 0 k p #f #f)))
+            (cond ((##fx> n 0)
+                   (##u8vector-shrink! u8vect n)
+                   u8vect)
+                  ((##fx= n 0)
+                   #!eof)
+                  (else
+                   (##raise-os-io-exception port #f n read-bytevector k port)))))))))
+
+(define-prim (##read-bytevector!
+              u8vect
+              #!optional
+              (port (macro-current-input-port))
+              (start 0)
+              (end (##u8vector-length u8vect)))
+  (##declare (not interrupts-enabled))
+  (if (##fx< start end)
+      (let ((n (##read-subu8vector u8vect start end port #f #f)))
+        (cond ((##fx> n 0)
+               n)
+              ((##fx= n 0)
+               #!eof)
+              (else
+               (##raise-os-io-exception port #f n read-bytevector! u8vect port start end))))
+      0))
+
+(define-prim (read-bytevector!
+              u8vect
+              #!optional
+              (port (macro-absent-obj))
+              (start (macro-absent-obj))
+              (end (macro-absent-obj)))
+  (macro-force-vars (u8vect port start end)
+    (macro-check-u8vector
+      u8vect
+      1
+      (read-bytevector! u8vect port start end)
+      (macro-check-mutable
+        u8vect
+        1
+        (read-bytevector! u8vect port start end)
+        (let ((p
+               (if (##eq? port (macro-absent-obj))
+                   (macro-current-input-port)
+                   port)))
+          (macro-check-byte-input-port
+            p
+            2
+            (read-bytevector! u8vect port start end)
+            (if (##eq? start (macro-absent-obj))
+                (##read-bytevector! u8vect p 0 (##u8vector-length u8vect))
+                (macro-check-index-range-incl
+                  start
+                  3
+                  0
+                  (##u8vector-length u8vect)
+                  (read-bytevector! u8vect port start end)
+                  (if (##eq? end (macro-absent-obj))
+                      (##read-bytevector! u8vect p start (##u8vector-length u8vect))
+                      (macro-check-index-range-incl
+                        end
+                        4
+                        start
+                        (##u8vector-length u8vect)
+                        (read-bytevector! u8vect port start end)
+                        (##read-bytevector! u8vect p start end)))))))))))
+
+(define-prim (##write-u8
+              b
+              #!optional
+              (port (macro-current-output-port)))
 
   (##declare (not interrupts-enabled))
 
@@ -5297,7 +6265,7 @@
                   (if (macro-unbuffered? (macro-port-woptions port))
                       (begin
                         (macro-port-mutex-unlock! port)
-                        ((macro-port-force-output port)
+                        ((macro-object-port-force-output port)
                          port
                          0
                          write-u8
@@ -5342,7 +6310,12 @@
         (macro-check-byte-output-port p 2 (write-u8 b p)
           (##write-u8 b p))))))
 
-(define-prim (##write-subu8vector u8vect start end port)
+(define-prim (##write-subu8vector
+              u8vect
+              start
+              end
+              #!optional
+              (port (macro-current-output-port)))
 
   (##declare (not interrupts-enabled))
 
@@ -5379,7 +6352,7 @@
                            (macro-unbuffered? (macro-port-woptions port)))
                       (begin
                         (macro-port-mutex-unlock! port)
-                        ((macro-port-force-output port)
+                        ((macro-object-port-force-output port)
                          port
                          0
                          write-subu8vector
@@ -5469,6 +6442,80 @@
               (write-subu8vector u8vect start end p)
               (##write-subu8vector u8vect start end p))))))))
 
+(define-prim (##write-bytevector
+              u8vect
+              #!optional
+              (port (macro-current-output-port))
+              (start 0)
+              (end (##u8vector-length u8vect)))
+  (##declare (not interrupts-enabled))
+  (##write-subu8vector u8vect start end port)
+  (##void))
+
+(define-prim (write-bytevector
+              u8vect
+              #!optional
+              (port (macro-absent-obj))
+              (start (macro-absent-obj))
+              (end (macro-absent-obj)))
+  (macro-force-vars (u8vect port start end)
+    (macro-check-u8vector
+      u8vect
+      1
+      (write-bytevector u8vect port start end)
+      (let ((p
+             (if (##eq? port (macro-absent-obj))
+                 (macro-current-output-port)
+                 port)))
+        (macro-check-byte-output-port
+          p
+          2
+          (write-bytevector u8vect port start end)
+          (if (##eq? start (macro-absent-obj))
+              (##write-bytevector u8vect p 0 (##u8vector-length u8vect))
+              (macro-check-index-range-incl
+                start
+                3
+                0
+                (##u8vector-length u8vect)
+                (write-bytevector u8vect port start end)
+                (if (##eq? end (macro-absent-obj))
+                    (##write-bytevector u8vect p start (##u8vector-length u8vect))
+                    (macro-check-index-range-incl
+                      end
+                      4
+                      start
+                      (##u8vector-length u8vect)
+                      (write-bytevector u8vect port start end)
+                      (##write-bytevector u8vect p start end))))))))))
+
+(define-prim (open-input-bytevector u8vect)
+  (macro-force-vars (u8vect)
+    (macro-check-u8vector
+      u8vect
+      1
+      (open-input-bytevector u8vect)
+      (##open-u8vector-generic
+       (macro-direction-in)
+       (lambda (port) port)
+       open-input-bytevector
+       u8vect))))
+
+(define-prim (open-output-bytevector)
+  (##open-u8vector-generic
+   (macro-direction-out)
+   (lambda (port) port)
+   open-output-bytevector
+   '()))
+
+(define-prim (get-output-bytevector port)
+  (macro-force-vars (port)
+    (macro-check-u8vector-output-port
+      port
+      1
+      (get-output-bytevector port)
+      (##get-output-u8vector port))))
+
 (define-prim (##options-set! port options)
 
   (##declare (not interrupts-enabled))
@@ -5524,7 +6571,8 @@
       eol-encoding:
       input-buffering:
       output-buffering:
-      buffering:)
+      buffering:
+      )
     settings
     fail
     (lambda (psettings)
@@ -5558,11 +6606,13 @@
                  settings))
 
               (let ((result
-                     (##options-set!
-                      port
-                      (##fx+ roptions
-                             (##fx* woptions
-                                    (macro-stream-options-output-shift))))))
+                     (and (or (macro-device-input-port? port)
+                              (macro-device-output-port? port))
+                          (##options-set!
+                           port
+                           (##fx+ roptions
+                                  (##fx* woptions
+                                         (macro-stream-options-output-shift)))))))
                 (if (##fixnum? result)
                     (begin
                       (macro-port-mutex-unlock! port)
@@ -5582,12 +6632,13 @@
                       (let ((rbuf (macro-character-port-rbuf port)))
                         (if rbuf
                             (let ((new-char-buf-len
-                                   (if (macro-unbuffered? roptions)
-                                       1
-                                       512)))
+                                   (##port-char-buf-len
+                                    (macro-port-rkind port)
+                                    (macro-unbuffered? roptions))))
                               (if (##not (##fx= (##string-length rbuf)
                                                 new-char-buf-len))
-                                  (let ((new-rbuf (##make-string new-char-buf-len)))
+                                  (let ((new-rbuf
+                                         (##make-string new-char-buf-len)))
                                     (macro-character-port-rchars-set!
                                      port
                                      (##fx+ (macro-character-port-rchars port)
@@ -5599,13 +6650,14 @@
                       (let ((wbuf (macro-character-port-wbuf port)))
                         (if wbuf
                             (let ((new-char-buf-len
-                                   (if (macro-unbuffered? woptions)
-                                       1
-                                       512)))
+                                   (##port-char-buf-len
+                                    (macro-port-wkind port)
+                                    (macro-unbuffered? woptions))))
                               (if (##not (##fx= (##string-length wbuf)
                                                 new-char-buf-len))
-                                  (let ((new-wbuf (##make-string new-char-buf-len)))
-                                    (macro-character-port-rchars-set!
+                                  (let ((new-wbuf
+                                         (##make-string new-char-buf-len)))
+                                    (macro-character-port-wchars-set!
                                      port
                                      (##fx+ (macro-character-port-wchars port)
                                             (macro-character-port-whi port)))
@@ -5810,6 +6862,13 @@
                          output-raw
                          speed)))))
 
+(define-prim (##tty-mode-reset)
+  (let ((code
+         (##os-device-tty-mode-reset)))
+    (if (##fx< code 0)
+        (##raise-os-exception #f code ##tty-mode-reset)
+        (##void))))
+
 ;;;----------------------------------------------------------------------------
 
 ;;; Implementation of process device ports.
@@ -5926,7 +6985,9 @@
                       (if raise-os-exception?
                           (##raise-os-exception
                            #f
-                           device
+                           (if (##fx= device 1) ;; couldn't set current directory?
+                               ##err-code-ENOENT ;; pretend directory does not exist
+                               device)
                            prim
                            path-or-settings
                            arg2)
@@ -5982,24 +7043,42 @@
   (macro-force-vars (path-or-settings)
     (##open-output-process path-or-settings)))
 
+(define-prim (##call-with-input-process path-or-settings proc)
+  (##open-process-generic
+   (macro-direction-in)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (proc port)))
+       (##close-port port)
+       (##process-status port) ;; wait for process to terminate
+       results))
+   call-with-input-process
+   path-or-settings
+   proc))
+
 (define-prim (call-with-input-process path-or-settings proc)
   (macro-force-vars (path-or-settings proc)
     (macro-check-procedure
       proc
       2
       (call-with-input-process path-or-settings proc)
-      (##open-process-generic
-       (macro-direction-in)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (proc port)))
-           (##close-port port)
-           (##process-status port) ;; wait for process to terminate
-           results))
-       call-with-input-process
-       path-or-settings
-       proc))))
+      (##call-with-input-process path-or-settings proc))))
+
+(define-prim (##call-with-output-process path-or-settings proc)
+  (##open-process-generic
+   (macro-direction-out)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (proc port)))
+       (##force-output port)
+       (##close-port port)
+       (##process-status port) ;; wait for process to terminate
+       results))
+   call-with-output-process
+   path-or-settings
+   proc))
 
 (define-prim (call-with-output-process path-or-settings proc)
   (macro-force-vars (path-or-settings proc)
@@ -6007,19 +7086,21 @@
       proc
       2
       (call-with-output-process path-or-settings proc)
-      (##open-process-generic
-       (macro-direction-out)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (proc port)))
-           (##force-output port)
-           (##close-port port)
-           (##process-status port) ;; wait for process to terminate
-           results))
-       call-with-output-process
-       path-or-settings
-       proc))))
+      (##call-with-output-process path-or-settings proc))))
+
+(define-prim (##with-input-from-process path-or-settings thunk)
+  (##open-process-generic
+   (macro-direction-in)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (macro-dynamic-bind input-port port thunk)))
+       (##close-port port)
+       (##process-status port) ;; wait for process to terminate
+       results))
+   with-input-from-process
+   path-or-settings
+   thunk))
 
 (define-prim (with-input-from-process path-or-settings thunk)
   (macro-force-vars (path-or-settings thunk)
@@ -6027,18 +7108,22 @@
       thunk
       2
       (with-input-from-process path-or-settings thunk)
-      (##open-process-generic
-       (macro-direction-in)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (macro-dynamic-bind input-port port thunk)))
-           (##close-port port)
-           (##process-status port) ;; wait for process to terminate
-           results))
-       with-input-from-process
-       path-or-settings
-       thunk))))
+      (##with-input-from-process path-or-settings thunk))))
+
+(define-prim (##with-output-to-process path-or-settings thunk)
+  (##open-process-generic
+   (macro-direction-out)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (macro-dynamic-bind output-port port thunk)))
+       (##force-output port)
+       (##close-port port)
+       (##process-status port) ;; wait for process to terminate
+       results))
+   with-output-to-process
+   path-or-settings
+   thunk))
 
 (define-prim (with-output-to-process path-or-settings thunk)
   (macro-force-vars (path-or-settings thunk)
@@ -6046,19 +7131,7 @@
       thunk
       2
       (with-output-to-process path-or-settings thunk)
-      (##open-process-generic
-       (macro-direction-out)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (macro-dynamic-bind output-port port thunk)))
-           (##force-output port)
-           (##close-port port)
-           (##process-status port) ;; wait for process to terminate
-           results))
-       with-output-to-process
-       path-or-settings
-       thunk))))
+      (##with-output-to-process path-or-settings thunk))))
 
 (define-prim (##process-pid port)
   (##os-device-process-pid (##port-device port)))
@@ -6076,34 +7149,37 @@
               #!optional
               (absrel-timeout (macro-absent-obj))
               (timeout-val (macro-absent-obj)))
+
+  (define (err)
+    (##raise-unterminated-process-exception
+     port
+     process-status
+     port
+     timeout-val))
   (let ((timeout
-         (macro-time-point
-          (##timeout->time
-           (if (##eq? absrel-timeout (macro-absent-obj))
-               #f
-               absrel-timeout)))))
-    (let loop ((poll-interval 0.001))
-      (let ((result (##os-device-process-status (##port-device port))))
-        (cond ((##not result)
-               (let ((now (##current-time-point)))
-                 (if (##fl< now timeout)
-                     (begin
-                       ;; Polling is evil but fixing this would require
-                       ;; substantial changes to the I/O subsystem.  We'll
-                       ;; tackle that in a future release.
-                       (##thread-sleep! poll-interval)
-                       (loop (##flmin 0.2 (##fl* 1.2 poll-interval))))
-                     (if (##eq? timeout-val (macro-absent-obj))
-                         (##raise-unterminated-process-exception
-                          port
-                          process-status
-                          port
-                          timeout-val)
-                         timeout-val))))
-              ((##fx< result 0)
-               (##raise-os-io-exception port #f result process-status port))
-              (else
-               result))))))
+         (if (##eq? absrel-timeout (macro-absent-obj))
+             #t
+             (macro-time-point
+              (##timeout->time absrel-timeout)))))
+    (let loop ()
+      (if (##wait-for-io!
+           (macro-device-port-event-condvar port)
+           timeout)
+
+          ;; ##wait-for-io! returned before timeout
+          (let ((result (##os-device-process-status (##port-device port))))
+            (cond ((##not result)
+                   ;; the process is not yet terminated, so wait some more
+                   (loop))
+                  ((##fx< result 0)
+                   (##raise-os-io-exception port #f result process-status port))
+                  (else
+                   result)))
+
+          ;; timeout expired
+          (if (##eq? timeout-val (macro-absent-obj))
+              (err)
+              timeout-val)))))
 
 (define-prim (process-status
               port
@@ -6131,14 +7207,17 @@
 
 (implement-library-type-host-info)
 
-(define-prim (##host-info host)
-  (let ((result (##os-host-info host)))
+(define-prim (##host-info
+              host
+              #!optional
+              (raise-os-exception? #t))
+  (let* ((hi (macro-make-host-info #f #f #f))
+         (result (##os-host-info hi host)))
     (if (##fixnum? result)
-        (##raise-os-exception #f result host-info host)
-        (begin
-          (##structure-type-set! result (macro-type-host-info))
-          (##subtype-set! result (macro-subtype-structure))
-          result))))
+        (if raise-os-exception?
+            (##raise-os-exception #f result host-info host)
+            result)
+        result)))
 
 (define-prim (host-info host)
   (macro-force-vars (host)
@@ -6176,24 +7255,24 @@
               service
               #!optional
               (protocol (macro-absent-obj)))
-  (let ((result
-         (##os-service-info
-          service
-          (cond ((##string? protocol)
-                 protocol)
-                ((##fixnum? protocol)
-                 (let ((p (##protocol-info protocol)))
-                   (macro-protocol-info-name p)))
-                ((macro-protocol-info? protocol)
-                 (macro-protocol-info-name protocol))
-                (else
-                 #f)))))
+  (let* ((si
+          (macro-make-service-info #f #f #f #f))
+         (result
+          (##os-service-info
+           si
+           service
+           (cond ((##string? protocol)
+                  protocol)
+                 ((##fixnum? protocol)
+                  (let ((p (##protocol-info protocol)))
+                    (macro-protocol-info-name p)))
+                 ((macro-protocol-info? protocol)
+                  (macro-protocol-info-name protocol))
+                 (else
+                  #f)))))
     (if (##fixnum? result)
         (##raise-os-exception #f result service-info service protocol)
-        (begin
-          (##structure-type-set! result (macro-type-service-info))
-          (##subtype-set! result (macro-subtype-structure))
-          result))))
+        result)))
 
 (define-prim (service-info
               service
@@ -6219,14 +7298,11 @@
 (implement-library-type-protocol-info)
 
 (define-prim (##protocol-info protocol)
-  (let ((result
-         (##os-protocol-info protocol)))
+  (let* ((pi (macro-make-protocol-info #f #f #f))
+         (result (##os-protocol-info pi protocol)))
     (if (##fixnum? result)
         (##raise-os-exception #f result protocol-info protocol)
-        (begin
-          (##structure-type-set! result (macro-type-protocol-info))
-          (##subtype-set! result (macro-subtype-structure))
-          result))))
+        result)))
 
 (define-prim (protocol-info protocol)
   (macro-force-vars (protocol)
@@ -6243,14 +7319,11 @@
 (implement-library-type-network-info)
 
 (define-prim (##network-info network)
-  (let ((result
-         (##os-network-info network)))
+  (let* ((ni (macro-make-network-info #f #f #f))
+         (result (##os-network-info ni network)))
     (if (##fixnum? result)
         (##raise-os-exception #f result network-info network)
-        (begin
-          (##structure-type-set! result (macro-type-network-info))
-          (##subtype-set! result (macro-subtype-structure))
-          result))))
+        result)))
 
 (define-prim (network-info network)
   (macro-force-vars (network)
@@ -6262,7 +7335,323 @@
 
 ;;;----------------------------------------------------------------------------
 
+;;; Implementation of TLS objects.
+
+(macro-case-target
+
+ ((C)
+
+(define-prim (make-tls-context
+              #!key
+              (min-version (macro-absent-obj))
+              (options (macro-absent-obj))
+              (certificate (macro-absent-obj))
+              (private-key (macro-absent-obj))
+              (diffie-hellman-parameters (macro-absent-obj))
+              (elliptic-curve (macro-absent-obj))
+              (client-ca (macro-absent-obj)))
+  (macro-force-vars (min-version
+                     options
+                     certificate
+                     private-key
+                     diffie-hellman-parameters
+                     elliptic-curve
+                     client-ca)
+    (let ()
+
+      (define (version->code version)
+        (case version
+          ((ssl-v2)   #x0200)
+          ((ssl-v3)   #x0300)
+          ((tls-v1)   #x0301)
+          ((tls-v1.1) #x0302)
+          ((tls-v1.2) #x0303)
+          (else       #f)))
+
+      (define allowed-options
+        '((server-mode                   .   1)
+          (use-diffie-hellman            .   2)
+          (use-elliptic-curves           .   4)
+          (request-client-authentication .   8)
+          (insert-empty-fragments        . 256)))
+
+      (define (options->code options)
+        (let loop ((lst options) (code 0))
+          (macro-force-vars (lst)
+            (cond ((##pair? lst)
+                   (let ((opt (##car lst)))
+                     (macro-force-vars (opt)
+                       (let ((x (##assq opt allowed-options)))
+                         (and x
+                              (loop (##cdr lst)
+                                    (##fxior code (##cdr x))))))))
+                  ((##null? lst)
+                   code)
+                  (else
+                   #f)))))
+
+      (define (check-min-version
+               arg-num)
+        (if (##eq? min-version (macro-absent-obj))
+            (check-options
+             arg-num
+             (version->code 'tls-v1))
+            (let ((arg-num (##fx+ arg-num 2)))
+              (let ((min-version-code (version->code min-version)))
+                (if (##not min-version-code)
+                    (##fail-check-tls-version
+                     arg-num
+                     (##list make-tls-context
+                             min-version: min-version
+                             options: options
+                             certificate: certificate
+                             private-key: private-key
+                             diffie-hellman-parameters: diffie-hellman-parameters
+                             elliptic-curve: elliptic-curve
+                             client-ca: client-ca))
+                    (check-options
+                     arg-num
+                     min-version-code))))))
+
+      (define (check-options
+               arg-num
+               min-ver-code)
+        (if (##eq? options (macro-absent-obj))
+            (check-certificate
+             arg-num
+             min-ver-code
+             (options->code '()))
+            (let ((arg-num (##fx+ arg-num 2)))
+              (let ((opts-code (options->code options)))
+                (if opts-code
+                    (check-certificate
+                     arg-num
+                     min-ver-code
+                     opts-code)
+                    (##fail-check-tls-options
+                     arg-num
+                     (##list make-tls-context
+                             min-version: min-version
+                             options: options
+                             certificate: certificate
+                             private-key: private-key
+                             diffie-hellman-parameters: diffie-hellman-parameters
+                             elliptic-curve: elliptic-curve
+                             client-ca: client-ca)))))))
+
+      (define (check-certificate
+               arg-num
+               min-ver-code
+               opts-code)
+        (if (##eq? certificate (macro-absent-obj))
+            (check-private-key
+             arg-num
+             min-ver-code
+             opts-code
+             #f)
+            (let ((arg-num (##fx+ arg-num 2)))
+              (macro-check-string
+                certificate
+                arg-num
+                (make-tls-context
+                 min-version: min-version
+                 options: options
+                 certificate: certificate
+                 private-key: private-key
+                 diffie-hellman-parameters: diffie-hellman-parameters
+                 elliptic-curve: elliptic-curve
+                 client-ca: client-ca)
+                (check-private-key
+                 arg-num
+                 min-ver-code
+                 opts-code
+                 certificate)))))
+
+      (define (check-private-key
+               arg-num
+               min-ver-code
+               opts-code
+               cert)
+        (if (##eq? private-key (macro-absent-obj))
+            (check-diffie-hellman-parameters
+             arg-num
+             min-ver-code
+             opts-code
+             cert
+             cert)
+            (let ((arg-num (##fx+ arg-num 2)))
+              (macro-check-string
+                private-key
+                arg-num
+                (make-tls-context
+                 min-version: min-version
+                 options: options
+                 certificate: certificate
+                 private-key: private-key
+                 diffie-hellman-parameters: diffie-hellman-parameters
+                 elliptic-curve: elliptic-curve
+                 client-ca: client-ca)
+                (check-diffie-hellman-parameters
+                 arg-num
+                 min-ver-code
+                 opts-code
+                 cert
+                 private-key)))))
+
+      (define (check-diffie-hellman-parameters
+               arg-num
+               min-ver-code
+               opts-code
+               cert
+               priv-key)
+        (if (##eq? diffie-hellman-parameters (macro-absent-obj))
+            (check-elliptic-curve
+             arg-num
+             min-ver-code
+             opts-code
+             cert
+             priv-key
+             #f)
+            (let ((arg-num (##fx+ arg-num 2)))
+              (macro-check-string
+                diffie-hellman-parameters
+                arg-num
+                (make-tls-context
+                 min-version: min-version
+                 options: options
+                 certificate: certificate
+                 private-key: private-key
+                 diffie-hellman-parameters: diffie-hellman-parameters
+                 elliptic-curve: elliptic-curve
+                 client-ca: client-ca)
+                (check-elliptic-curve
+                 arg-num
+                 min-ver-code
+                 opts-code
+                 cert
+                 priv-key
+                 diffie-hellman-parameters)))))
+
+      (define (check-elliptic-curve
+               arg-num
+               min-ver-code
+               opts-code
+               cert
+               priv-key
+               dh-params)
+        (if (##eq? elliptic-curve (macro-absent-obj))
+            (check-client-ca
+             arg-num
+             min-ver-code
+             opts-code
+             cert
+             priv-key
+             dh-params
+             #f)
+            (let ((arg-num (##fx+ arg-num 2)))
+              (macro-check-string
+                elliptic-curve
+                arg-num
+                (make-tls-context
+                 min-version: min-version
+                 options: options
+                 certificate: certificate
+                 private-key: private-key
+                 diffie-hellman-parameters: diffie-hellman-parameters
+                 elliptic-curve: elliptic-curve
+                 client-ca: client-ca)
+                (check-client-ca
+                 arg-num
+                 min-ver-code
+                 opts-code
+                 cert
+                 priv-key
+                 dh-params
+                 elliptic-curve)))))
+
+      (define (check-client-ca
+               arg-num
+               min-ver-code
+               opts-code
+               cert
+               priv-key
+               dh-params
+               el-curve)
+        (if (##eq? client-ca (macro-absent-obj))
+            (checks-done
+             arg-num
+             min-ver-code
+             opts-code
+             cert
+             priv-key
+             dh-params
+             el-curve
+             #f)
+            (let ((arg-num (##fx+ arg-num 2)))
+              (macro-check-string
+                client-ca
+                arg-num
+                (make-tls-context
+                 min-version: min-version
+                 options: options
+                 certificate: certificate
+                 private-key: private-key
+                 diffie-hellman-parameters: diffie-hellman-parameters
+                 elliptic-curve: elliptic-curve
+                 client-ca: client-ca)
+                (checks-done
+                 arg-num
+                 min-ver-code
+                 opts-code
+                 cert
+                 priv-key
+                 dh-params
+                 el-curve
+                 client-ca)))))
+
+      (define (checks-done
+               arg-num
+               min-ver-code
+               opts-code
+               cert
+               priv-key
+               dh-params
+               el-curve
+               cl-ca)
+        (let ((result
+               (##os-make-tls-context
+                min-ver-code
+                opts-code
+                cert
+                priv-key
+                dh-params
+                el-curve
+                cl-ca)))
+          (if (##fixnum? result)
+              (##raise-os-exception
+               #f
+               result
+               (##list make-tls-context
+                       min-version: min-version
+                       options: options
+                       certificate: certificate
+                       private-key: private-key
+                       diffie-hellman-parameters: diffie-hellman-parameters
+                       elliptic-curve: elliptic-curve
+                       client-ca: client-ca))
+              result)))
+
+      (check-min-version 0))))
+
+))
+
+;;;----------------------------------------------------------------------------
+
 ;;; Implementation of TCP client device ports.
+
+(macro-case-target
+
+ ((C)
 
 (implement-check-type-tcp-client-port)
 
@@ -6274,9 +7663,11 @@
 
   (define allowed-client-settings
     '(; broadcast:
-      server-address:
+      server-address: ;; keep for backward compatibility
+      address:
       port-number:
-      ;; socket-type:
+      local-address:
+      local-port-number:
       keep-alive:
       coalesce:
       output-width:
@@ -6294,14 +7685,16 @@
       buffering:
       input-readtable:
       output-readtable:
-      readtable:))
+      readtable:
+      tls-context:))
 
   (define allowed-server-settings
     '(reuse-address:
       backlog:
-      server-address:
-      port-number:
-      ;; socket-type:
+      server-address: ;; keep for backward compatibility
+      port-number:    ;; keep for backward compatibility
+      local-address:
+      local-port-number:
       keep-alive:
       coalesce:
       output-width:
@@ -6319,7 +7712,8 @@
       buffering:
       input-readtable:
       output-readtable:
-      readtable:))
+      readtable:
+      tls-context:))
 
   (##make-psettings
    (macro-direction-inout)
@@ -6359,50 +7753,86 @@
    (cond ((##fixnum? port-number-or-address-or-settings)
           (##list 'port-number: port-number-or-address-or-settings))
          ((##string? port-number-or-address-or-settings)
-          (##list 'server-address: port-number-or-address-or-settings))
+          (##list 'address: port-number-or-address-or-settings))
          (else
           port-number-or-address-or-settings))
    fail
    (lambda (psettings)
-     (let ((server-address-or-host
-            (macro-psettings-server-address psettings)))
 
-       (define (open server-address)
-         (let ((port-number
-                (macro-psettings-port-number psettings)))
-           (if (or (##eq? server-address #f)
-                   (##not port-number))
-               (fail)
-               (let ((device
-                      (##os-device-tcp-client-open
-                       server-address
-                       port-number
-                       (psettings->options psettings))))
-                 (if (##fixnum? device)
-                     (if raise-os-exception?
-                         (##raise-os-exception #f device prim port-number-or-address-or-settings)
-                         (cont device))
-                     (let ((port
-                            (##make-tcp-client-port
-                             (##list 'tcp-client
-                                     server-address-or-host
-                                     port-number)
-                             device
-                             psettings)))
+     (define (stage1)
+       (let ((address-or-host
+              (macro-psettings-address psettings)))
+         (if (##string? address-or-host)
+             (let ((info (##host-info address-or-host #f)))
+               (if (##fixnum? info)
+                   (if raise-os-exception?
+                       (##raise-os-exception #f info prim port-number-or-address-or-settings)
+                       (cont info))
+                 (stage2 address-or-host
+                         (##car (macro-host-info-addresses info)))))
+             (stage2 address-or-host
+                     address-or-host))))
+
+     (define (stage2 address-or-host address)
+       (let ((local-address-or-host
+              (macro-psettings-local-address psettings)))
+         (if (##string? local-address-or-host)
+             (let ((info (##host-info local-address-or-host #f)))
+               (if (##fixnum? info)
+                   (if raise-os-exception?
+                       (##raise-os-exception #f info prim port-number-or-address-or-settings)
+                       (cont info))
+                 (stage3 address-or-host
+                         address
+                         (##car (macro-host-info-addresses info)))))
+             (stage3 address-or-host
+                     address
+                     local-address-or-host))))
+
+     (define (stage3 address-or-host address local-address)
+       (let ((port-number
+              (if (##null? (macro-psettings-port-number psettings))
+                  #f
+                  (macro-psettings-port-number psettings)))
+             (local-port-number
+              (if (##null? (macro-psettings-local-port-number psettings))
+                  #f
+                  (macro-psettings-local-port-number psettings))))
+         (if (##not port-number)
+             (fail)
+             (let ((device
+                    (##os-device-tcp-client-open
+                     (if (##null? local-address)
+                         #f ;; default local-address to any interface
+                         local-address)
+                     local-port-number
+                     (if (##null? address)
+                         (macro-localhost) ;; default address to localhost
+                         address)
+                     port-number
+                     (psettings->options psettings)
+                     (macro-psettings-tls-context psettings)
+                     (and (##string? address-or-host) address-or-host))))
+               (if (##fixnum? device)
+                   (if raise-os-exception?
+                       (##raise-os-exception #f device prim port-number-or-address-or-settings)
+                       (cont device))
+                   (let ((port
+                          (##make-tcp-client-port
+                           (##list 'tcp-client
+                                   (if (##null? address)
+                                       (macro-localhost)
+                                       (or address-or-host "*"))
+                                   port-number)
+                           device
+                           psettings)))
 ;;; wait for connection to be established
-;;;                       (##wait-for-io!
-;;;                        (macro-device-port-wdevice-condvar port)
-;;;                        (macro-port-wtimeout port))
-                       (cont port)))))))
+;;;                     (##wait-for-io!
+;;;                      (macro-device-port-wdevice-condvar port)
+;;;                      (macro-port-wtimeout port))
+                     (cont port)))))))
 
-       (if (##string? server-address-or-host)
-           (let ((info (##os-host-info server-address-or-host)))
-             (if (##fixnum? info)
-                 (if raise-os-exception?
-                     (##raise-os-exception #f info prim port-number-or-address-or-settings)
-                     (cont info))
-                 (open (##car (macro-host-info-addresses info)))))
-           (open server-address-or-host))))))
+     (stage1))))
 
 (define-prim (open-tcp-client port-number-or-address-or-settings)
   (macro-force-vars (port-number-or-address-or-settings)
@@ -6420,11 +7850,17 @@
   (##subtype-set! si (macro-subtype-structure))
   si)
 
-(define-prim (##tcp-client-socket-info port prim)
+(define-prim (##tcp-client-socket-info
+              port
+              prim
+              #!optional
+              (raise-os-exception? #t))
   (let loop ()
     (let ((result
            (##os-device-tcp-client-socket-info
-            (macro-condvar-name (macro-device-port-rdevice-condvar port))
+            (macro-condvar-name
+             (or (macro-device-port-wdevice-condvar port)
+                 (macro-device-port-rdevice-condvar port)))
             (##eq? prim tcp-client-peer-socket-info))))
       (if (##fixnum? result)
 
@@ -6434,17 +7870,24 @@
                         (macro-port-wtimeout port))
                        ((macro-port-wtimeout-thunk port))))
               (loop)
-              (##raise-os-io-exception port #f result prim port))
+              (if raise-os-exception?
+                  (##raise-os-io-exception port #f result prim port)
+                  result))
 
           (##socket-info-setup! result)))))
 
-(define-prim (##tcp-client-self-socket-info port)
-  (##tcp-client-socket-info port tcp-client-self-socket-info))
+(define-prim (##tcp-client-local-socket-info port)
+  (##tcp-client-socket-info port tcp-client-local-socket-info))
 
-(define-prim (tcp-client-self-socket-info port)
+(define-prim (tcp-client-local-socket-info port)
+  (macro-force-vars (port)
+    (macro-check-tcp-client-port port 1 (tcp-client-local-socket-info port)
+      (##tcp-client-local-socket-info port))))
+
+(define-prim (tcp-client-self-socket-info port) ;;TODO: deprecated
   (macro-force-vars (port)
     (macro-check-tcp-client-port port 1 (tcp-client-self-socket-info port)
-      (##tcp-client-self-socket-info port))))
+      (##tcp-client-local-socket-info port))))
 
 (define-prim (##tcp-client-peer-socket-info port)
   (##tcp-client-socket-info port tcp-client-peer-socket-info))
@@ -6654,9 +8097,15 @@
                    socket-type: socket-type
                    protocol: protocol))
 
+))
+
 ;;;----------------------------------------------------------------------------
 
 ;; Implementation of TCP server ports.
+
+(macro-case-target
+
+ ((C)
 
 (implement-check-type-tcp-server-port)
 
@@ -6680,7 +8129,7 @@
         (wtimeout-thunk
          #f)
         (rdevice-condvar
-         (##make-rdevice-condvar rdevice)))
+         (##make-io-condvar-for-reading rdevice)))
 
     (define (server-name port)
 
@@ -6690,7 +8139,7 @@
       (##declare (not interrupts-enabled))
 
       (##list 'tcp-server
-              (macro-psettings-port-number
+              (macro-psettings-local-port-number
                (macro-tcp-server-port-client-psettings port))))
 
     ;; This code gives a more informative name to the tcp-client port but
@@ -6711,7 +8160,7 @@
     ;;                  #t)))
     ;;            (if (##fixnum? info)
     ;;              (##list 'tcp-client
-    ;;                      (macro-psettings-port-number
+    ;;                      (macro-psettings-local-port-number
     ;;                       (macro-tcp-server-port-client-psettings port)))
     ;;              (let ((address
     ;;                     (macro-socket-info-address info))
@@ -6720,6 +8169,15 @@
     ;;                (##list 'tcp-client
     ;;                        address
     ;;                        port-num)))))
+
+    (define (wait port direction)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##wait-device port direction))
 
     (define (read-datum port re)
 
@@ -6733,8 +8191,7 @@
       (let loop ()
         (let ((client-device
                (##os-device-tcp-server-read
-                (macro-condvar-name
-                 (macro-tcp-server-port-rdevice-condvar port)))))
+                (macro-tcp-server-port-rdevice-condvar port))))
           (if (##fixnum? client-device)
 
               (cond ((##fx= client-device ##err-code-EINTR)
@@ -6827,10 +8284,7 @@
             rkind
             wkind
             server-name
-            read-datum
-            write-datum
-            newline
-            force-output
+            wait
             close
             roptions
             rtimeout
@@ -6841,6 +8295,10 @@
             wtimeout-thunk
             set-wtimeout
             #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
             rdevice-condvar
             client-psettings)))
       (##io-condvar-port-set! rdevice-condvar port)
@@ -6861,37 +8319,42 @@
   (##make-tcp-psettings
    #f
    (cond ((##fixnum? port-number-or-address-or-settings)
-          (##list 'port-number: port-number-or-address-or-settings))
+          (##list 'local-port-number: port-number-or-address-or-settings))
          ((##string? port-number-or-address-or-settings)
-          (##list 'server-address: port-number-or-address-or-settings))
+          (##list 'local-address: port-number-or-address-or-settings))
          (else
           port-number-or-address-or-settings))
    fail
    (lambda (psettings)
 
-     (define (continue-with-address server-address)
-       (if (##eq? server-address #t)
-           (fail)
-           (cont (##cons psettings server-address))))
+     (define (stage1)
+       (let ((local-address-or-host
+              (if (##null? (macro-psettings-local-address psettings))
+                  (macro-psettings-address psettings) ;; for backward compatibility
+                  (macro-psettings-local-address psettings))))
+         (if (##string? local-address-or-host)
+             (let ((info (##host-info local-address-or-host #f)))
+               (if (##fixnum? info)
+                   (if raise-os-exception?
+                       (##raise-os-exception #f info prim port-number-or-address-or-settings arg2 arg3 arg4)
+                       (cont info))
+                 (stage2 (##car (macro-host-info-addresses info)))))
+             (stage2 local-address-or-host))))
 
-     (if (##not (macro-psettings-port-number psettings))
-         (fail)
-         (let ((server-address-or-host
-                (macro-psettings-server-address psettings)))
-           (if (##string? server-address-or-host)
-               (let ((info (##os-host-info server-address-or-host)))
-                 (if (##fixnum? info)
-                     (if raise-os-exception?
-                         (##raise-os-exception #f info prim port-number-or-address-or-settings arg2 arg3 arg4)
-                         (cont info))
-                     (continue-with-address
-                      (##car (macro-host-info-addresses info)))))
-               (continue-with-address
-                server-address-or-host)))))))
+     (define (stage2 local-address)
+       (let ((local-port-number
+              (if (##null? (macro-psettings-local-port-number psettings))
+                  (macro-psettings-port-number psettings) ;; for backward compatibility
+                  (macro-psettings-local-port-number psettings))))
+         (if (##null? local-port-number)
+             (fail)
+             (cont (##vector psettings local-address local-port-number)))))
+
+     (stage1))))
 
 (define-prim (##open-tcp-server-aux
               raise-os-exception?
-              psettings-and-server-address
+              psettings-and-address-and-port-number
               cont
               prim
               port-number-or-address-or-settings
@@ -6913,17 +8376,22 @@
         keep-alive))))
 
   (let* ((psettings
-          (##car psettings-and-server-address))
-         (server-address
-          (##cdr psettings-and-server-address))
-         (port-number
-          (macro-psettings-port-number psettings))
+          (##vector-ref psettings-and-address-and-port-number 0))
+         (local-address
+          (##vector-ref psettings-and-address-and-port-number 1))
+         (local-port-number
+          (##vector-ref psettings-and-address-and-port-number 2))
+         (tls-context
+          (macro-psettings-tls-context psettings))
          (rdevice
           (##os-device-tcp-server-open
-           server-address
-           port-number
+           (if (##null? local-address)
+               (macro-localhost) ;; default local-address to localhost
+               local-address)
+           local-port-number
            (macro-psettings-backlog psettings)
-           (psettings->options psettings))))
+           (psettings->options psettings)
+           tls-context)))
     (if (##fixnum? rdevice)
         (if raise-os-exception?
             (##raise-os-exception #f rdevice prim port-number-or-address-or-settings arg2 arg3 arg4)
@@ -6940,10 +8408,10 @@
               arg4)
   (##process-tcp-server-psettings
    raise-os-exception?
-   (lambda (psettings-and-server-address)
+   (lambda (psettings-and-address-and-port-number)
      (##open-tcp-server-aux
       raise-os-exception?
-      psettings-and-server-address
+      psettings-and-address-and-port-number
       cont
       prim
       port-number-or-address-or-settings
@@ -6970,22 +8438,23 @@
 (define-prim (##tcp-server-socket-info port)
   (let ((result
          (##os-device-tcp-server-socket-info
-          (macro-condvar-name (macro-tcp-server-port-rdevice-condvar port)))))
+          (macro-condvar-name
+           (macro-tcp-server-port-rdevice-condvar port)))))
     (if (##fixnum? result)
 
-        (##raise-os-io-exception port #f result tcp-server-socket-info port))
+        (##raise-os-io-exception port #f result tcp-server-socket-info port)
 
-    (##socket-info-setup! result)))
+        (##socket-info-setup! result))))
 
 (define-prim (tcp-server-socket-info port)
   (macro-force-vars (port)
     (macro-check-tcp-server-port port 1 (tcp-server-socket-info port)
       (##tcp-server-socket-info port))))
 
-(define-prim (##string->address-and-port-number
-              str
-              default-address
-              default-port-num)
+(define-prim (##string->address-and-port-number str)
+
+  (define default-address '())
+  (define default-port-num '())
 
   (define (err)
     #f)
@@ -7025,6 +8494,683 @@
                                 (addr (##substring str 0 colon)))
                             port-num)
                     (err))))))))
+
+))
+
+;;;----------------------------------------------------------------------------
+
+;; Implementation of UDP ports.
+
+(macro-case-target
+
+ ((C)
+
+(implement-check-type-udp-port)
+(define-fail-check-type udp-input-port 'udp-input-port)
+(define-fail-check-type udp-output-port 'udp-output-port)
+
+(define-prim (##make-udp-psettings
+              settings
+              fail
+              succeed)
+
+  (define allowed-settings
+    '(address:
+      port-number:
+      local-address:
+      local-port-number:
+      direction:))
+
+  (##make-psettings
+   (macro-direction-inout)
+   allowed-settings
+   settings
+   fail
+   succeed))
+
+(define-prim (##make-udp-port device id psettings)
+  (let* ((direction
+          (macro-psettings-direction psettings))
+         (mutex
+          (macro-make-port-mutex))
+         (rkind
+          (if (##fx= direction (macro-direction-out))
+              (macro-none-kind)
+              (macro-udp-kind)))
+         (wkind
+          (if (##fx= direction (macro-direction-in))
+              (macro-none-kind)
+              (macro-udp-kind)))
+         (roptions
+          0)
+         (rtimeout
+          #t)
+         (rtimeout-thunk
+          #f)
+         (woptions
+          0)
+         (wtimeout
+          #t)
+         (wtimeout-thunk
+          #f)
+         (rdevice-condvar
+          (and (##not (##fx= rkind (macro-none-kind)))
+               (##make-io-condvar-for-reading device)))
+         (wdevice-condvar
+          (and (##not (##fx= wkind (macro-none-kind)))
+               (##make-io-condvar-for-writing device))))
+
+    (define (name port)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      id)
+
+    (define (wait port direction)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+      (if (##fx= direction (macro-direction-in))
+
+        (##wait-for-io!
+         (macro-udp-port-rdevice-condvar port)
+         (macro-port-rtimeout port))
+
+        (##wait-for-io!
+         (macro-udp-port-wdevice-condvar port)
+         (macro-port-wtimeout port))))
+
+    (define (close port prim arg1)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+      (let ((result
+             (##close-device
+              port
+              (macro-udp-port-rdevice-condvar port)
+              (macro-udp-port-wdevice-condvar port)
+              prim)))
+        (macro-port-mutex-unlock! port)
+        (if (##fixnum? result)
+            (##raise-os-io-exception port #f result prim arg1)
+            result)))
+
+    (define (set-rtimeout port timeout thunk)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+      (macro-port-rtimeout-set! port timeout)
+      (macro-port-rtimeout-thunk-set! port thunk)
+      (##condvar-signal-no-reschedule!
+       (macro-udp-port-rdevice-condvar port)
+       #t)
+      (macro-port-mutex-unlock! port)
+      (##void))
+
+    (define (set-wtimeout port timeout thunk)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+      (macro-port-wtimeout-set! port timeout)
+      (macro-port-wtimeout-thunk-set! port thunk)
+      (##condvar-signal-no-reschedule!
+       (macro-udp-port-wdevice-condvar port)
+       #t)
+      (macro-port-mutex-unlock! port)
+      (##void))
+
+    (define (read-datum port re)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##udp-read-subu8vector #f #f #f port read #!eof))
+
+    (define (write-datum port obj we)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-check-u8vector
+        obj
+        1
+        (write obj port)
+        (##udp-write-subu8vector obj #f #f port write)))
+
+    (define (newline port)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##void))
+
+    (define (force-output port level prim arg1 arg2 arg3 arg4)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##void))
+
+    (let ((port
+           (macro-make-udp-port
+            mutex
+            rkind
+            wkind
+            name
+            wait
+            close
+            roptions
+            rtimeout
+            rtimeout-thunk
+            set-rtimeout
+            woptions
+            wtimeout
+            wtimeout-thunk
+            set-wtimeout
+            #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
+            rdevice-condvar
+            wdevice-condvar
+            #f ;; latest-source
+            )))
+      (if rdevice-condvar
+        (##io-condvar-port-set! rdevice-condvar port))
+      (if wdevice-condvar
+        (##io-condvar-port-set! wdevice-condvar port))
+      port)))
+
+(define-prim (##open-udp
+              raise-os-exception?
+              cont
+              prim
+              port-number-or-address-or-settings)
+
+  (define (psettings->options psettings)
+    0)
+
+  (define (fail)
+    (##fail-check-exact-integer-or-string-or-settings 1 prim port-number-or-address-or-settings))
+
+  (##make-udp-psettings
+   (cond ((##eq? port-number-or-address-or-settings (macro-absent-obj))
+          '())
+         ((##fixnum? port-number-or-address-or-settings)
+          (##list 'local-port-number: port-number-or-address-or-settings))
+         ((##string? port-number-or-address-or-settings)
+          (##list 'local-address: port-number-or-address-or-settings))
+         (else
+          port-number-or-address-or-settings))
+   fail
+   (lambda (psettings)
+
+     (define (stage1)
+       (let ((local-address-or-host
+              (macro-psettings-local-address psettings)))
+         (if (##string? local-address-or-host)
+             (let ((info (##host-info local-address-or-host #f)))
+               (if (##fixnum? info)
+                   (if raise-os-exception?
+                       (##raise-os-exception #f info prim port-number-or-address-or-settings)
+                       (cont info))
+                 (stage2 (##car (macro-host-info-addresses info)))))
+             (stage2 local-address-or-host))))
+
+     (define (stage2 local-address)
+       (let ((address-or-host
+              (macro-psettings-address psettings)))
+         (if (##string? address-or-host)
+             (let ((info (##host-info address-or-host #f)))
+               (if (##fixnum? info)
+                   (if raise-os-exception?
+                       (##raise-os-exception #f info prim port-number-or-address-or-settings)
+                       (cont info))
+                 (stage3 local-address
+                         (##car (macro-host-info-addresses info)))))
+             (stage3 local-address
+                     address-or-host))))
+
+     (define (stage3 local-address address)
+       (let* ((local-port-number
+               (macro-psettings-local-port-number psettings))
+              (port-number
+               (macro-psettings-port-number psettings))
+              (local-a
+               (if (##null? local-address)
+                   (macro-localhost) ;; default local-address to localhost
+                   local-address))
+              (local-pn
+               (if (##null? local-port-number)
+                   #f ;; default to automatically assigned port number
+                   local-port-number))
+              (device
+               (##os-device-udp-open
+                local-a
+                local-pn
+                (psettings->options psettings))))
+         (if (##fixnum? device)
+             (if raise-os-exception?
+                 (##raise-os-exception #f device prim port-number-or-address-or-settings)
+                 (cont device))
+
+             (let ((result (##os-device-udp-socket-info device #f)))
+               (if (##fixnum? result)
+
+                   (##raise-os-exception #f result prim port-number-or-address-or-settings)
+
+                   (let* ((info
+                           (##socket-info-setup! result))
+                          (a
+                           (macro-socket-info-address info))
+                          (pn
+                           (macro-socket-info-port-number info))
+                          (port
+                           (##make-udp-port
+                            device
+                            (##list 'udp
+                                    (or a "*")
+                                    pn)
+                            psettings)))
+
+                     (let ((wdevice-condvar
+                            (macro-udp-port-wdevice-condvar port)))
+                       (if wdevice-condvar
+                           (##os-device-udp-destination-set!
+                            wdevice-condvar
+                            (if (##null? address)
+                                (or a (macro-localhost))
+                                address)
+                            (if (##null? port-number)
+                                pn
+                                port-number))))
+
+                     (cont port)))))))
+
+     (stage1))))
+
+(define-prim (open-udp
+              #!optional
+              (port-number-or-address-or-settings (macro-absent-obj)))
+  (##open-udp
+   #t
+   (lambda (port) port)
+   open-udp
+   port-number-or-address-or-settings))
+
+(define-prim (##udp-read-subu8vector u8vect start end port prim eof)
+
+  (##declare (not interrupts-enabled))
+
+  (define (err code)
+
+    ;; signal an error
+
+    (macro-port-mutex-unlock! port)
+    (if u8vect
+        (##raise-os-io-exception port #f code prim u8vect start end port)
+        (##raise-os-io-exception port #f code prim port)))
+
+  (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+  (let loop ()
+    (let ((result
+           (##os-device-udp-read-subu8vector
+            (macro-udp-port-rdevice-condvar port)
+            u8vect
+            start
+            end)))
+
+      (if (and (##fixnum? result) (##fx< result 0))
+
+          ;; the read caused an error
+
+          (cond ((##fx= result ##err-code-EINTR)
+
+                 ;; the read was interrupted, so try again
+
+                 (loop))
+
+                ((##fx= result ##err-code-EAGAIN)
+
+                 ;; the read would block, so wait and then try again
+
+                 (macro-port-mutex-unlock! port)
+                 (let ((continue?
+                        (or (##wait-for-io!
+                             (macro-udp-port-rdevice-condvar port)
+                             (macro-port-rtimeout port))
+                            ((macro-port-rtimeout-thunk port)))))
+                   (if continue?
+                       (begin
+                         (macro-port-mutex-lock! port) ;; regain access to port
+                         (loop))
+                       eof)))
+
+                (else
+
+                 (err result)))
+
+          (begin
+            (macro-port-mutex-unlock! port)
+            result)))))
+
+(define-prim (udp-read-subu8vector
+              u8vect
+              start
+              end
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (u8vect start end port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-input-port)
+               port)))
+    (macro-check-u8vector
+      u8vect
+      1
+      (udp-read-subu8vector u8vect start end port)
+      (macro-check-mutable
+        u8vect
+        1
+        (udp-read-subu8vector u8vect start end port)
+        (macro-check-index-range-incl
+          start
+          2
+          0
+          (##u8vector-length u8vect)
+          (udp-read-subu8vector u8vect start end port)
+          (macro-check-index-range-incl
+            end
+            3
+            start
+            (##u8vector-length u8vect)
+            (udp-read-subu8vector u8vect start end port)
+            (macro-check-udp-input-port
+              p
+              4
+              (udp-read-subu8vector u8vect start end port)
+              (##udp-read-subu8vector u8vect start end p udp-read-subu8vector #f)))))))))
+
+(define-prim (##udp-read-u8vector port)
+  (##udp-read-subu8vector #f #f #f port udp-read-u8vector #f))
+
+(define-prim (udp-read-u8vector
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-input-port)
+               port)))
+      (macro-check-udp-input-port
+        p
+        1
+        (udp-read-u8vector port)
+        (##udp-read-u8vector p)))))
+
+(define-prim (##udp-socket-info source port prim)
+
+  (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+  (let ((result
+         (##os-device-udp-socket-info
+          (macro-condvar-name
+           (or (macro-udp-port-rdevice-condvar port)
+               (macro-udp-port-wdevice-condvar port)))
+          source)))
+
+    (if (##fixnum? result)
+
+        (begin
+          (macro-port-mutex-unlock! port)
+          (##raise-os-io-exception port #f result prim port))
+
+        (let ((info
+               (cond ((##eq? result #f) ;; no message received yet
+                      result)
+                     ((##eq? result #t) ;; same address as last time
+                      ;; return last socket info
+                      (macro-udp-port-latest-source port))
+                     (else
+                      (let ((info (##socket-info-setup! result)))
+                        (if source
+                            (begin
+                              ;; new address... remember for next time
+                              (macro-udp-port-latest-source-set! port info)))
+                        info)))))
+          (macro-port-mutex-unlock! port)
+          info))))
+
+(define-prim (##udp-local-socket-info port)
+  (##udp-socket-info #f port udp-local-socket-info))
+
+(define-prim (udp-local-socket-info
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-input-port)
+               port)))
+      (macro-check-udp-port
+        p
+        1
+        (udp-local-socket-info port)
+        (##udp-local-socket-info p)))))
+
+(define-prim (##udp-source-socket-info port)
+  (##udp-socket-info #t port udp-source-socket-info))
+
+(define-prim (udp-source-socket-info
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-input-port)
+               port)))
+      (macro-check-udp-input-port
+        p
+        1
+        (udp-source-socket-info port)
+        (##udp-source-socket-info p)))))
+
+(define-prim (##udp-write-subu8vector u8vect start end port prim)
+
+  (##declare (not interrupts-enabled))
+
+  (define (err code)
+
+    ;; signal an error
+
+    (macro-port-mutex-unlock! port)
+    (if start
+        (##raise-os-io-exception port #f code prim u8vect start end port)
+        (##raise-os-io-exception port #f code prim u8vect port)))
+
+  (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+  (let loop ()
+    (let ((result
+           (##os-device-udp-write-subu8vector
+            (macro-udp-port-wdevice-condvar port)
+            u8vect
+            start
+            end)))
+
+      (if (and (##fixnum? result) (##fx< result 0))
+
+          ;; the write caused an error
+
+          (cond ((##fx= result ##err-code-EINTR)
+
+                 ;; the write was interrupted, so try again
+
+                 (loop))
+
+                ((##fx= result ##err-code-EAGAIN)
+
+                 ;; the write would block, so wait and then try again
+
+                 (macro-port-mutex-unlock! port)
+                 (let ((continue?
+                        (or (##wait-for-io!
+                             (macro-udp-port-wdevice-condvar port)
+                             (macro-port-wtimeout port))
+                            ((macro-port-wtimeout-thunk port)))))
+                   (if continue?
+                       (begin
+                         (macro-port-mutex-lock! port) ;; regain access to port
+                         (loop))
+                       #f)))
+
+                (else
+
+                 (err result)))
+
+          (begin
+            (macro-port-mutex-unlock! port)
+            result)))))
+
+(define-prim (##udp-write-u8vector u8vect port)
+  (##udp-write-subu8vector
+   u8vect
+   0
+   (##u8vector-length u8vect)
+   port
+   udp-write-u8vector))
+
+(define-prim (udp-write-u8vector
+              u8vect
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (u8vect port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-output-port)
+               port)))
+    (macro-check-u8vector
+      u8vect
+      1
+      (udp-write-u8vector u8vect port)
+      (macro-check-udp-output-port
+        p
+        2
+        (udp-write-u8vector u8vect port)
+        (##udp-write-u8vector u8vect p))))))
+
+(define-prim (udp-write-subu8vector
+              u8vect
+              start
+              end
+              #!optional
+              (port (macro-absent-obj)))
+  (macro-force-vars (u8vect start end port)
+    (let ((p
+           (if (##eq? port (macro-absent-obj))
+               (macro-current-output-port)
+               port)))
+    (macro-check-u8vector
+      u8vect
+      1
+      (udp-write-subu8vector u8vect start end port)
+      (macro-check-index-range-incl
+        start
+        2
+        0
+        (##u8vector-length u8vect)
+        (udp-write-subu8vector u8vect start end port)
+        (macro-check-index-range-incl
+          end
+          3
+          start
+          (##u8vector-length u8vect)
+          (udp-write-subu8vector u8vect start end port)
+          (macro-check-udp-output-port
+            p
+            4
+            (udp-write-subu8vector u8vect start end port)
+            (##udp-write-subu8vector
+             u8vect
+             start
+             end
+             port
+             udp-write-subu8vector))))))))
+
+(define-prim (udp-destination-set!
+              address
+              port-number
+              #!optional
+              (port (macro-absent-obj)))
+
+  (macro-force-vars (address port-number port)
+    (let ()
+
+      (define (stage1)
+        (if (##string? address)
+            (let ((info (##host-info address #f)))
+              (if (##fixnum? info)
+                  (##raise-os-exception #f info udp-destination-set! address port-number port)
+                  (stage2 (##car (macro-host-info-addresses info)))))
+            (stage2 address)))
+
+      (define (stage2 address)
+        (macro-check-index-range-incl
+          port-number
+          2
+          0
+          65535
+          (udp-destination-set! address port-number port)
+          (let ((p
+                 (if (##eq? port (macro-absent-obj))
+                     (macro-current-output-port)
+                     port)))
+            (macro-check-udp-output-port
+              p
+              3
+              (udp-destination-set! address port-number port)
+              (let ((code
+                     (##os-device-udp-destination-set!
+                      (macro-udp-port-wdevice-condvar p)
+                      address
+                      port-number)))
+                (if (##fx< code 0)
+                    (##raise-os-exception #f code udp-destination-set! address port-number port)
+                    (##void)))))))
+
+      (stage1))))
+
+))
 
 ;;;----------------------------------------------------------------------------
 
@@ -7066,7 +9212,7 @@
         (wtimeout-thunk
          #f)
         (rdevice-condvar
-         (##make-rdevice-condvar rdevice)))
+         (##make-io-condvar-for-reading rdevice)))
 
     (define (name port)
 
@@ -7076,6 +9222,15 @@
       (##declare (not interrupts-enabled))
 
       (macro-directory-port-path port))
+
+    (define (wait port direction)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##wait-device port direction))
 
     (define (read-datum port re)
 
@@ -7089,8 +9244,7 @@
       (let loop ()
         (let ((datum
                (##os-device-directory-read
-                (macro-condvar-name
-                 (macro-directory-port-rdevice-condvar port)))))
+                (macro-directory-port-rdevice-condvar port))))
           (if (##fixnum? datum)
 
               (cond ((##fx= datum ##err-code-EINTR)
@@ -7177,10 +9331,7 @@
             rkind
             wkind
             name
-            read-datum
-            write-datum
-            newline
-            force-output
+            wait
             close
             roptions
             rtimeout
@@ -7191,12 +9342,16 @@
             wtimeout-thunk
             set-wtimeout
             #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
             rdevice-condvar
             path)))
       (##io-condvar-port-set! rdevice-condvar port)
       port)))
 
-(define-prim (##open-directory
+(define-prim (##open-directory-aux
               raise-os-exception?
               cont
               prim
@@ -7233,15 +9388,20 @@
                      (cont rdevice))
                  (cont (##make-directory-port rdevice path)))))))))
 
+(define-prim (##open-directory
+              #!optional
+              (path-or-settings (macro-absent-obj)))
+  (##open-directory-aux
+   #t
+   (lambda (port) port)
+   open-directory
+   path-or-settings))
+
 (define-prim (open-directory
               #!optional
               (path-or-settings (macro-absent-obj)))
   (macro-force-vars (path-or-settings)
-    (##open-directory
-     #t
-     (lambda (port) port)
-     open-directory
-     path-or-settings)))
+    (##open-directory path-or-settings)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -7269,7 +9429,7 @@
         (wtimeout-thunk
          #f)
         (rdevice-condvar
-         (##make-rdevice-condvar rdevice)))
+         (##make-io-condvar-for-reading rdevice)))
 
     (define (name port)
 
@@ -7279,6 +9439,15 @@
       (##declare (not interrupts-enabled))
 
       (##list 'event-queue (macro-event-queue-port-index port)))
+
+    (define (wait port direction)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (##wait-device port direction))
 
     (define (read-datum port re)
 
@@ -7292,8 +9461,7 @@
       (let loop ()
         (let ((datum
                (##os-device-event-queue-read
-                (macro-condvar-name
-                 (macro-event-queue-port-rdevice-condvar port)))))
+                (macro-event-queue-port-rdevice-condvar port))))
           (if (##fixnum? datum)
 
               (cond ((##fx= datum ##err-code-EINTR)
@@ -7380,10 +9548,7 @@
             rkind
             wkind
             name
-            read-datum
-            write-datum
-            newline
-            force-output
+            wait
             close
             roptions
             rtimeout
@@ -7394,6 +9559,10 @@
             wtimeout-thunk
             set-wtimeout
             #f ;; io-exception-handler
+            read-datum
+            write-datum
+            newline
+            force-output
             rdevice-condvar
             index)))
       (##io-condvar-port-set! rdevice-condvar port)
@@ -7570,6 +9739,14 @@
   (macro-force-vars (path-or-settings)
     (##open-input-file path-or-settings)))
 
+(define-prim (open-binary-input-file path-or-settings)
+  (##open-file-generic
+   (macro-direction-in)
+   #t
+   (lambda (port) port)
+   open-binary-input-file
+   path-or-settings))
+
 (define-prim (##open-output-file path-or-settings)
   (##open-file-generic
    (macro-direction-out)
@@ -7582,23 +9759,48 @@
   (macro-force-vars (path-or-settings)
     (##open-output-file path-or-settings)))
 
+(define-prim (open-binary-output-file path-or-settings)
+  (##open-file-generic
+   (macro-direction-out)
+   #t
+   (lambda (port) port)
+   open-binary-output-file
+   path-or-settings))
+
+(define-prim (##call-with-input-file path-or-settings proc)
+  (##open-file-generic
+   (macro-direction-in)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (proc port)))
+       (##close-port port)
+       results))
+   call-with-input-file
+   path-or-settings
+   proc))
+
 (define-prim (call-with-input-file path-or-settings proc)
   (macro-force-vars (path-or-settings proc)
     (macro-check-procedure
       proc
       2
       (call-with-input-file path-or-settings proc)
-      (##open-file-generic
-       (macro-direction-in)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (proc port)))
-           (##close-port port)
-           results))
-       call-with-input-file
-       path-or-settings
-       proc))))
+      (##call-with-input-file path-or-settings proc))))
+
+(define-prim (##call-with-output-file path-or-settings proc)
+  (##open-file-generic
+   (macro-direction-out)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (proc port)))
+       (##force-output port)
+       (##close-port port)
+       results))
+   call-with-output-file
+   path-or-settings
+   proc))
 
 (define-prim (call-with-output-file path-or-settings proc)
   (macro-force-vars (path-or-settings proc)
@@ -7606,18 +9808,20 @@
       proc
       2
       (call-with-output-file path-or-settings proc)
-      (##open-file-generic
-       (macro-direction-out)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (proc port)))
-           (##force-output port)
-           (##close-port port)
-           results))
-       call-with-output-file
-       path-or-settings
-       proc))))
+      (##call-with-output-file path-or-settings proc))))
+
+(define-prim (##with-input-from-file path-or-settings thunk)
+  (##open-file-generic
+   (macro-direction-in)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (macro-dynamic-bind input-port port thunk)))
+       (##close-port port)
+       results))
+   with-input-from-file
+   path-or-settings
+   thunk))
 
 (define-prim (with-input-from-file path-or-settings thunk)
   (macro-force-vars (path-or-settings thunk)
@@ -7625,17 +9829,21 @@
       thunk
       2
       (with-input-from-file path-or-settings thunk)
-      (##open-file-generic
-       (macro-direction-in)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (macro-dynamic-bind input-port port thunk)))
-           (##close-port port)
-           results))
-       with-input-from-file
-       path-or-settings
-       thunk))))
+      (##with-input-from-file path-or-settings thunk))))
+
+(define-prim (##with-output-to-file path-or-settings thunk)
+  (##open-file-generic
+   (macro-direction-out)
+   #t
+   (lambda (port)
+     (let ((results ;; may get bound to a multiple-values object
+            (macro-dynamic-bind output-port port thunk)))
+       (##force-output port)
+       (##close-port port)
+       results))
+   with-output-to-file
+   path-or-settings
+   thunk))
 
 (define-prim (with-output-to-file path-or-settings thunk)
   (macro-force-vars (path-or-settings thunk)
@@ -7643,32 +9851,177 @@
       thunk
       2
       (with-output-to-file path-or-settings thunk)
-      (##open-file-generic
-       (macro-direction-out)
-       #t
-       (lambda (port)
-         (let ((results ;; may get bound to a multiple-values object
-                (macro-dynamic-bind output-port port thunk)))
-           (##force-output port)
-           (##close-port port)
-           results))
-       with-output-to-file
-       path-or-settings
-       thunk))))
+      (##with-output-to-file path-or-settings thunk))))
 
 ;;;----------------------------------------------------------------------------
+
+(define-prim (##call-with-port port proc)
+  (let ((results ;; may get bound to a multiple-values object
+         (proc port)))
+    (##close-port port)
+    results))
+
+(define-prim (call-with-port port proc)
+  (macro-force-vars (port proc)
+    (macro-check-port port 1 (call-with-port port proc)
+      (macro-check-procedure proc 2 (call-with-port port proc)
+        (##call-with-port port proc)))))
+
+(define-prim (##with-input-from-port port thunk)
+  (macro-dynamic-bind input-port port thunk))
 
 (define-prim (with-input-from-port port thunk)
   (macro-force-vars (port thunk)
     (macro-check-input-port port 1 (with-input-from-port port thunk)
       (macro-check-procedure thunk 2 (with-input-from-port port thunk)
-        (macro-dynamic-bind input-port port thunk)))))
+        (##with-input-from-port port thunk)))))
+
+(define-prim (##with-output-to-port port thunk)
+  (macro-dynamic-bind output-port port thunk))
 
 (define-prim (with-output-to-port port thunk)
   (macro-force-vars (port thunk)
     (macro-check-output-port port 1 (with-output-to-port port thunk)
       (macro-check-procedure thunk 2 (with-output-to-port port thunk)
-        (macro-dynamic-bind output-port port thunk)))))
+        (##with-output-to-port port thunk)))))
+
+;;;----------------------------------------------------------------------------
+
+(define-prim (##make-raw-device-port direction device type id specific)
+  (let ((mutex
+         (macro-make-port-mutex))
+        (rkind
+         (if (##fx= direction (macro-direction-out))
+             (macro-none-kind)
+             (macro-raw-device-kind)))
+        (wkind
+         (if (##fx= direction (macro-direction-in))
+             (macro-none-kind)
+             (macro-raw-device-kind)))
+        (roptions
+         0)
+        (rtimeout
+         #t)
+        (rtimeout-thunk
+         #f)
+        (woptions
+         0)
+        (wtimeout
+         #t)
+        (wtimeout-thunk
+         #f)
+        (rdevice-condvar
+         (and (##not (##fx= direction (macro-direction-out)))
+              (##make-io-condvar-for-reading device)))
+        (wdevice-condvar
+         (and (##not (##fx= direction (macro-direction-in)))
+              (##make-io-condvar-for-writing device))))
+
+    (define (name port)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+      id)
+
+    (define (wait port direction)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+      (if (##fx= direction (macro-direction-in))
+
+        (##wait-for-io!
+         (macro-raw-device-port-rdevice-condvar port)
+         (macro-port-rtimeout port))
+
+        (##wait-for-io!
+         (macro-raw-device-port-wdevice-condvar port)
+         (macro-port-wtimeout port))))
+
+    (define (close port prim arg1)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+      (let ((result
+             (##close-device
+              port
+              (macro-raw-device-port-rdevice-condvar port)
+              (macro-raw-device-port-wdevice-condvar port)
+              prim)))
+        (macro-port-mutex-unlock! port)
+        (if (##fixnum? result)
+            (##raise-os-io-exception port #f result prim arg1)
+            result)))
+
+    (define (set-rtimeout port timeout thunk)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+      (macro-port-rtimeout-set! port timeout)
+      (macro-port-rtimeout-thunk-set! port thunk)
+      (##condvar-signal-no-reschedule!
+       (macro-raw-device-port-rdevice-condvar port)
+       #t)
+      (macro-port-mutex-unlock! port)
+      (##void))
+
+    (define (set-wtimeout port timeout thunk)
+
+      ;; It is assumed that the thread **does not** have exclusive
+      ;; access to the port.
+
+      (##declare (not interrupts-enabled))
+
+      (macro-port-mutex-lock! port) ;; get exclusive access to port
+
+      (macro-port-wtimeout-set! port timeout)
+      (macro-port-wtimeout-thunk-set! port thunk)
+      (##condvar-signal-no-reschedule!
+       (macro-raw-device-port-wdevice-condvar port)
+       #t)
+      (macro-port-mutex-unlock! port)
+      (##void))
+
+    (let ((port
+           (macro-make-raw-device-port
+            mutex
+            rkind
+            wkind
+            name
+            wait
+            close
+            roptions
+            rtimeout
+            rtimeout-thunk
+            set-rtimeout
+            woptions
+            wtimeout
+            wtimeout-thunk
+            set-wtimeout
+            #f ;; io-exception-handler
+            rdevice-condvar
+            wdevice-condvar
+            type
+            id
+            specific)))
+      (if rdevice-condvar
+        (##io-condvar-port-set! rdevice-condvar port))
+      (if wdevice-condvar
+        (##io-condvar-port-set! wdevice-condvar port))
+      port)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -7677,12 +10030,12 @@
               name
               index
               #!optional
-              (settings (macro-absent-obj)))
+              (settings '()))
 
   (##make-path-psettings
    direction
-   (##list 'readtable: ##main-readtable)
-   ##exit-abnormally
+   settings
+   ##exit-abruptly
    (lambda (psettings)
      (let ((device
             (##os-device-stream-open-predefined
@@ -7691,10 +10044,18 @@
        (if (##fixnum? device)
            (##exit-with-err-code device)
            (and device
-                (##make-device-port-from-single-device
-                 name
-                 device
-                 psettings)))))))
+                (let ((port
+                       (##make-device-port-from-single-device
+                        name
+                        device
+                        psettings)))
+                  (if (and (##fx< index 0)
+                           (##not (##eq? (macro-psettings-direction psettings)
+                                         (macro-direction-in))))
+                      (##add-exit-job!
+                       (lambda ()
+                         (##force-output-catching-exceptions port))))
+                  port)))))))
 
 (define ##stdin-port   #f)
 (define ##stdout-port  #f)
@@ -7705,29 +10066,17 @@
   ##console-port)
 
 (define-prim (##open-all-predefined)
-  (set! ##stdin-port
-        (##open-predefined (macro-direction-in)    '(stdin)   -1))
-  (set! ##stdout-port
-        (##open-predefined (macro-direction-out)   '(stdout)  -2))
-  (set! ##stderr-port
-        (##open-predefined (macro-direction-out)   '(stderr)  -3))
-  (set! ##console-port
-        (##open-predefined (macro-direction-inout) '(console) -4)))
-
-(define-prim (##force-output-on-predefined)
-  (let ((port ##stdout-port)) (and port (##force-output port)))
-  (let ((port ##stderr-port)) (and port (##force-output port)))
-  (let ((port ##console-port)) (and port (##force-output port))))
-
-(##add-exit-job! ##force-output-on-predefined)
+  (let ((settings (##list 'readtable: ##main-readtable)))
+    (set! ##stdin-port
+      (##open-predefined (macro-direction-in)    '(stdin)   -1 settings))
+    (set! ##stdout-port
+      (##open-predefined (macro-direction-out)   '(stdout)  -2 settings))
+    (set! ##stderr-port
+      (##open-predefined (macro-direction-out)   '(stderr)  -3 settings))
+    (set! ##console-port
+      (##open-predefined (macro-direction-inout) '(console) -4 settings))))
 
 ;;;----------------------------------------------------------------------------
-
-(##define-macro (macro-peek-next-char-or-eof re) ;; possibly returns end-of-file
-  `(macro-peek-char (macro-readenv-port ,re)))
-
-(##define-macro (macro-read-next-char-or-eof re) ;; possibly returns end-of-file
-  `(macro-read-char (macro-readenv-port ,re)))
 
 (define-prim (##make-filepos line col char-count)
   (if (and (##fx< line (macro-max-lines))
@@ -7759,9 +10108,7 @@
     (macro-readtable? obj)))
 
 (define-prim (##readtable-copy-shallow rt)
-  (let ((copy (##vector-copy rt)))
-    (##subtype-set! copy (macro-subtype-structure))
-    copy))
+  (macro-readtable-copy rt))
 
 (define-prim (##readtable-copy rt)
   (let ((copy (##readtable-copy-shallow rt)))
@@ -7774,6 +10121,12 @@
     (macro-readtable-char-sharp-handler-table-set!
      rt
      (##chartable-copy (macro-readtable-char-sharp-handler-table rt)))
+    (let ((foreign-write-handler-table
+           (macro-readtable-foreign-write-handler-table rt)))
+      (if foreign-write-handler-table
+          (macro-readtable-foreign-write-handler-table-set!
+           copy
+           (##table-copy foreign-write-handler-table))))
     copy))
 
 (define-prim (readtable-case-conversion? rt)
@@ -7880,12 +10233,18 @@
       (macro-readtable-max-unescaped-char rt))))
 
 (define-prim (readtable-max-unescaped-char-set rt char)
+
+  (define (max-unescaped-char-set)
+    (let ((new-rt (##readtable-copy-shallow rt)))
+      (macro-readtable-max-unescaped-char-set! new-rt char)
+      new-rt))
+
   (macro-force-vars (rt char)
     (macro-check-readtable rt 1 (readtable-max-unescaped-char-set rt char)
-      (macro-check-char char 2 (readtable-max-unescaped-char-set rt char)
-        (let ((new-rt (##readtable-copy-shallow rt)))
-          (macro-readtable-max-unescaped-char-set! new-rt char)
-          new-rt)))))
+      (if (##eq? char #f)
+          (max-unescaped-char-set)
+          (macro-check-char char 2 (readtable-max-unescaped-char-set rt char)
+            (max-unescaped-char-set))))))
 
 (define-prim (readtable-comment-handler rt)
   (macro-force-vars (rt)
@@ -7911,27 +10270,32 @@
         (macro-readtable-start-syntax-set! new-rt start)
         new-rt))))
 
-(define ##scheme-file-extensions #f)
-(set! ##scheme-file-extensions
-      '((".scm" . #f)
-        (".six" . six)
-        ))
+(define ##scheme-file-extensions
+  '((".sld" . #f)
+    (".scm" . #f)
+    (".six" . six)
+    ))
 
-(define ##language-specs #f)
-(set! ##language-specs
-      '(
-        ;; name      keywords-allowed?       start-syntax
-        ;;  \     case-conversion?  \       /  srfi-22?
-        ;;   \                    \  \     /  /
-        #("gsi"                   #f #t scm #f)
-        #("six"                   #f #t six #f)
-        #("gsi-script"            #f #t scm #f)
-        #("six-script"            #f #t six #f)
-        #("scheme-srfi-0"         #t #f scm #t)
-        #("scheme-r5rs"           #t #f scm #t)
-        #("scheme-r4rs"           #t #f scm #t)
-        #("scheme-ieee-1178-1990" #t #f scm #t)
-        ))
+(define-prim (##scheme-file-extensions-set! x)
+  (set! ##scheme-file-extensions x))
+
+(define ##language-specs
+  '(
+    ;; name      keywords-allowed?       start-syntax
+    ;;  \     case-conversion?  \       /  srfi-22?
+    ;;   \                    \  \     /  /
+    #("gsi"                   #f #t scm #f)
+    #("six"                   #f #t six #f)
+    #("gsi-script"            #f #t scm #f)
+    #("six-script"            #f #t six #f)
+    #("scheme-srfi-0"         #t #f scm #t)
+    #("scheme-r5rs"           #t #f scm #t)
+    #("scheme-r4rs"           #t #f scm #t)
+    #("scheme-ieee-1178-1990" #t #f scm #t)
+    ))
+
+(define-prim (##language-specs-set! x)
+  (set! ##language-specs x))
 
 (define-prim (##extract-language-and-tail script-line-or-program-path)
 
@@ -8016,11 +10380,14 @@
 
 (define-prim (##readtable-setup-for-standard-level! rt)
   (let ((standard-level (##get-standard-level)))
-    (cond ((##fx= 1 standard-level)
+    (cond ((##fx= 1 standard-level) ;; Gambit language
            (macro-readtable-case-conversion?-set! rt #f)
            (macro-readtable-keywords-allowed?-set! rt #t))
-          ((##fx< 1 standard-level)
+          ((##fx= 5 standard-level) ;; R5RS language
            (macro-readtable-case-conversion?-set! rt #t)
+           (macro-readtable-keywords-allowed?-set! rt #f))
+          ((##fx< 1 standard-level) ;; R7RS language
+           (macro-readtable-case-conversion?-set! rt #f)
            (macro-readtable-keywords-allowed?-set! rt #f)))))
 
 (define-prim (##make-readtable-parameter readtable)
@@ -8030,82 +10397,15 @@
      (macro-check-readtable val 1 (##make-readtable-parameter val)
        val))))
 
-(define main #f)
-(set! main (lambda args 0)) ;; predefine main so scripts don't have to
-
-(define-prim (##start-main language)
-  (cond ((macro-language-srfi-22? language)
-         (lambda ()
-           (let ((status (##eval '(main (##cdr ##processed-command-line)))))
-             (if (##fixnum? status)
-                 (##exit status)
-                 (##exit-abnormally)))))
-        (else
-         (lambda ()
-           (##eval '(##apply main (##cdr ##processed-command-line)))
-           (##exit)))))
-
 (##define-macro (macro-ctrl-char? c)
   `(or (##char<? ,c #\space) (##char=? ,c #\delete)))
 
-(##define-macro (macro-gt-max-unescaped-char? rt c)
-  `(##char<? (macro-readtable-max-unescaped-char ,rt) ,c))
+(##define-macro (macro-gt-max-unescaped-char? we c)
+  `(##char<? (macro-writeenv-max-unescaped-char ,we) ,c))
 
-(##define-macro (macro-must-escape-char? rt c)
+(##define-macro (macro-must-escape-char? we c)
   `(or (macro-ctrl-char? ,c)
-       (macro-gt-max-unescaped-char? ,rt ,c)))
-
-;;;----------------------------------------------------------------------------
-
-(begin
-
-  (define-prim (##make-marktable)
-    (##declare (not interrupts-enabled))
-    (##vector -1 '()))
-
-  (define-prim (##marktable-mark! table obj)
-    (##declare (not interrupts-enabled))
-    (let ((alist (##vector-ref table 1)))
-      (let ((x (##assq obj alist)));;;;;;;;;;;;;
-        (if x
-            (begin
-              (##set-cdr! x #t)
-              #f)
-            (begin
-              (##vector-set! table 1 (##cons (##cons obj #f) alist))
-              #t)))))
-
-  (define-prim (##marktable-lookup! table obj stamp?)
-    (##declare (not interrupts-enabled))
-    (let ((alist (##vector-ref table 1)))
-      (let ((x (##assq obj alist)));;;;;;;;;;;;;;;;
-        (if x
-            (let ((id (##cdr x)))
-              (if (and stamp? (##eq? id #t))
-                  (let ((n (##fx+ (##vector-ref table 0) 1)))
-                    (##vector-set! table 0 n)
-                    (##set-cdr! x n)
-                    x)
-                  id))
-            #f))))
-
-  (define-prim (##marktable-save table)
-    (##declare (not interrupts-enabled))
-    (##vector-ref table 0))
-
-  (define-prim (##marktable-restore! table n)
-    (##declare (not interrupts-enabled))
-    (##vector-set! table 0 n)
-    (let ((alist (##vector-ref table 1)))
-      (let loop ((lst alist))
-        (if (##pair? lst)
-            (let* ((x (##car lst))
-                   (id (##cdr x)))
-              (if (and (##fixnum? id)
-                       (##fx< n id))
-                  (##set-cdr! x #t))
-              (loop (##cdr lst)))))))
-  )
+       (macro-gt-max-unescaped-char? ,we ,c)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -8188,8 +10488,10 @@
               (else
                (##wr-other we obj))))))
 
-(define ##wr #f)
-(set! ##wr ##default-wr)
+(define ##wr ##default-wr)
+
+(define-prim (##wr-set! x)
+  (set! ##wr x))
 
 (define-prim (##wr-str we s)
   (##wr-substr we s 0 (##string-length s)))
@@ -8211,7 +10513,7 @@
   (let ((limit (macro-writeenv-limit we)))
     (if (##fx< 0 limit)
         (begin
-          (##write-char c (macro-writeenv-port we))
+          (macro-write-char c (macro-writeenv-port we))
           (macro-writeenv-limit-set! we (##fx- limit 1))))))
 
 (define-prim (##wr-filler we n str)
@@ -8225,8 +10527,10 @@
 (define-prim (##wr-spaces we n)
   (##wr-filler we n "                                        "))
 
-(define ##pretty-print-shifting-allowed? #f)
-(set! ##pretty-print-shifting-allowed? #t)
+(define ##pretty-print-shifting-allowed? #t)
+
+(define-prim (##pretty-print-shifting-allowed?-set! x)
+  (set! ##pretty-print-shifting-allowed? x))
 
 (define-prim (##wr-indent we shifted-col)
   (if (##fx> (##output-port-column (macro-writeenv-port we)) 1)
@@ -8283,11 +10587,12 @@
 (define-prim (##wr-sn we obj type name)
   (case (macro-writeenv-style we)
     ((mark)
-     (if (##wr-mark we obj)
+     (if (##wr-mark-begin we obj)
          (begin
            (##wr-no-display we type)
            (if (##not (##eq? name (##void)))
-               (##wr-no-display we name)))))
+               (##wr-no-display we name))
+           (##wr-mark-end we obj))))
     (else
      (if (##wr-stamp we obj)
          (begin
@@ -8301,6 +10606,23 @@
                  (##wr-no-display we name)))
            (##wr-ch we #\>))))))
 
+(define-prim (##wr-sn* we obj type proc)
+  (case (macro-writeenv-style we)
+    ((mark)
+     (if (##wr-mark-begin we obj)
+         (begin
+           (##wr-no-display we type)
+           (##wr-mark-end we obj))))
+    (else
+     (if (##wr-stamp we obj)
+         (begin
+           (##wr-str we "#<")
+           (##wr-no-display we type)
+           (##wr-str we " #")
+           (##wr-str we (##number->string (##object->serial-number obj) 10))
+           (if proc (proc we obj))
+           (##wr-ch we #\>))))))
+
 (define-prim (##wr-no-display we obj)
   (let ((style (macro-writeenv-style we)))
     (case style
@@ -8311,11 +10633,19 @@
       (else
        (##wr we obj)))))
 
-(define-prim (##wr-mark we obj)
+(define-prim (##wr-mark-begin we obj)
   (let ((mt (macro-writeenv-marktable we)))
     (if mt
-        (##marktable-mark! mt obj)
+        (##marktable-mark! mt obj #t)
         #t)))
+
+(define-prim (##wr-mark-end we obj)
+  (let ((mt (macro-writeenv-marktable we)))
+    (and mt
+         (##marktable-mark! mt obj #f))))
+
+(define-prim (##wr-mark we obj)
+  (##wr-mark-end we obj))
 
 (define-prim (##wr-stamp we obj)
   (let ((mt (macro-writeenv-marktable we)))
@@ -8365,11 +10695,14 @@
     (or (##fx= n 0)
         (and (##fx= n 1)
              (##char=? (##string-ref str 0) #\.))
-        (and (##char=? (##string-ref str 0) #\#)
-             (or (##fx= n 1)
-                 (let ((next (##string-ref str 1)))
-                   (and (##not (##char=? next #\#))
-                        (##not (##char=? next #\%))))))
+        (let loop ((i 0))
+          (if (and (##fx< i n)
+                   (##char=? (##string-ref str i) #\#))
+              (loop (##fx+ i 1))
+              (or (##fx= i 1)
+                  (and (macro-readtable-sharp-seq-keyword
+                        (macro-writeenv-readtable we))
+                       (##fx= i n)))))
         (##string->number str 10 #t)
         (and (##fx< 1 n)
              (let ((keywords-allowed?
@@ -8385,16 +10718,20 @@
         (##escape-symkey? we str))))
 
 (define-prim (##escape-symkey? we str);;;;;;;;;;;;;;;;;;;;;;;;;;
-  (let ((n (##string-length str)))
-    (let loop ((i (##fx- n 1)))
-      (if (##fx< i 0)
-          #f
-          (let ((c (##string-ref str i))
-                (rt (macro-writeenv-readtable we)))
-            (or (macro-must-escape-char? rt c)
-                (##readtable-char-delimiter? rt c)
-                (##not (##char=? c (##readtable-convert-case rt c)))
-                (loop (##fx- i 1))))))))
+  (let ((rt (macro-writeenv-readtable we)))
+    (or (##not (##string=?
+                (##convert-case
+                 (macro-readtable-case-conversion? rt)
+                 str)
+                str))
+        (let ((n (##string-length str)))
+          (let loop ((i (##fx- n 1)))
+            (if (##fx< i 0)
+                #f
+                (let ((c (##string-ref str i)))
+                  (or (macro-must-escape-char? we c)
+                      (##readtable-char-delimiter? rt c)
+                      (loop (##fx- i 1))))))))))
 
 (define-prim (##wr-keyword we obj)
   (let ((uninterned? (##uninterned-keyword? obj)))
@@ -8473,7 +10810,8 @@
                      (macro-writeenv-shift we)
                      (macro-writeenv-close-parens we)
                      (macro-writeenv-level we)
-                     1)))
+                     1
+                     (macro-writeenv-max-unescaped-char we))))
               (##wr we2 (##car tail))
               (if mt (##marktable-restore! mt state))
               (let ((str (##get-output-string port)))
@@ -8699,7 +11037,12 @@
                                                   0))
                                              (loop tail
                                                    (##fx+ i 1)
-                                                   (wr-elem head)))))))))
+                                                   (if (and (##eq? head '|.|)
+                                                            (##fx= i 0)
+                                                            (macro-readtable-dot-at-head-of-list-allowed?
+                                                             (macro-writeenv-readtable we)))
+                                                       (wr-str ".")
+                                                       (wr-elem head))))))))))
                           ((##not (##null? lst))
                            (wr-str ".")
                            (macro-writeenv-close-parens-set! we new-close-parens)
@@ -8730,10 +11073,11 @@
 
   (case (macro-writeenv-style we)
     ((mark)
-     (if (##wr-mark we obj)
+     (if (##wr-mark-begin we obj)
          (begin;;;;;;;;;;;;;;;;;;;;;;;check level and length?
            (##wr we (##car obj))
-           (##wr we (##cdr obj)))))
+           (##wr we (##cdr obj))
+           (##wr-mark-end we obj))))
     ((print)
      (##wr we (##car obj))
      (##wr we (##cdr obj)))
@@ -8782,7 +11126,8 @@
            (macro-writeenv-shift we)
            (macro-writeenv-close-parens we)
            (macro-writeenv-level we)
-           (##fx+ available-space-for-obj 1))))
+           (##fx+ available-space-for-obj 1)
+           (macro-writeenv-max-unescaped-char we))))
     (wr-obj we2 obj)
     (let ((str (##get-output-string port)))
       (if (##fx< available-space-for-obj (##string-length str))
@@ -8812,13 +11157,15 @@
        (##wr-str we "#\\")
        (cond (x
               (##wr-str we (##car x)))
-             ((##not (macro-must-escape-char?
-                      (macro-writeenv-readtable we)
-                      obj))
+             ((##not (macro-must-escape-char? we obj))
               (##wr-ch we obj))
              (else
               (let ((n (##char->integer obj)))
-                (cond ((##fx< #xffff n)
+                (cond ((macro-readtable-r7rs-compatible-write?
+                        (macro-writeenv-readtable we))
+                       (##wr-ch we #\x)
+                       (##wr-hex we n #f))
+                      ((##fx< #xffff n)
                        (##wr-ch we #\U)
                        (##wr-hex we n 8))
                       ((##fx< #xff n)
@@ -8833,7 +11180,7 @@
           (##fx< 1 nb-digits)
           (##fx< 15 n))
       (##wr-hex we
-                (##fxarithmetic-shift-right n 4)
+                (##fxwraplogical-shift-right n 4)
                 (and nb-digits (##fx- nb-digits 1))))
   (##wr-ch we
            (##string-ref ##digit-to-char-table (##fxand n 15))))
@@ -8843,7 +11190,7 @@
           (##fx< 1 nb-digits)
           (##fx< 7 n))
       (##wr-oct we
-                (##fxarithmetic-shift-right n 3)
+                (##fxwraplogical-shift-right n 3)
                 (and nb-digits (##fx- nb-digits 1))))
   (##wr-ch we
            (##string-ref ##digit-to-char-table (##fxand n 7))))
@@ -8886,7 +11233,7 @@
                   (macro-readtable-escape-ctrl-chars?
                    (macro-writeenv-readtable we))
                   (or x
-                      (macro-gt-max-unescaped-char? (macro-writeenv-readtable we) c)
+                      (macro-gt-max-unescaped-char? we c)
                       (and escape-digit-limit
                            (##fx< n 128)
                            (##not (##char=? c #\#)) ;; avoid treating "#" like "0"
@@ -8897,6 +11244,12 @@
                 (##wr-ch we #\\)
                 (cond (x
                        (##wr-ch we x)
+                       (loop j+1 j+1 #f))
+                      ((macro-readtable-r7rs-compatible-write?
+                        (macro-writeenv-readtable we))
+                       (##wr-ch we #\x)
+                       (##wr-hex we n #f)
+                       (##wr-ch we #\;)
                        (loop j+1 j+1 #f))
                       ((##fx< #xffff n)
                        (##wr-ch we #\U)
@@ -8948,8 +11301,10 @@
 (define-prim (##wr-vector-aux1 we obj len vect-ref open-close)
   (case (macro-writeenv-style we)
     ((mark)
-     (if (##wr-mark we obj)
-         (##wr-vector-aux2 we obj len vect-ref)))
+     (if (##wr-mark-begin we obj)
+         (begin
+           (##wr-vector-aux2 we obj len vect-ref)
+           (##wr-mark-end we obj))))
     ((print)
      (##wr-vector-aux2 we obj len vect-ref))
     (else
@@ -9037,16 +11392,43 @@
     ((mark)
      (##wr-mark we obj))
     (else
-     (let ((tags (macro-foreign-tags obj)))
-       (##wr-str we "#<")
-       (if (##pair? tags)
-           (##wr-no-display we (##car tags))
-           (##wr-str we "foreign"))
-       (##wr-str we " #")
-       (##wr-str we (##number->string (##object->serial-number obj) 10))
-       (##wr-str we " 0x")
-       (##wr-str we (##number->string (##foreign-address obj) 16))
-       (##wr-ch we #\>)))))
+     (let* ((tags
+             (##foreign-tags obj))
+            (tag
+             (if (##pair? tags) (##car tags) #f))
+            (foreign-write-handler-table
+             (macro-readtable-foreign-write-handler-table
+              (macro-writeenv-readtable we)))
+            (handler
+             (and foreign-write-handler-table
+                  (##table-ref foreign-write-handler-table tag))))
+       (if handler
+           (handler we obj)
+           (##wr-sn* we
+                     obj
+                     (or tag 'foreign)
+                     (lambda (we obj)
+                       (##wr-str we " ")
+                       (let ((addr (##foreign-address obj)))
+                         (if (##number? addr)
+                             (begin
+                               (##wr-str we "0x")
+                               (##wr-str we
+                                         (##number->string
+                                          (##foreign-address obj)
+                                          16)))
+                             (##wr-no-display we addr))))))))))
+
+(define-prim (##readtable-foreign-write-handler-register! rt tag proc)
+  (##declare (not interrupts-enabled))
+  (let ((foreign-write-handler-table
+         (or (macro-readtable-foreign-write-handler-table rt)
+             (let ((t (##make-table-aux 0 #f #f #f ##eq?)))
+               (macro-readtable-foreign-write-handler-table-set! rt t)
+               (macro-readtable-foreign-write-handler-table rt)))))
+    (if proc
+        (##table-set! foreign-write-handler-table tag proc)
+        (##table-set! foreign-write-handler-table tag))))
 
 (define-prim (##explode-object obj)
   (##vector-copy obj))
@@ -9212,13 +11594,14 @@
 (define-prim (##wr-serialize we obj explode open-close)
   (case (macro-writeenv-style we)
     ((mark)
-     (if (##wr-mark we obj)
+     (if (##wr-mark-begin we obj)
          (let ((vect (explode obj)))
            (##wr-vector-aux2
             we
             vect
             (##vector-length vect)
-            ##vector-ref))))
+            ##vector-ref)
+           (##wr-mark-end we obj))))
     (else
      (if (##wr-stamp we obj)
          (let ((vect (explode obj)))
@@ -9439,14 +11822,16 @@
         (else
          (case (macro-writeenv-style we)
            ((mark)
-            (if (##wr-mark we obj)
-                (for-each-visible-field
-                 (lambda (field-name value last?)
-                   (##wr-no-display we field-name)
-                   (##wr-no-display we value))
-                 obj
-                 (##structure-type obj)
-                 #t)))
+            (if (##wr-mark-begin we obj)
+                (begin
+                  (for-each-visible-field
+                   (lambda (field-name value last?)
+                     (##wr-no-display we field-name)
+                     (##wr-no-display we value))
+                   obj
+                   (##structure-type obj)
+                   #t)
+                  (##wr-mark-end we obj))))
            (else
             (if (##wr-stamp we obj)
                 (if (case (macro-writeenv-style we)
@@ -9539,7 +11924,8 @@
    'meroon
    (##void)))
 
-(set! ##wr-meroon ##wr-meroon)
+(define-prim (##wr-meroon-set! x)
+  (set! ##wr-meroon x))
 
 (define-prim (##wr-jazz we obj)
   (##wr-sn
@@ -9548,7 +11934,8 @@
    'jazz
    (##void)))
 
-(set! ##wr-jazz ##wr-jazz)
+(define-prim (##wr-jazz-set! x)
+  (set! ##wr-jazz x))
 
 (define-prim (##wr-frame we obj)
   (if (##eq? (macro-readtable-sharing-allowed?
@@ -9621,8 +12008,10 @@
 (define-prim (##wr-box we obj)
   (case (macro-writeenv-style we)
     ((mark)
-     (if (##wr-mark we obj)
-         (##wr we (##unbox obj))))
+     (if (##wr-mark-begin we obj)
+         (begin
+           (##wr we (##unbox obj))
+           (##wr-mark-end we obj))))
     (else
      (if (case (macro-writeenv-style we)
            ((print) #t)
@@ -9666,18 +12055,18 @@
 
 ;;;----------------------------------------------------------------------------
 
-(define ##main-readtable #f)
-
-;;;----------------------------------------------------------------------------
-
-;;; IEEE Scheme procedures:
-
 (define-prim (##eof-object? x)
   (##eq? x #!eof))
 
 (define-prim (eof-object? x)
   (macro-force-vars (x)
     (##eof-object? x)))
+
+(define-prim (##eof-object)
+  #!eof);;TODO: remove after bootstrap
+
+(define-prim (eof-object)
+  (##eof-object))
 
 ;;;----------------------------------------------------------------------------
 
@@ -9712,6 +12101,7 @@
 (##define-macro (char? . args)            `(##char? ,@args))
 (##define-macro (cons . args)             `(##cons ,@args))
 (##define-macro (eq? . args)              `(##eq? ,@args))
+(##define-macro (eqv? . args)             `(##eqv? ,@args))
 (##define-macro (complex? . args)         `(##complex? ,@args))
 (##define-macro (exact? . args)           `(##exact? ,@args))
 (##define-macro (for-each . args)         `(##for-each ,@args))
@@ -9800,10 +12190,19 @@
     (case           . #(1 #f 2 #t 1))
     (and            . #(1 #f 0 #f 1))
     (or             . #(1 #f 0 #f 1))
+    (when           . #(1 #t 2 #f 1))
+    (unless         . #(1 #t 2 #f 1))
+    (guard          . #(1 #f 2 #t 1))
     (let            . #(1 #t 2 #f 1)) ;; named let is handled in pretty printer
     (let*           . #(1 #t 2 #f 1))
     (letrec         . #(1 #t 2 #f 1))
     (letrec*        . #(1 #t 2 #f 1))
+    (let-values     . #(1 #t 2 #f 1))
+    (let*-values    . #(1 #t 2 #f 1))
+    (letrec-values  . #(1 #t 2 #f 1))
+    (letrec*-values . #(1 #t 2 #f 1))
+    (define-values  . #(1 #f 2 #f 1))
+    (parameterize   . #(1 #t 2 #f 1))
     (begin          . #(0 #f 1 #f 1))
     (do             . #(1 #t 3 #f 1))
     (define         . #(1 #f 2 #f 1))
@@ -9814,16 +12213,24 @@
     ))
 
 (define ##list-max-head 8)
-(set! ##list-max-head ##list-max-head)
+
+(define-prim (##list-max-head-set! x)
+  (set! ##list-max-head x))
 
 (define ##structure-max-head 8)
-(set! ##structure-max-head ##structure-max-head)
+
+(define-prim (##structure-max-head-set! x)
+  (set! ##structure-max-head x))
 
 (define ##structure-max-field 8)
-(set! ##structure-max-field ##structure-max-field)
+
+(define-prim (##structure-max-field-set! x)
+  (set! ##structure-max-field x))
 
 (define ##structure-indent 1)
-(set! ##structure-indent ##structure-indent)
+
+(define-prim (##structure-indent-set! x)
+  (set! ##structure-indent x))
 
 (define ##standard-escaped-char-table
   '(
@@ -9844,6 +12251,8 @@
 
 (define ##standard-named-char-table
   '(
+    ("null"      . #\x00) ;; for R7RS compatibility (null and escape
+    ("escape"    . #\x1B) ;; must be the two first in this list)
     ("newline"   . #\newline) ;; here to take precedence over linefeed
     ("space"     . #\space)
     ("nul"       . #\x00)
@@ -9935,28 +12344,17 @@
   (##readtable-char-delimiter?-set! rt c delimiter?)
   (##readtable-char-handler-set! rt c handler))
 
-(define (##readtable-convert-case rt c)
-  (let ((case-conversion? (macro-readtable-case-conversion? rt)))
-    (if case-conversion?
-        (if (eq? case-conversion? 'upcase)
-            (char-upcase c)
-            (char-downcase c))
-        c)))
-
-(define (##readtable-string-convert-case! rt s)
-  (let ((case-conversion? (macro-readtable-case-conversion? rt)))
-    (if case-conversion?
-        (if (eq? case-conversion? 'upcase)
-            (let loop ((i (- (string-length s) 1)))
-              (if (not (< i 0))
-                  (begin
-                    (string-set! s i (char-upcase (string-ref s i)))
-                    (loop (- i 1)))))
-            (let loop ((i (- (string-length s) 1)))
-              (if (not (< i 0))
-                  (begin
-                    (string-set! s i (char-downcase (string-ref s i)))
-                    (loop (- i 1)))))))))
+(define (##convert-case case-conversion? s)
+  (if case-conversion?
+      (if (eq? case-conversion? 'upcase)
+          (let loop ((i (- (string-length s) 1)))
+            (if (< i 0)
+                s
+                (begin
+                  (string-set! s i (char-upcase (string-ref s i)))
+                  (loop (- i 1)))))
+          (##string-foldcase s))
+      s))
 
 (define (##readtable-parse-keyword rt s intern? create?)
   (let ((keywords-allowed? (macro-readtable-keywords-allowed? rt)))
@@ -10078,9 +12476,6 @@
 ;; position where the datum starts.
 
 (define (##read-datum-or-label-or-none-or-dot re)
-  (macro-readenv-allow-script?-set!
-   re
-   (eq? (macro-readenv-allow-script? re) 'script))
   (let ((next (macro-peek-next-char-or-eof re)))
     (if (char? next)
         ((##readtable-char-handler (macro-readenv-readtable re) next) re next)
@@ -10099,12 +12494,10 @@
        (eq? (vector-ref obj 0) ##label-marker-tag)))
 
 (define (##label-marker-enter! re n)
-  (let* ((labels (macro-readenv-labels re))
-         (x (assoc n labels)))
-    (if x
-        (cdr x)
+  (let ((labels (macro-readenv-labels re)))
+    (or (##table-ref labels n #f)
         (let ((lm (vector ##label-marker-tag #f '())))
-          (macro-readenv-labels-set! re (cons (cons n lm) labels))
+          (##table-set! labels n lm)
           lm))))
 
 (define (##label-marker-reference re n)
@@ -10112,7 +12505,7 @@
          (handlers (vector-ref lm 2)))
     (if handlers
         lm
-        (vector-ref lm 1))))
+        (macro-readenv-wrap re (vector-ref lm 1)))))
 
 (define (##label-marker-fixup-handler-add! re lm handler)
   (let ((handlers (vector-ref lm 2)))
@@ -10152,33 +12545,39 @@
           (loop (vector-ref lst 3))))))
 
 (define (##read-check-labels! re)
-  (let loop1 ((lst (macro-readenv-labels re)))
-    (if (pair? lst)
-        (let* ((x (car lst))
-               (lm (cdr x)))
-          (let ((handlers (vector-ref lm 2)))
-            (if handlers
-                (begin
-                  (##label-marker-fixup! re handlers (##void))
-                  (##raise-datum-parsing-exception
-                   'missing-label-definition
-                   re
-                   (car x)))))
-          (loop1 (cdr lst))))))
+  (##table-for-each
+   (lambda (n lm)
+     (let ((handlers (vector-ref lm 2)))
+       (if handlers
+           (begin
+             (##label-marker-fixup! re handlers (##void))
+             (##raise-datum-parsing-exception
+              'missing-label-definition
+              re
+              n)))))
+   (macro-readenv-labels re)))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 ;;; Procedure to read a list of datums (possibly an improper list).
 
 (define (##build-list re allow-improper? start-pos close)
-  (let ((obj (##read-datum-or-label-or-none re)))
+  (let ((obj
+         (if (macro-readtable-dot-at-head-of-list-allowed?
+              (macro-readenv-readtable re))
+             (##read-datum-or-label-or-none-or-dot re)
+             (##read-datum-or-label-or-none re))))
     (if (eq? obj (##none-marker))
         (begin
           (##read-next-char-expecting re close)
           '())
         (begin
           (macro-readenv-filepos-set! re start-pos) ;; restore pos
-          (let ((lst (cons obj '())))
+          (let ((lst
+                 (cons (if (eq? obj (##dot-marker))
+                           (macro-readenv-wrap re '|.|)
+                           obj)
+                       '())))
             (if (##label-marker? obj)
                 (##label-marker-fixup-handler-add!
                  re
@@ -10396,7 +12795,7 @@
                   (macro-readenv-readtable re))))
            (if (and keywords-allowed?
                     (not (eq? keywords-allowed? 'prefix))
-                    (eq? (macro-peek-next-char-or-eof re) #\:))
+                    (eqv? (macro-peek-next-char-or-eof re) #\:))
                (begin
                  (macro-read-next-char-or-eof re) ;; skip #\:
                  (string->key str))
@@ -10406,7 +12805,7 @@
                      (macro-readtable-keywords-allowed?
                       (macro-readenv-readtable re))))
                 (eq? keywords-allowed? 'prefix))
-              (eq? (macro-peek-next-char-or-eof re) #\|))
+              (eqv? (macro-peek-next-char-or-eof re) #\|))
          (macro-read-next-char-or-eof re) ;; skip #\|
          (let ((str
                 (##build-escaped-string-up-to re #\|)))
@@ -10425,16 +12824,16 @@
         (string->uninterned-symbol-object str)))
 
   (or (and intern? (string->number str 10))
-      (begin
-        (##readtable-string-convert-case!
-         (macro-readenv-readtable re)
-         str)
+      (let ((str2
+             (##convert-case
+              (macro-readenv-case-conversion? re)
+              str)))
         (or (##readtable-parse-keyword
              (macro-readenv-readtable re)
-             str
+             str2
              intern?
              #t)
-            (string->sym str)))))
+            (string->sym str2)))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -10494,11 +12893,18 @@
                                (+ (* n 16) next-digit)
                                n))))
                   (else
-                   (if nb-digits
+                   (if (or (not nb-digits)
+                           (and (= nb-digits ##max-fixnum)
+                                (let ((next (macro-peek-next-char-or-eof re)))
+                                  (and (char? next)
+                                       (char=? next #\;)
+                                       (begin
+                                         (macro-read-next-char-or-eof re) ;; skip "next"
+                                         #t)))))
+                       (UCS-4 n)
                        (begin
                          (##raise-datum-parsing-exception 'invalid-hex-escape re)
-                         #\nul)
-                       (UCS-4 n)))))
+                         #\nul)))))
           (UCS-4 n))))
 
   (define (read-escape next)
@@ -10509,7 +12915,11 @@
            =>
            read-escape-octal)
           ((char=? next #\x)
-           (read-escape-hexadecimal #f))
+           (read-escape-hexadecimal
+            (if (macro-readtable-r7rs-compatible-read?
+                 (macro-readenv-readtable re))
+                ##max-fixnum
+                #f)))
           ((char=? next #\u)
            (read-escape-hexadecimal 4))
           ((char=? next #\U)
@@ -10537,11 +12947,11 @@
                    (make-string i))
                   ((char=? c #\\)
                    (let ((next (macro-read-next-char-or-eof re)))
-                     (if (eq? next #\newline)
+                     (if (eqv? next #\newline)
                          (let loop3 ()
                            (let ((c (macro-read-next-char-or-eof re)))
                              (if (and (char? c)
-                                      (not (eq? c #\newline))
+                                      (not (char=? c #\newline))
                                       (eq? (##readtable-char-handler
                                             (macro-readenv-readtable re)
                                             c)
@@ -10764,12 +13174,13 @@
                                        (UCS-4 n))))
                                (else
                                 #f))
-                         (let ((x
+                         (let* ((rt
+                                 (macro-readenv-readtable re))
+                                (x
                                 (##read-assoc-string=?
                                  re
                                  name
-                                 (macro-readtable-named-char-table
-                                  (macro-readenv-readtable re)))))
+                                 (macro-readtable-named-char-table rt))))
                            (if x
                                (macro-readenv-wrap re (cdr x))
                                (invalid-character-name-error))))))))))))
@@ -10782,56 +13193,92 @@
     (macro-readenv-filepos-set! re old-pos) ;; restore pos
     (##read-datum-or-label-or-none-or-dot re))) ;; read what follows comment
 
+(define (##case-conversion-set! re val)
+  (macro-readenv-case-conversion?-set! re val))
+
+(define (##read-script-line re prefix)
+  (let* ((rest-of-line
+          (##read-line (macro-readenv-port re) #\newline #f ##max-fixnum))
+         (script-line
+          (string-append prefix (if (string? rest-of-line) rest-of-line "")))
+         (language-and-tail
+          (##extract-language-and-tail script-line)))
+    (if language-and-tail
+        (let ((language (##car language-and-tail)))
+          (##readtable-setup-for-language!
+           (macro-readenv-readtable re)
+           language)))
+    (macro-readenv-script-line-set! re script-line)))
+
 (define (##read-sharp-bang re next start-pos)
   (let ((old-pos (macro-readenv-filepos re)))
+
+    (define (ignore)
+      (macro-readenv-filepos-set! re old-pos) ;; restore pos
+      (##read-datum-or-label-or-none-or-dot re))
+
     (macro-read-next-char-or-eof re) ;; skip char after #\#
-    (if (macro-readenv-allow-script? re)
-        (##script-marker)
-        (begin
-          (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
-          (let ((name (##build-delimited-string re #\space 0)))
-            (let ((x
-                   (##read-assoc-string=?
-                    re
-                    name
-                    (macro-readtable-sharp-bang-table
-                     (macro-readenv-readtable re)))))
-              (if x
-                  (macro-readenv-wrap re (cdr x))
-                  (begin
-                    (##raise-datum-parsing-exception 'invalid-sharp-bang-name re name)
-                    (macro-readenv-filepos-set! re old-pos) ;; restore pos
-                    (##read-datum-or-label-or-none-or-dot re))))))))) ;; skip error
+    (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
+    (let ((name (##build-delimited-string re #\space 0)))
+      (cond ((##string=? name "fold-case")
+             (##case-conversion-set! re #t)
+             (ignore))
+            ((##string=? name "no-fold-case")
+             (##case-conversion-set! re #f)
+             (ignore))
+            (else
+             (let ((x
+                    (##read-assoc-string=?
+                     re
+                     name
+                     (macro-readtable-sharp-bang-table
+                      (macro-readenv-readtable re)))))
+               (cond (x
+                      (macro-readenv-wrap re (cdr x)))
+                     ((and (eq? (macro-readenv-script-line re) #t) ;; script allowed?
+                           (eqv? start-pos 0)) ;; at start of file
+                      (##read-script-line re name)
+                      (##script-marker))
+                     (else
+                      (##raise-datum-parsing-exception 'invalid-sharp-bang-name re name)
+                      (ignore))))))))) ;; skip error
 
 (define (##read-sharp-keyword/symbol re next start-pos)
   (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
   (let ((str (##build-delimited-string re #\# 1)))
-    (let ((n (string-length str)))
-      (let loop ((i (- n 1)))
-        (cond ((< i 0)
-               (##wrap-op1* re
-                            start-pos
-                            (macro-readtable-sharp-seq-keyword
-                             (macro-readenv-readtable re))
-                            (- n 1)))
-              ((char=? #\# (string-ref str i))
-               (loop (- i 1)))
-              (else
-               (let ((obj (##string->number/keyword/symbol re str #t)))
-                 (macro-readenv-wrap re obj))))))))
+    (let ((sharp-seq-keyword
+           (macro-readtable-sharp-seq-keyword
+            (macro-readenv-readtable re))))
+      (or (and sharp-seq-keyword
+               (let ((n (string-length str)))
+                 (let loop ((i 0))
+                   (cond ((>= i n)
+                          (##wrap-op1* re
+                                       start-pos
+                                       sharp-seq-keyword
+                                       (- n 1)))
+                         ((char=? #\# (string-ref str i))
+                          (loop (+ i 1)))
+                         (else
+                          #f)))))
+          (let ((obj (##string->number/keyword/symbol re str #t)))
+            (macro-readenv-wrap re obj))))))
 
 (define (##read-sharp-colon re next start-pos)
   (let ((old-pos (macro-readenv-filepos re)))
     (macro-read-next-char-or-eof re) ;; skip char after #\#
     (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
-    (let ((c (macro-read-next-char-or-eof re)))
-      (if (char? c)
-          (let ((obj (##build-delimited-number/keyword/symbol re c #f)))
-            (macro-readenv-wrap re obj))
+    (let ((next (macro-peek-next-char-or-eof re)))
+      (if (or (not (char? next))
+              (##readtable-char-delimiter? (macro-readenv-readtable re) next))
           (begin
-            (##raise-datum-parsing-exception 'incomplete-form-eof-reached re)
+            (##raise-datum-parsing-exception 'invalid-token re)
             (macro-readenv-filepos-set! re old-pos) ;; restore pos
-            (##read-datum-or-label-or-none-or-dot re)))))) ;; skip error
+            (##read-datum-or-label-or-none-or-dot re)) ;; skip error
+          (begin
+            (macro-read-next-char-or-eof re) ;; skip char after #\:
+            (let ((obj (##build-delimited-number/keyword/symbol re next #f)))
+              (macro-readenv-wrap re obj)))))))
 
 (define (##read-sharp-semicolon re next start-pos)
   (let ((old-pos (macro-readenv-filepos re)))
@@ -10852,16 +13299,16 @@
     (macro-read-next-char-or-eof re) ;; skip #\' or #\` or #\,
     (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
     (let ((keyword
-           (cond ((eq? next #\,)
+           (cond ((eqv? next #\,)
                   (let ((after-comma (macro-peek-next-char-or-eof re)))
-                    (if (eq? after-comma #\@)
+                    (if (eqv? after-comma #\@)
                         (begin
                           (macro-read-next-char-or-eof re) ;; skip #\@
                           (macro-readtable-sharp-unquote-splicing-keyword
                            (macro-readenv-readtable re)))
                         (macro-readtable-sharp-unquote-keyword
                          (macro-readenv-readtable re)))))
-                 ((eq? next #\`)
+                 ((eqv? next #\`)
                   (macro-readtable-sharp-quasiquote-keyword
                    (macro-readenv-readtable re)))
                  (else
@@ -10883,20 +13330,25 @@
              (set-box! b resolved-obj))))
       (macro-readenv-wrap re b))))
 
-(define (##read-sharp-dot re next start-pos)
-  (if (not (macro-readtable-eval-allowed? (macro-readenv-readtable re)))
-      (begin
-        (##raise-datum-parsing-exception 'invalid-token re)
-        (##read-datum-or-label-or-none-or-dot re)) ;; skip error
-      (begin
-        (macro-read-next-char-or-eof re) ;; skip char after #\#
-        (let* ((expr
-                (##read-expr-from-port
-                 (macro-readenv-port re)))
-               (val
-                (##eval expr)))
-          (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
-          (macro-readenv-wrap re val)))))
+(cond-expand
+ (enable-sharp-dot
+
+  (define (##read-sharp-dot re next start-pos)
+    (if (not (macro-readtable-eval-allowed? (macro-readenv-readtable re)))
+        (begin
+          (##raise-datum-parsing-exception 'invalid-token re)
+          (##read-datum-or-label-or-none-or-dot re)) ;; skip error
+        (begin
+          (macro-read-next-char-or-eof re) ;; skip char after #\#
+          (let* ((expr
+                  (##read-expr-from-port
+                   (macro-readenv-port re)))
+                 (val
+                  (##eval expr)))
+            (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
+            (macro-readenv-wrap re val))))))
+
+ (else))
 
 (define-prim (##read-sharp-less re next start-pos)
 
@@ -10913,7 +13365,7 @@
       (let ((separator (macro-read-next-char-or-eof re)))
         (cond ((not (char? separator))
                (eof))
-              ((eq? separator #\<)
+              ((char=? separator #\<)
                ;; Multiline SCSH here string of the form
                ;; #<<END
                ;; hello world
@@ -10943,7 +13395,7 @@
                  (if (string? str)
                      (let ((len (string-length str)))
                        (if (and (< 0 len)
-                                (eq? (string-ref str (- len 1)) separator))
+                                (char=? (string-ref str (- len 1)) separator))
                            (begin
                              (##string-shrink! str (- len 1))
                              (macro-readenv-wrap re str))
@@ -10960,8 +13412,8 @@
       (string-set! s 0 #\0)
       (let* ((n (string->number s 10))
              (c (macro-peek-next-char-or-eof re)))
-        (cond ((or (and (not (eq? c #\#))
-                        (not (eq? c #\=)))
+        (cond ((or (and (not (eqv? c #\#))
+                        (not (eqv? c #\=)))
                    (not (macro-readtable-sharing-allowed?
                          (macro-readenv-readtable re))))
                (##wrap-op1* re
@@ -10969,7 +13421,7 @@
                             (macro-readtable-sharp-num-keyword
                              (macro-readenv-readtable re))
                             n))
-              ((eq? c #\#)
+              ((eqv? c #\#)
                (macro-read-next-char-or-eof re) ;; skip #\#
                (##label-marker-reference re n))
               (else
@@ -11029,7 +13481,7 @@
 
             (define (build-vect re kind)
               (let ((c (macro-read-next-char-or-eof re)))
-                (if (eq? c #\()
+                (if (eqv? c #\()
                     (macro-readenv-wrap re (##build-vector re kind start-pos #\)))
                     (begin
                       (##raise-datum-parsing-exception 'open-paren-expected re)
@@ -11038,7 +13490,7 @@
 
             (define (deserialize re implode);;;;;;;;;;;;;;;;;;;;;;;;;;;;
               (let ((c (macro-read-next-char-or-eof re)))
-                (if (eq? c #\()
+                (if (eqv? c #\()
                     (let* ((old-wrapper (macro-readenv-wrapper re))
                            (old-unwrapper (macro-readenv-unwrapper re)))
                       (macro-readenv-wrapper-set! re (lambda (re x) x))
@@ -11062,10 +13514,16 @@
                       (##read-datum-or-label-or-none-or-dot re))))) ;; skip error
 
             (cond ((or ;;(##read-string=? re s "#f")
-                    (string-ci=? s "#F"))
+                    (string-ci=? s "#F")
+                    (and (macro-readtable-r7rs-compatible-read?
+                          (macro-readenv-readtable re))
+                         (string-ci=? s "#FALSE")))
                    (macro-readenv-wrap re (false-obj)))
                   ((or ;;(##read-string=? re s "#t")
-                    (string-ci=? s "#T"))
+                    (string-ci=? s "#T")
+                    (and (macro-readtable-r7rs-compatible-read?
+                          (macro-readenv-readtable re))
+                         (string-ci=? s "#TRUE")))
                    (macro-readenv-wrap re #t))
                   ((##read-string=? re s "#s8")
                    (build-vect re 's8vector))
@@ -11105,16 +13563,20 @@
                    (##wrap re
                            start-pos
                            (macro-absent-obj)))
-                  ((##read-string=? re s "#")
-                   (##wrap-op1* re
-                                start-pos
-                                (macro-readtable-sharp-seq-keyword
-                                 (macro-readenv-readtable re))
-                                0))
                   (else
-                   (##raise-datum-parsing-exception 'invalid-token re)
-                   (macro-readenv-filepos-set! re old-pos) ;; restore pos
-                   (##read-datum-or-label-or-none-or-dot re)))))))) ;; skip error
+                   (let ((sharp-seq-keyword
+                          (macro-readtable-sharp-seq-keyword
+                           (macro-readenv-readtable re))))
+                     (if (and sharp-seq-keyword
+                              (##read-string=? re s "#"))
+                         (##wrap-op1* re
+                                      start-pos
+                                      sharp-seq-keyword
+                                      0)
+                         (begin
+                           (##raise-datum-parsing-exception 'invalid-token re)
+                           (macro-readenv-filepos-set! re old-pos) ;; restore pos
+                           (##read-datum-or-label-or-none-or-dot re))))))))))) ;; skip error
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -11139,16 +13601,16 @@
     (macro-read-next-char-or-eof re) ;; skip #\' or #\` or #\,
     (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
     (let ((keyword
-           (cond ((eq? c #\,)
+           (cond ((eqv? c #\,)
                   (let ((after-comma (macro-peek-next-char-or-eof re)))
-                    (if (eq? after-comma #\@)
+                    (if (eqv? after-comma #\@)
                         (begin
                           (macro-read-next-char-or-eof re) ;; skip #\@
                           (macro-readtable-unquote-splicing-keyword
                            (macro-readenv-readtable re)))
                         (macro-readtable-unquote-keyword
                          (macro-readenv-readtable re)))))
-                 ((eq? c #\`)
+                 ((eqv? c #\`)
                   (macro-readtable-quasiquote-keyword
                    (macro-readenv-readtable re)))
                  (else
@@ -11241,10 +13703,12 @@
   (let ((start-pos (##readenv-current-filepos re)))
     (macro-read-next-char-or-eof re) ;; skip "c"
     (if (and (char=? c #\@)
-             (macro-readenv-allow-script? re)
-             (eq? (macro-peek-next-char-or-eof re) #\;))
+             (eq? (macro-readenv-script-line re) #t) ;; script allowed?
+             (eqv? start-pos 0) ;; at start of file
+             (eqv? (macro-peek-next-char-or-eof re) #\;))
         (begin
           (macro-read-next-char-or-eof re) ;; skip #\;
+          (##read-script-line re "")
           (##script-marker))
         (begin
           (macro-readenv-filepos-set! re start-pos) ;; set pos to start of datum
@@ -11263,8 +13727,7 @@
 
 (define (##read-string=? re str1 str2)
   (let ((case-conversion?
-         (macro-readtable-case-conversion?
-          (macro-readenv-readtable re))))
+         (macro-readenv-case-conversion? re)))
     (if case-conversion?
         (string-ci=? str1 str2)
         (string=? str1 str2))))
@@ -11332,7 +13795,6 @@
   (define-six-token |token.}|    -11)
   (define-six-token |token.`|    -12)
   (define-six-token |token.#|    -13)
-  (define-six-token token.script -14)
 
   (define-six-op op.!      2  rl six.x!y        six.!x           )
   (define-six-op op.++     2  rl #f             six.++x six.x++  )
@@ -11470,9 +13932,6 @@
     (parse-token-starting-with re (macro-peek-next-char-or-eof re)))
 
   (define (parse-token-starting-with re c)
-    (macro-readenv-allow-script?-set!
-     re
-     (eq? (macro-readenv-allow-script? re) 'script))
     (cond ((not (char? c))
            (##none-marker))
           ((eq? (##readtable-char-handler (macro-readenv-readtable re) c)
@@ -11683,9 +14142,13 @@
                               ((char=? c #\`)
                                (one-char-token |token.`|))
                               ((char=? c #\#)
-                               (if (and (macro-readenv-allow-script? re)
+                               (if (and (eq? (macro-readenv-script-line re) #t) ;; script allowed?
+                                        (eqv? start-pos 0) ;; at start of file
                                         (char=? x #\!))
-                                   (two-char-token (##script-marker))
+                                   (begin
+                                     (macro-read-next-char-or-eof re);;skip #\!
+                                     (##read-script-line re "")
+                                     (##script-marker))
                                    (one-char-token |token.#|)))
                               ((decimal-digit? c)
                                (token (parse-number re #\0 c)))
@@ -11693,10 +14156,12 @@
                                (token (parse-identifier re c)))))))
 
                    ((char=? c #\@)
-                    (if (and (macro-readenv-allow-script? re)
-                             (eq? (macro-peek-next-char-or-eof re) #\;))
+                    (if (and (eq? (macro-readenv-script-line re) #t) ;; script allowed?
+                             (eqv? start-pos 0) ;; at start of file
+                             (eqv? (macro-peek-next-char-or-eof re) #\;))
                         (begin
-                          (macro-read-next-char-or-eof re) ;; skip #\;
+                          (macro-read-next-char-or-eof re);;skip #\;
+                          (##read-script-line re "")
                           (##script-marker))
                         (##none-marker)))
 
@@ -12752,36 +15217,40 @@
 (define (##six-type? x)
   (assq x ##six-types))
 
-(define ##six-types '())
-(set! ##six-types
-      '(
-        (int    . #f)
-        (char   . #f)
-        (bool   . #f)
-        (void   . #f)
-        (float  . #f)
-        (double . #f)
-        (obj    . #f)
-        ))
+(define ##six-types
+  '(
+    (int    . #f)
+    (char   . #f)
+    (bool   . #f)
+    (void   . #f)
+    (float  . #f)
+    (double . #f)
+    (obj    . #f)
+    ))
+
+(define-prim (##six-types-set! x)
+  (set! ##six-types x))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 ;;; Setup the standard readtable.
 
-(define (##make-standard-readtable)
+(define (##make-standard-readtable #!optional (r7rs-syntax? #t))
   (let ((rt
          (macro-make-readtable
           #f ;; preserve case in symbols, character names, etc
           #t ;; keywords ending with ":" are allowed
           ##standard-escaped-char-table
-          ##standard-named-char-table
+          (if r7rs-syntax?
+              ##standard-named-char-table
+              (##cddr ##standard-named-char-table))
           ##standard-sharp-bang-table
           (##make-chartable #f) ;; all chars are non-delimiters
           (##make-chartable ##read-number/keyword/symbol)
           (##make-chartable ##read-sharp-other)
-          (##integer->char 127) ;; max-unescaped-char
+          #f                 ;; max-unescaped-char
           #t                 ;; escape-ctrl-chars?
-          #f                 ;; sharing-allowed?
+          'default           ;; sharing-allowed?
           #f                 ;; eval-allowed?
           #f                 ;; write-extended-read-macros?
           #f                 ;; write-cdr-read-macros?
@@ -12806,8 +15275,12 @@
           ##six-type?        ;; six-type?
           #t                 ;; r6rs-compatible-read?
           #t                 ;; r6rs-compatible-write?
+          r7rs-syntax?       ;; r7rs-compatible-read?
+          r7rs-syntax?       ;; r7rs-compatible-write?
           'multiline         ;; here-strings-allowed?
+          #t                 ;; dot-at-head-of-list-allowed?
           #f                 ;; comment-handler
+          #f                 ;; foreign-write-handler-table
           )))
 
     (##readtable-setup-for-standard-level! rt)
@@ -12882,26 +15355,59 @@
     (##readtable-char-sharp-handler-set! rt #\` ##read-sharp-quotation)
     (##readtable-char-sharp-handler-set! rt #\, ##read-sharp-quotation)
     (##readtable-char-sharp-handler-set! rt #\& ##read-sharp-ampersand)
-    (##readtable-char-sharp-handler-set! rt #\. ##read-sharp-dot)
     (##readtable-char-sharp-handler-set! rt #\< ##read-sharp-less)
+
+    (cond-expand
+     (enable-sharp-dot
+      (##readtable-char-sharp-handler-set! rt #\. ##read-sharp-dot))
+     (else
+      #f))
 
     rt))
 
-(if (not ##main-readtable)
-    (set! ##main-readtable
-          (##make-standard-readtable)))
-
 ;;;----------------------------------------------------------------------------
 
-;;; Setup readtable according to program's script line.
+(define ##main-readtable
+  (let ((rt (##make-standard-readtable)))
 
-(let* ((program-script-line
-        (##vector-ref ##program-descr 2))
-       (language-and-tail
-        (##extract-language-and-tail program-script-line)))
-  (if language-and-tail
-      (let ((language (##car language-and-tail)))
-        (##readtable-setup-for-language! ##main-readtable language)
-        (##main-set! (##start-main language)))))
+    (macro-case-target
+
+     ((C)
+      ;; Setup readtable according to program's script line.
+      (let* ((program-script-line
+              (##vector-ref ##program-descr 2))
+             (language-and-tail
+              (##extract-language-and-tail program-script-line)))
+        (if language-and-tail
+            (let ((language (##car language-and-tail)))
+              (##readtable-setup-for-language! rt language)
+              (##main-set! (##start-main language))))))
+
+     (else))
+
+    rt))
+
+(define-prim (##main-readtable-set! x)
+  (set! ##main-readtable-set! x))
+
+(define main ;; predefine main procedure so scripts don't have to
+  (##first-argument
+   (lambda args 0)))
+
+(define-prim (##start-main language)
+
+  (define (call-main args)
+    (##apply-with-procedure-check main args))
+
+  (cond ((macro-language-srfi-22? language)
+         (lambda ()
+           (let ((status (call-main (##list (##cdr ##processed-command-line)))))
+             (if (##fixnum? status)
+                 (##exit status)
+                 (##exit-abruptly)))))
+        (else
+         (lambda ()
+           (call-main (##cdr ##processed-command-line))
+           (##exit)))))
 
 ;;;============================================================================

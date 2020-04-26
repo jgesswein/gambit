@@ -1,6 +1,6 @@
-# makefile for Gambit-C bin directory.
+# makefile for Gambit bin directory.
 
-# Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+# Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 herefromroot = bin
 rootfromhere = ..
@@ -25,18 +25,20 @@ FLAGS_OBJ = @FLAGS_OBJ_MF@
 FLAGS_DYN = @FLAGS_DYN_MF@
 FLAGS_LIB = @FLAGS_LIB_MF@
 FLAGS_EXE = @FLAGS_EXE_MF@
+FLAGS_OPT = @FLAGS_OPT_MF@
+FLAGS_OPT_RTS = @FLAGS_OPT_RTS_MF@
 DEFS = @DEFS@
 LIBS = @LIBS@
 
-GAMBCLIB_DEFS = @GAMBCLIB_DEFS_MF@
+GAMBITLIB_DEFS = @GAMBITLIB_DEFS_MF@
 LIB_PREFIX = @LIB_PREFIX@
 LIB_VERSION_SUFFIX = @LIB_VERSION_SUFFIX@
 LIB_MAJOR_VERSION_SUFFIX = @LIB_MAJOR_VERSION_SUFFIX@
 
 LIB_EXTENSION = @LIB_EXTENSION@
-GAMBCLIB = @GAMBCLIB@
-GAMBCGSCLIB = @GAMBCGSCLIB@
-GAMBCGSILIB = @GAMBCGSILIB@
+GAMBITLIB = @GAMBITLIB@
+GAMBITGSCLIB = @GAMBITGSCLIB@
+GAMBITGSILIB = @GAMBITGSILIB@
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL_DATA@
 INSTALL_LIB = @INSTALL_LIB@
@@ -74,14 +76,28 @@ GSI_EXECUTABLE_INSTALLED = @ENABLE_INTERPRETER_NAME@@exe@
 GSC_EXECUTABLE_INSTALLED = @ENABLE_COMPILER_NAME@@exe@
 
 RCFILES = makefile.in \
-gambc-cc.unix.in gambc-cc.bat.windows.in \
-gambc-doc.unix.in gambc-doc.bat.windows.in
+gambvcs.unix.in gambvcs.bat.windows.in \
+gambuild-C.unix.in gambuild-C.bat.windows.in \
+gambuild-js.unix.in gambuild-js.bat.windows.in \
+gambuild-python.unix.in gambuild-python.bat.windows.in \
+gambuild-ruby.unix.in gambuild-ruby.bat.windows.in \
+gambuild-php.unix.in gambuild-php.bat.windows.in \
+gambuild-java.unix.in gambuild-java.bat.windows.in \
+gambuild-x86.unix.in gambuild-x86.bat.windows.in \
+gambuild-x86-64.unix.in gambuild-x86-64.bat.windows.in \
+gambuild-arm.unix.in gambuild-arm.bat.windows.in \
+gambuild-riscv-32.unix.in gambuild-riscv-32.bat.windows.in \
+gambuild-riscv-64.unix.in gambuild-riscv-64.bat.windows.in \
+gambdoc.unix.in gambdoc.bat.windows.in
 
 GENDISTFILES =
 
 DISTFILES = $(RCFILES) $(GENDISTFILES)
 
-INSTFILES_BIN_PROG = gambc-cc@bat@ gambc-doc@bat@
+INSTFILES_BIN_PROG = gambvcs@bat@ gambuild-C@bat@ \
+gambuild-js@bat@ gambuild-python@bat@ gambuild-ruby@bat@ gambuild-php@bat@ gambuild-java@bat@ \
+gambuild-x86@bat@ gambuild-x86-64@bat@ gambuild-arm@bat@ gambuild-riscv-32@bat@ gambuild-riscv-64@bat@ \
+gambdoc@bat@
 INSTFILES_BIN_LINK_GSI = six@exe@ gsi-script@bat@ six-script@bat@ \
 scheme-srfi-0@bat@ scheme-r5rs@bat@ scheme-r4rs@bat@ scheme-ieee-1178-1990@bat@
 INSTFILES_BIN_LINK_GSC = gsc-script@bat@
@@ -92,24 +108,123 @@ all:
 
 all-pre:
 
-all-post: gambc-cc@bat@ gambc-doc@bat@ six@exe@ gsi-script@bat@ gsc-script@bat@ six-script@bat@ scheme-srfi-0@bat@ scheme-r5rs@bat@ scheme-r4rs@bat@ scheme-ieee-1178-1990@bat@
+all-post: gambvcs@bat@ gambuild-C@bat@ gambuild-js@bat@ gambuild-python@bat@ gambuild-ruby@bat@ gambuild-php@bat@ gambuild-java@bat@ gambuild-x86@bat@ gambuild-x86-64@bat@ gambuild-arm@bat@ gambuild-riscv-32@bat@ gambuild-riscv-64@bat@ gambdoc@bat@ six@exe@ gsi-script@bat@ gsc-script@bat@ six-script@bat@ scheme-srfi-0@bat@ scheme-r5rs@bat@ scheme-r4rs@bat@ scheme-ieee-1178-1990@bat@
 
-gambc-cc@bat@: makefile gambc-cc.unix gambc-cc.bat.windows
-	rm -f gambc-cc@bat@
+gambvcs@bat@: makefile gambvcs.unix gambvcs.bat.windows
+	rm -f gambvcs@bat@
 	if test "@bat@" = ""; then \
-	  cp gambc-cc.unix gambc-cc@bat@; \
-	  chmod +x gambc-cc@bat@; \
+	  cp gambvcs.unix gambvcs@bat@; \
+	  chmod +x gambvcs@bat@; \
 	else \
-	  cp gambc-cc.bat.windows gambc-cc@bat@; \
+	  sed "s/\$$/\r/g" gambvcs.bat.windows > gambvcs@bat@; \
 	fi
 
-gambc-doc@bat@: makefile gambc-doc.unix gambc-doc.bat.windows
-	rm -f gambc-doc@bat@
+gambuild-C@bat@: makefile gambuild-C.unix gambuild-C.bat.windows
+	rm -f gambuild-C@bat@
 	if test "@bat@" = ""; then \
-	  cp gambc-doc.unix gambc-doc@bat@; \
-	  chmod +x gambc-doc@bat@; \
+	  cp gambuild-C.unix gambuild-C@bat@; \
+	  chmod +x gambuild-C@bat@; \
 	else \
-	  cp gambc-doc.bat.windows gambc-doc@bat@; \
+	  sed "s/\$$/\r/g" gambuild-C.bat.windows > gambuild-C@bat@; \
+	fi
+
+gambuild-js@bat@: makefile gambuild-js.unix gambuild-js.bat.windows
+	rm -f gambuild-js@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-js.unix gambuild-js@bat@; \
+	  chmod +x gambuild-js@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-js.bat.windows > gambuild-js@bat@; \
+	fi
+
+gambuild-python@bat@: makefile gambuild-python.unix gambuild-python.bat.windows
+	rm -f gambuild-python@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-python.unix gambuild-python@bat@; \
+	  chmod +x gambuild-python@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-python.bat.windows > gambuild-python@bat@; \
+	fi
+
+gambuild-ruby@bat@: makefile gambuild-ruby.unix gambuild-ruby.bat.windows
+	rm -f gambuild-ruby@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-ruby.unix gambuild-ruby@bat@; \
+	  chmod +x gambuild-ruby@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-ruby.bat.windows > gambuild-ruby@bat@; \
+	fi
+
+gambuild-php@bat@: makefile gambuild-php.unix gambuild-php.bat.windows
+	rm -f gambuild-php@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-php.unix gambuild-php@bat@; \
+	  chmod +x gambuild-php@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-php.bat.windows > gambuild-php@bat@; \
+	fi
+
+gambuild-java@bat@: makefile gambuild-java.unix gambuild-java.bat.windows
+	rm -f gambuild-java@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-java.unix gambuild-java@bat@; \
+	  chmod +x gambuild-java@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-java.bat.windows > gambuild-java@bat@; \
+	fi
+
+gambuild-x86@bat@: makefile gambuild-x86.unix gambuild-x86.bat.windows
+	rm -f gambuild-x86@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-x86.unix gambuild-x86@bat@; \
+	  chmod +x gambuild-x86@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-x86.bat.windows > gambuild-x86@bat@; \
+	fi
+
+gambuild-x86-64@bat@: makefile gambuild-x86-64.unix gambuild-x86-64.bat.windows
+	rm -f gambuild-x86-64@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-x86-64.unix gambuild-x86-64@bat@; \
+	  chmod +x gambuild-x86-64@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-x86-64.bat.windows > gambuild-x86-64@bat@; \
+	fi
+
+gambuild-arm@bat@: makefile gambuild-arm.unix gambuild-arm.bat.windows
+	rm -f gambuild-arm@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-arm.unix gambuild-arm@bat@; \
+	  chmod +x gambuild-arm@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-arm.bat.windows > gambuild-arm@bat@; \
+	fi
+
+gambuild-riscv-32@bat@: makefile gambuild-riscv-32.unix gambuild-riscv-32.bat.windows
+	rm -f gambuild-riscv-32@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-riscv-32.unix gambuild-riscv-32@bat@; \
+	  chmod +x gambuild-riscv-32@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-riscv-32.bat.windows > gambuild-riscv-32@bat@; \
+	fi
+
+gambuild-riscv-64@bat@: makefile gambuild-riscv-64.unix gambuild-riscv-64.bat.windows
+	rm -f gambuild-riscv-64@bat@
+	if test "@bat@" = ""; then \
+	  cp gambuild-riscv-64.unix gambuild-riscv-64@bat@; \
+	  chmod +x gambuild-riscv-64@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambuild-riscv-64.bat.windows > gambuild-riscv-64@bat@; \
+	fi
+
+gambdoc@bat@: makefile gambdoc.unix gambdoc.bat.windows
+	rm -f gambdoc@bat@
+	if test "@bat@" = ""; then \
+	  cp gambdoc.unix gambdoc@bat@; \
+	  chmod +x gambdoc@bat@; \
+	else \
+	  sed "s/\$$/\r/g" gambdoc.bat.windows > gambdoc@bat@; \
 	fi
 
 six@exe@: makefile
@@ -117,7 +232,7 @@ six@exe@: makefile
 	if test "@bat@" = ""; then \
 	  $(LN_S) $(rootfromhere)/gsi/$(GSI_EXECUTABLE) six@exe@; \
 	else \
-	  cp $(rootfromhere)/gsi/$(GSI_EXECUTABLE) six@exe@; \
+	  echo "@gsi %*" > six@bat@; \
 	fi
 
 gsi-script@bat@: makefile
@@ -183,89 +298,123 @@ bootstrap-post:
 install-pre:
 
 install-post: all
-	c_bindir=$(DESTDIR)$(prefix)/bin; \
-	i_bindir=$(DESTDIR)$(bindir); \
-	t_bindir=$$i_bindir; \
-	$(srcdirpfx)$(rootfromhere)/mkidirs $$i_bindir; \
+	c_bindir="$(DESTDIR)$(prefix)/bin"; \
+	i_bindir="$(DESTDIR)$(bindir)"; \
+	t_bindir="$$i_bindir"; \
+	$(srcdirpfx)$(rootfromhere)/mkidirs "$$i_bindir"; \
 	if test "@ENABLE_SYMLINKS@" = "yes"; then \
-	  $(srcdirpfx)$(rootfromhere)/mkidirs $$c_bindir; \
-	  t_bindir=$$c_bindir; \
+	  $(srcdirpfx)$(rootfromhere)/mkidirs "$$c_bindir"; \
+	  t_bindir="$$c_bindir"; \
 	fi; \
 	for file in $(INSTFILES_BIN_LINK); do \
-	  rm -f $$t_bindir/$$file $$t_bindir/$$file.lnk; \
+	  rm -f "$$t_bindir/$$file" "$$t_bindir/$$file.lnk"; \
 	done; \
 	for file in $(INSTFILES_BIN_PROG); do \
-	  $(INSTALL_PROGRAM) $$file $$t_bindir/$$file; \
+	  $(INSTALL_PROGRAM) "$$file" "$$t_bindir/$$file"; \
 	done; \
 	if test "@bat@" = ""; then \
 	  for file in $(INSTFILES_BIN_LINK_GSI); do \
-	    (cd $$t_bindir && $(LN_S) $(GSI_EXECUTABLE_INSTALLED) $$file); \
+	    (cd "$$t_bindir" && $(LN_S) "$(GSI_EXECUTABLE_INSTALLED)" "$$file"); \
 	  done; \
 	  for file in $(INSTFILES_BIN_LINK_GSC); do \
-	    (cd $$t_bindir && $(LN_S) $(GSC_EXECUTABLE_INSTALLED) $$file); \
+	    (cd "$$t_bindir" && $(LN_S) "$(GSC_EXECUTABLE_INSTALLED)" "$$file"); \
 	  done; \
 	else \
 	  for file in $(INSTFILES_BIN_LINK); do \
-	    $(INSTALL_PROGRAM) $$file $$t_bindir/$$file; \
+	    $(INSTALL_PROGRAM) "$$file" "$$t_bindir/$$file"; \
 	  done; \
 	fi; \
 	if test "$$t_bindir" != "$$i_bindir"; then \
 	  r_bindir=`$(rootfromhere)/relpath "$$t_bindir" "$$i_bindir" @ENABLE_MULTIPLE_VERSIONS@`; \
 	  for file in $(INSTFILES_BIN_LINK); do \
-	    rm -f $$i_bindir/$$file $$i_bindir/$$file.lnk; \
+	    rm -f "$$i_bindir/$$file" "$$i_bindir/$$file.lnk"; \
 	  done; \
 	  for file in $(INSTFILES_BIN); do \
-	    (cd $$i_bindir && $(LN_S) $$r_bindir$$file $$file); \
+	    (cd "$$i_bindir" && $(LN_S) "$$r_bindir$$file" "$$file"); \
 	  done; \
 	fi
 
 uninstall-pre:
 
 uninstall-post:
-	c_bindir=$(DESTDIR)$(prefix)/bin; \
-	i_bindir=$(DESTDIR)$(bindir); \
-	t_bindir=$$i_bindir; \
-	$(srcdirpfx)$(rootfromhere)/mkidirs $$i_bindir; \
+	c_bindir="$(DESTDIR)$(prefix)/bin"; \
+	i_bindir="$(DESTDIR)$(bindir)"; \
+	t_bindir="$$i_bindir"; \
+	$(srcdirpfx)$(rootfromhere)/mkidirs "$$i_bindir"; \
 	if test "@ENABLE_SYMLINKS@" = "yes"; then \
-	  $(srcdirpfx)$(rootfromhere)/mkidirs $$c_bindir; \
-	  t_bindir=$$c_bindir; \
+	  $(srcdirpfx)$(rootfromhere)/mkidirs "$$c_bindir"; \
+	  t_bindir="$$c_bindir"; \
 	fi; \
 	for file in $(INSTFILES_BIN_LINK); do \
-	  rm -f $$t_bindir/$$file $$t_bindir/$$file.lnk; \
+	  rm -f "$$t_bindir/$$file" "$$t_bindir/$$file.lnk"; \
 	done; \
 	for file in $(INSTFILES_BIN_PROG); do \
-	  rm -f $$t_bindir/$$file; \
+	  rm -f "$$t_bindir/$$file"; \
 	done; \
 	if test "$$t_bindir" != "$$i_bindir"; then \
 	  for file in $(INSTFILES_BIN_LINK); do \
-	    rm -f $$i_bindir/$$file $$i_bindir/$$file.lnk; \
+	    rm -f "$$i_bindir/$$file" "$$i_bindir/$$file.lnk"; \
 	  done; \
 	  for file in $(INSTFILES_BIN_PROG); do \
-	    rm -f $$i_bindir/$$file; \
+	    rm -f "$$i_bindir/$$file"; \
 	  done; \
 	fi; \
-	rmdir $$t_bindir 2> /dev/null; \
+	rmdir "$$t_bindir" 2> /dev/null; \
 	if test "$$t_bindir" != "$$i_bindir"; then \
-	  rmdir $$i_bindir 2> /dev/null; \
+	  rmdir "$$i_bindir" 2> /dev/null; \
 	fi
 
 select-gen-for-commit-pre:
 
-select-gen-for-commit-post:
+select-gen-for-commit-post select-gen-for-commit-post-nonrec:
 
 deselect-gen-for-commit-pre:
 
-deselect-gen-for-commit-post:
+deselect-gen-for-commit-post deselect-gen-for-commit-post-nonrec:
 
 mostlyclean-pre:
 
-mostlyclean-post:
+mostlyclean-post mostlyclean-post-nonrec:
 
 clean-pre: mostlyclean-pre
 
-clean-post: mostlyclean-post
-	rm -f gambc-cc@bat@ \
-	  gambc-doc@bat@ \
+clean-post clean-post-nonrec: mostlyclean-post-nonrec
+	rm -f gambuild-C@bat@ \
+	  gambuild-C.unix \
+	  gambuild-C.bat.windows \
+	  gambuild-js@bat@ \
+	  gambuild-js.unix \
+	  gambuild-js.bat.windows \
+	  gambuild-python@bat@ \
+	  gambuild-python.unix \
+	  gambuild-python.bat.windows \
+	  gambuild-ruby@bat@ \
+	  gambuild-ruby.unix \
+	  gambuild-ruby.bat.windows \
+	  gambuild-php@bat@ \
+	  gambuild-php.unix \
+	  gambuild-php.bat.windows \
+	  gambuild-java@bat@ \
+	  gambuild-java.unix \
+	  gambuild-java.bat.windows \
+	  gambuild-x86@bat@ \
+	  gambuild-x86.unix \
+	  gambuild-x86.bat.windows \
+	  gambuild-x86-64@bat@ \
+	  gambuild-x86-64.unix \
+	  gambuild-x86-64.bat.windows \
+	  gambuild-arm@bat@ \
+	  gambuild-arm.unix \
+	  gambuild-arm.bat.windows \
+	  gambuild-riscv-32@bat@ \
+	  gambuild-riscv-32.unix \
+	  gambuild-riscv-32.bat.windows \
+	  gambuild-riscv-64@bat@ \
+	  gambuild-riscv-64.unix \
+	  gambuild-riscv-64.bat.windows \
+	  gambdoc@bat@ \
+	  gambdoc.unix \
+	  gambdoc.bat.windows \
 	  six@exe@ six@exe@.lnk \
 	  gsi-script@bat@ \
 	  gsi-script@bat@.lnk \
@@ -284,17 +433,27 @@ clean-post: mostlyclean-post
 
 distclean-pre: clean-pre
 
-distclean-post: clean-post
+distclean-post distclean-post-nonrec: clean-post-nonrec
 
 bootclean-pre: distclean-pre
 
-bootclean-post: distclean-post
+bootclean-post bootclean-post-nonrec: distclean-post-nonrec
 
 realclean-pre: bootclean-pre
 
-realclean-post: bootclean-post
-	rm -f gambc-cc.unix gambc-cc.bat.windows \
-	  gambc-doc.unix gambc-doc.bat.windows makefile
+realclean-post realclean-post-nonrec: bootclean-post-nonrec
+	rm -f gambuild-C.unix gambuild-C.bat.windows \
+	  gambuild-js.unix gambuild-js.bat.windows \
+	  gambuild-python.unix gambuild-python.bat.windows \
+	  gambuild-ruby.unix gambuild-ruby.bat.windows \
+	  gambuild-php.unix gambuild-php.bat.windows \
+	  gambuild-java.unix gambuild-java.bat.windows \
+	  gambuild-x86.unix gambuild-x86.bat.windows \
+	  gambuild-x86-64.unix gambuild-x86-64.bat.windows \
+	  gambuild-arm.unix gambuild-arm.bat.windows \
+	  gambuild-riscv-32.unix gambuild-riscv-32.bat.windows \
+	  gambuild-riscv-64.unix gambuild-riscv-64.bat.windows \
+	  gambdoc.unix gambdoc.bat.windows makefile
 
 rc-setup-pre:
 	$(RC) add $(RCFILES)
@@ -350,43 +509,43 @@ select-gen-for-commit: select-gen-for-commit-post
 
 select-gen-for-commit-post: select-gen-for-commit-recursive
 
-select-gen-for-commit-recursive: select-gen-for-commit-pre
+select-gen-for-commit-post-nonrec select-gen-for-commit-recursive: select-gen-for-commit-pre
 
 deselect-gen-for-commit: deselect-gen-for-commit-post
 
 deselect-gen-for-commit-post: deselect-gen-for-commit-recursive
 
-deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
+deselect-gen-for-commit-post-nonrec deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
 
 mostlyclean: mostlyclean-post
 
 mostlyclean-post: mostlyclean-recursive
 
-mostlyclean-recursive: mostlyclean-pre
+mostlyclean-post-nonrec mostlyclean-recursive: mostlyclean-pre
 
 clean: clean-post
 
 clean-post: clean-recursive
 
-clean-recursive: clean-pre
+clean-post-nonrec clean-recursive: clean-pre
 
 distclean: distclean-post
 
 distclean-post: distclean-recursive
 
-distclean-recursive: distclean-pre
+distclean-post-nonrec distclean-recursive: distclean-pre
 
 bootclean: bootclean-post
 
 bootclean-post: bootclean-recursive
 
-bootclean-recursive: bootclean-pre
+bootclean-post-nonrec bootclean-recursive: bootclean-pre
 
 realclean: realclean-post
 
 realclean-post: realclean-recursive
 
-realclean-recursive: realclean-pre
+realclean-post-nonrec realclean-recursive: realclean-pre
 
 rc-setup: rc-setup-post
 
@@ -409,16 +568,76 @@ dist-devel-recursive: dist-devel-pre
 makefile: makefile.in $(rootfromhere)/config.status
 	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
 
-gambc-cc.unix: gambc-cc.unix.in $(rootfromhere)/config.status
+gambuild-C.unix: gambuild-C.unix.in $(rootfromhere)/config.status
 	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
 
-gambc-cc.bat.windows: gambc-cc.bat.windows.in $(rootfromhere)/config.status
+gambuild-C.bat.windows: gambuild-C.bat.windows.in $(rootfromhere)/config.status
 	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
 
-gambc-doc.unix: gambc-doc.unix.in $(rootfromhere)/config.status
+gambuild-js.unix: gambuild-js.unix.in $(rootfromhere)/config.status
 	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
 
-gambc-doc.bat.windows: gambc-doc.bat.windows.in $(rootfromhere)/config.status
+gambuild-js.bat.windows: gambuild-js.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-python.unix: gambuild-python.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-python.bat.windows: gambuild-python.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-ruby.unix: gambuild-ruby.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-ruby.bat.windows: gambuild-ruby.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-php.unix: gambuild-php.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-php.bat.windows: gambuild-php.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-java.unix: gambuild-java.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-java.bat.windows: gambuild-java.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-x86.unix: gambuild-x86.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-x86.bat.windows: gambuild-x86.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-x86-64.unix: gambuild-x86-64.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-x86-64.bat.windows: gambuild-x86-64.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-arm.unix: gambuild-arm.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-arm.bat.windows: gambuild-arm.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-riscv-32.unix: gambuild-riscv-32.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-riscv-32.bat.windows: gambuild-riscv-32.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-riscv-64.unix: gambuild-riscv-64.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambuild-riscv-64.bat.windows: gambuild-riscv-64.bat.windows.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambdoc.unix: gambdoc.unix.in $(rootfromhere)/config.status
+	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
+
+gambdoc.bat.windows: gambdoc.bat.windows.in $(rootfromhere)/config.status
 	cd $(rootfromhere) && CONFIG_FILES=$(herefromroot)/$@ CONFIG_HEADERS= ./config.status
 
 # Tell versions [3.59,3.63) of GNU make not to export all variables.

@@ -2,7 +2,7 @@
 
 ;;; File: "_utils.scm"
 
-;;; Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 (include "fixnum.scm")
 
@@ -29,6 +29,12 @@
       (begin
         (proc (car lst) i)
         (loop (cdr lst) (+ i 1))))))
+
+(define (map-index proc lst)
+  (let loop ((lst lst) (i 0) (rev-result '()))
+    (if (pair? lst)
+        (loop (cdr lst) (+ i 1) (cons (proc (car lst) i) rev-result))
+        (reverse rev-result))))
 
 (define (pos-in-list x l)
   (let loop ((l l) (i 0))
@@ -403,6 +409,9 @@
 (define (ptset-empty)              ; return the empty set
   '())
 
+(define (list->ptset lst)          ; convert list to set
+  lst)
+
 (define (ptset->list set)          ; convert set to list
   set)
 
@@ -605,7 +614,7 @@
 
 (define (reverse-append! xrev y)
   (if (null? xrev)
-      y 
+      y
       (let ((temp (cdr xrev)))
         (set-cdr! xrev y)
         (reverse-append! temp xrev))))
@@ -628,6 +637,12 @@
       (begin
         (proc (car lst) i)
         (loop (cdr lst) (+ i 1))))))
+
+(define (map-index proc lst)
+  (let loop ((lst lst) (i 0) (rev-result '()))
+    (if (pair? lst)
+        (loop (cdr lst) (+ i 1) (cons (proc (car lst) i) rev-result))
+        (reverse rev-result))))
 
 (define (pos-in-list x l)
   (let loop ((l l) (i 0))
@@ -752,6 +767,47 @@
     (if (< i 0)
       l
       (loop (cons (string-ref s i) l) (- i 1)))))
+
+(define (read-line* in)
+  (let loop ((lst '()))
+    (let ((c (read-char in)))
+      (if (or (eof-object? c)
+              (char=? c #\return)
+              (char=? c #\newline))
+          (list->str (reverse lst))
+          (loop (cons c lst))))))
+
+(define (string-substitute str delim alist)
+
+  (define (index-of c start)
+    (let loop ((i start))
+      (if (< i (string-length str))
+          (if (char=? c (string-ref str i))
+              i
+              (loop (+ i 1)))
+          i)))
+
+  (let loop ((i 0) (j 0) (out '()))
+    (let ((start (index-of delim j)))
+      (if (< start (string-length str))
+          (let ((end (index-of delim (+ start 1))))
+            (if (< end (string-length str))
+                (if (= start (- end 1)) ;; two delimiters in a row?
+                    (loop (+ end 1)
+                          (+ end 1)
+                          (cons (substring str i end)
+                                out))
+                    (let* ((var (substring str (+ start 1) end))
+                           (x (assoc var alist)))
+                      (if x
+                          (loop (+ end 1)
+                                (+ end 1)
+                                (cons (cdr x)
+                                      (cons (substring str i start)
+                                            out)))
+                          (compiler-error "Unbound substitution variable in" str))))
+                (compiler-error "Unbalanced delimiter in" str)))
+          (reverse (cons (substring str i start) out))))))
 
 ;;;----------------------------------------------------------------------------
 
@@ -1114,14 +1170,23 @@
 
 ;; Parse tree sets
 
-(define ptset-empty-set
-  (vector '() '() '() '() '() '() '() '() '() '() '()))
-
 (define (ptset-empty)              ; return the empty set
   (vector '() '() '() '() '() '() '() '() '() '() '()))
 
+(define ptset-empty-set
+  (ptset-empty))
+
+(define (list->ptset lst)          ; convert list to set
+  (let ((set (ptset-empty)))
+    (let loop ((lst lst))
+      (if (pair? lst)
+          (begin
+            (ptset-adjoin set (car lst))
+            (loop (cdr lst)))
+          set))))
+
 (define (ptset->list set)          ; convert set to list
-  (apply append (vect->list set)))
+  (append-lists (vect->list set)))
 
 (define (ptset-size set)           ; return cardinality of set
   (apply + (map list-length (vect->list set))))

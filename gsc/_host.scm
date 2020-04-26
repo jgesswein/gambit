@@ -2,7 +2,7 @@
 
 ;;; File: "_host.scm"
 
-;;; Copyright (c) 1994-2011 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2018 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -23,7 +23,7 @@
 ;; The host dependent variables:
 ;; ----------------------------
 
-'(begin ; *** remove the quote at the start of this line if not using Gambit-C
+'(begin ; *** remove the quote at the start of this line if not using Gambit
 
 ;; These procedures are the interface to 'keyword objects'.  On a
 ;; system which lacks native support for them, keywords are implemented
@@ -42,6 +42,9 @@
               (len (string-length str)))
          (and (< 1 len)
               (char=? (string-ref str (- len 1)) #\:)))))
+
+(define (keyword-object-interned? key)
+  #t)
 
 ;; These definitions are needed to support objects which are not
 ;; standard in all implementations of Scheme.  On implementations which
@@ -138,6 +141,9 @@
 ;;       (not (body-object? obj))
        ))
 
+(define (symbol-object-interned? sym)
+  #t)
+
 (define box-tag (list 'box))
 
 (define (box-object? obj)
@@ -165,6 +171,12 @@
 
 (define (open-input-file* path)
   (open-input-file path))
+
+(define (open-input-file*-preserving-case path)
+  (open-input-file* path))
+
+(define (open-output-file-preserving-case path)
+  (open-output-file path))
 
 ;; 'pp-expression' is used to pretty print an expression on a given
 ;; port.
@@ -572,7 +584,8 @@
 (define (max-fixnum32-div-max-lines)  8191)
 (define (subtype-structure) #f)
 
-(define (symbol-hash sym) 0)
+(define (symbol-object-hash sym) 0)
+(define (keyword-object-hash key) 0)
 
 ;; Tables.
 
@@ -621,9 +634,9 @@
 
 ;;;============================================================================
 
-;; Definitions when host system is Gambit-C:
+;; Definitions when host system is Gambit:
 
-;" *** remove the semicolon at the start of this line if not using Gambit-C
+;" *** remove the semicolon at the start of this line if not using Gambit
 
 (define (string->keyword-object str)
   (##string->keyword str))
@@ -633,6 +646,9 @@
 
 (define (keyword-object? obj)
   (##keyword? obj))
+
+(define (keyword-object-interned? key)
+  (##keyword-interned? key))
 
 (define false-object #f)
 
@@ -693,6 +709,9 @@
 (define (symbol-object? obj)
   (symbol? obj))
 
+(define (symbol-object-interned? sym)
+  (##symbol-interned? sym))
+
 (define (box-object? obj)
   (##box? obj))
 
@@ -719,7 +738,25 @@
    open-input-file
    path))
 
+(define (open-input-file*-preserving-case path)
+  (parameterize ((current-readtable
+                  (readtable-keywords-allowed?-set
+                   (readtable-case-conversion?-set
+                    (##make-standard-readtable)
+                    #f)
+                   #t)))
+    (open-input-file* path)))
+
 (define open-output-file ##open-output-file)
+
+(define (open-output-file-preserving-case path)
+  (parameterize ((current-readtable
+                  (readtable-keywords-allowed?-set
+                   (readtable-case-conversion?-set
+                    (##make-standard-readtable)
+                    #f)
+                   #t)))
+    (open-output-file path)))
 
 (define (pp-expression expr port)
   (pp expr port))
@@ -872,7 +909,116 @@
 (define (subtype-structure)
   (macro-subtype-structure))
 
-(define (symbol-hash sym)
-  (macro-symbol-hash sym))
+(define (symbol-object-hash sym)
+  (##symbol-hash sym))
+
+(define (keyword-object-hash key)
+  (##keyword-hash key))
+
+(define (**make-macro-descr def-syntax? size expander expander-src)
+  (##make-macro-descr def-syntax? size expander expander-src))
+
+(define (**macro-descr-def-syntax? descr)
+  (##macro-descr-def-syntax? descr))
+
+(define (**macro-descr-size descr)
+  (##macro-descr-size descr))
+
+(define (**macro-descr-expander descr)
+  (##macro-descr-expander descr))
+
+(define (**macro-descr-expander-src descr)
+  (##macro-descr-expander-src descr))
+
+(define **compilation-ctx (make-parameter #f))
+
+(define (**in-new-compilation-ctx thunk)
+  (if (##unbound? ;; TODO: remove dynamic check after bootstrap
+       (##global-var-ref (##make-global-var '##in-new-compilation-ctx)))
+
+      ;; bootstrap not yet done
+      (let* ((comp-ctx
+              (vector '() ;; supply-modules
+                      '() ;; demand-modules
+                      (make-table) ;; meta-info
+                      #f ;; module-ref
+                      '())) ;; module-aliases
+             (result
+              (parameterize ((**compilation-ctx comp-ctx)) (thunk))))
+        (values result
+                comp-ctx))
+
+      ;; bootstrap done
+      (##in-new-compilation-ctx thunk)))
+
+(define (**compilation-ctx-meta-info-add! key val)
+  (if (##unbound? ;; TODO: remove dynamic check after bootstrap
+       (##global-var-ref (##make-global-var '##compilation-ctx-meta-info-add!)))
+
+      ;; bootstrap not yet done
+      #f ;; ignore meta info
+
+      ;; bootstrap done
+      (##compilation-ctx-meta-info-add! key val)))
+
+(define (**compilation-ctx-module-ref-set! module-ref)
+  (if (##unbound? ;; TODO: remove dynamic check after bootstrap
+       (##global-var-ref (##make-global-var '##compilation-ctx-module-ref-set!)))
+
+      ;; bootstrap not yet done
+      (let ((ctx (**compilation-ctx)))
+        (**macro-compilation-ctx-module-ref-set! ctx module-ref))
+
+      ;; bootstrap done
+      (##compilation-ctx-module-ref-set! module-ref)))
+
+(define (**macro-compilation-ctx-supply-modules ctx)
+  (##vector-ref ctx 0) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-supply-modules ctx)
+)
+
+(define (**macro-compilation-ctx-supply-modules-set! ctx supply-modules)
+  (##vector-set! ctx 0 supply-modules) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-supply-modules-set! ctx supply-modules)
+)
+
+(define (**macro-compilation-ctx-demand-modules ctx)
+  (##vector-ref ctx 1) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-demand-modules ctx)
+)
+
+(define (**macro-compilation-ctx-demand-modules-set! ctx demand-modules)
+  (##vector-set! ctx 0 demand-modules) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-demand-modules-set! ctx demand-modules)
+)
+
+(define (**macro-compilation-ctx-meta-info ctx)
+  (##vector-ref ctx 2) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-meta-info ctx)
+)
+
+(define (**macro-compilation-ctx-meta-info-set! ctx meta-info)
+  (##vector-set! ctx 2 meta-info) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-meta-info-set! ctx meta-info)
+)
+
+(define (**meta-info->alist meta-info)
+  (##table->list meta-info) ;; TODO: remove after bootstrap
+;;  (##meta-info->alist meta-info)
+)
+
+(define (**macro-compilation-ctx-module-ref ctx)
+  (##vector-ref ctx 3) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-module-ref ctx)
+)
+
+(define (**macro-compilation-ctx-module-ref-set! ctx module-ref)
+  (##vector-set! ctx 3 module-ref) ;; TODO: remove after bootstrap
+;;  (macro-compilation-ctx-module-ref-set! ctx module-ref)
+)
+
+(if (##unbound? ;; TODO: remove dynamic check after bootstrap
+     (##global-var-ref (##make-global-var '##parameterize)))
+    (##global-var-set! (##make-global-var '##parameterize) ##parameterize1))
 
 ;"

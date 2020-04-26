@@ -1,6 +1,6 @@
 /* File: "mem.h" */
 
-/* Copyright (c) 1994-2013 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2018 by Marc Feeley, All Rights Reserved. */
 
 #ifndef ___MEM_H
 #define ___MEM_H
@@ -32,14 +32,17 @@
  * is adjusted.  If there is less than or equal to ___MSECTION_WASTE
  * words of space left, a garbage collection is triggered.
  * ___MSECTION_FUDGE must be >=
- * ___MAX_NB_FRAME_SLOTS+1+___SUBTYPED_OVERHEAD (which is the size of
+ * ___MAX_NB_FRAME_SLOTS+1+___SUBTYPED_BODY (which is the size of
  * the largest continuation frame).
  *
  * ___MSECTION_BIGGEST is the size in words beyond which an object will
  * be allocated as a still object.  It must be <= ___MSECTION_FUDGE.
  *
- * ___MIN_NB_MSECTIONS is the minimum number of msections contained
- * in the heap.
+ * ___MSECTION_CHUNK is the size in words beyond which a chunk will
+ * cause a new chunk to be started.
+ *
+ * ___MIN_NB_MSECTIONS_PER_PROCESSOR is the minimum number of msections
+ * per processor contained in the heap.
  *
  * ___PSECTION_SIZE is the size in words of sections that contain permanent
  * objects (psections).
@@ -50,6 +53,10 @@
  * ___DEFAULT_LIVE_PERCENT is the default percentage of the heap that
  * is live after a GC.  At the end of a GC the heap is resized to reach
  * this percentage.
+ *
+ * ___MAX_STILL_DEFERRED is the maximum number of words that are
+ * allocated per processor to still objects before they are accounted for
+ * at the VM level.
  */
 
 
@@ -57,14 +64,16 @@
 #define ___MAX_NB_ARGS          8192
 #define ___MAX_NB_FRAME_SLOTS   8192
 #define ___MSECTION_SIZE        131072
-#define ___MSECTION_FUDGE       (___MAX_NB_FRAME_SLOTS+1+___SUBTYPED_OVERHEAD)
+#define ___MSECTION_FUDGE       (___MAX_NB_FRAME_SLOTS+1+___SUBTYPED_BODY)
 #define ___MSECTION_WASTE       (___MSECTION_FUDGE/16)
 #define ___MSECTION_BIGGEST     255
-#define ___MIN_NB_MSECTIONS     1
+#define ___MSECTION_CHUNK       ___MSECTION_BIGGEST
+#define ___MIN_NB_MSECTIONS_PER_PROCESSOR 2
 #define ___PSECTION_SIZE        4096
 #define ___PSECTION_WASTE       32
 #define ___DEFAULT_LIVE_PERCENT 50
 #define ___DEFAULT_MIN_HEAP     (1*(1<<20))
+#define ___MAX_STILL_DEFERRED   1024
 
 
 /* 
@@ -76,8 +85,7 @@
 
 
 extern ___SCMOBJ ___setup_mem_pstate
-   ___P((___processor_state ___ps,
-         ___virtual_machine_state ___vms),
+   ___P((___processor_state ___ps),
         ());
 
 extern ___SCMOBJ ___setup_mem_vmstate
@@ -97,25 +105,10 @@ extern void ___cleanup_mem_vmstate
 extern void ___cleanup_mem ___PVOID;
 
 
-#ifdef ___DEBUG_GARBAGE_COLLECT
-
-#define ___garbage_collect(ps,n) ___garbage_collect_debug (ps,n,__LINE__,__FILE__)
-
-extern ___BOOL ___garbage_collect_debug
-   ___P((___PSD
-         ___SIZE_TS nonmovable_words_needed,
-         int line,
-         char *file),
+extern ___BOOL ___garbage_collect_pstate
+   ___P((___processor_state ___ps,
+         ___SIZE_TS requested_words_still),
         ());
-
-#else
-
-extern ___BOOL ___garbage_collect
-   ___P((___PSD
-         ___SIZE_TS nonmovable_words_needed),
-        ());
-
-#endif
 
 
 #ifdef ___DEBUG_STACK_LIMIT
@@ -135,6 +128,11 @@ extern ___BOOL ___stack_limit
         ());
 
 #endif
+
+
+extern ___WORD ___stack_overflow_undo_if_possible
+   ___P((___PSDNC),
+        ());
 
 
 #ifdef ___DEBUG_HEAP_LIMIT
@@ -199,13 +197,43 @@ extern void ___for_each_symkey
          void *data),
         ());
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_GARBAGE_COLLECT
+#define ___USE_find_global_var_bound_to
+#else
+#ifdef ___DEBUG_HOST_CHANGES
+#define ___USE_find_global_var_bound_to
+#endif
+#endif
+
+#ifdef ___USE_find_global_var_bound_to
 
 extern ___SCMOBJ ___find_global_var_bound_to
    ___P((___SCMOBJ val),
         ());
 
 #endif
+
+extern void ___glo_list_setup ___PVOID;
+
+extern void ___glo_list_add
+   ___P((___glo_struct *glo),
+        ());
+
+extern ___glo_struct *___glo_list_search_obj
+   ___P((___PSD
+         ___SCMOBJ obj,
+         ___BOOL prm),
+        ());
+
+extern ___SCMOBJ ___glo_struct_to_global_var
+   ___P((___glo_struct *glo),
+        ());
+
+extern ___SCMOBJ ___obj_to_global_var
+   ___P((___PSD
+         ___SCMOBJ obj,
+         ___BOOL prm),
+        ());
 
 extern ___SCMOBJ ___make_global_var
    ___P((___SCMOBJ sym),

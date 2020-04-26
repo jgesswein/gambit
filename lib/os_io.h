@@ -1,12 +1,13 @@
 /* File: "os_io.h" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 #ifndef ___OS_IO_H
 #define ___OS_IO_H
 
-/**********************************/
+#include "os.h"
 #include "os_time.h"
+
 
 /*---------------------------------------------------------------------------*/
 
@@ -16,25 +17,28 @@ typedef struct ___device_group_struct
     struct ___device_struct *list; /* list of devices in this group */
   } ___device_group;
 
-
+/*TODO: remove "DEVICE" from names*/
 #define ___NONE_KIND              0
-#define ___OBJECT_KIND            1
-#define ___CHARACTER_KIND         3
-#define ___BYTE_KIND              7
-#define ___DEVICE_KIND            15
-#define ___FILE_DEVICE_KIND       (___DEVICE_KIND+16)
-#define ___PIPE_DEVICE_KIND       (___DEVICE_KIND+32)
-#define ___PROCESS_DEVICE_KIND    (___PIPE_DEVICE_KIND+65536)
-#define ___TTY_DEVICE_KIND        (___DEVICE_KIND+64)
-#define ___SERIAL_DEVICE_KIND     (___DEVICE_KIND+128)
-#define ___TCP_CLIENT_DEVICE_KIND (___DEVICE_KIND+256)
-#define ___TCP_SERVER_DEVICE_KIND (___OBJECT_KIND+512)
-#define ___DIRECTORY_KIND         (___OBJECT_KIND+1024)
-#define ___EVENT_QUEUE_KIND       (___OBJECT_KIND+2048)
-#define ___TIMER_KIND             (___OBJECT_KIND+4096)
-#define ___VECTOR_KIND            (___OBJECT_KIND+8192)
-#define ___STRING_KIND            (___CHARACTER_KIND+16384)
-#define ___U8VECTOR_KIND          (___BYTE_KIND+32768)
+#define ___WAITABLE_KIND          1
+#define ___OBJECT_KIND            (___WAITABLE_KIND+2)
+#define ___CHARACTER_KIND         (___OBJECT_KIND+4)
+#define ___BYTE_KIND              (___CHARACTER_KIND+8)
+#define ___DEVICE_KIND            (___BYTE_KIND+16)
+#define ___FILE_DEVICE_KIND       (___DEVICE_KIND+32)
+#define ___PIPE_DEVICE_KIND       (___DEVICE_KIND+64)
+#define ___PROCESS_DEVICE_KIND    (___PIPE_DEVICE_KIND+131072)
+#define ___TTY_DEVICE_KIND        (___DEVICE_KIND+128)
+#define ___SERIAL_DEVICE_KIND     (___DEVICE_KIND+256)
+#define ___TCP_CLIENT_DEVICE_KIND (___DEVICE_KIND+512)
+#define ___TCP_SERVER_DEVICE_KIND (___OBJECT_KIND+1024)
+#define ___DIRECTORY_KIND         (___OBJECT_KIND+2048)
+#define ___EVENT_QUEUE_KIND       (___OBJECT_KIND+4096)
+#define ___TIMER_KIND             (___OBJECT_KIND+8192)
+#define ___VECTOR_KIND            (___OBJECT_KIND+16384)
+#define ___STRING_KIND            (___CHARACTER_KIND+32768)
+#define ___U8VECTOR_KIND          (___BYTE_KIND+65536)
+#define ___RAW_DEVICE_KIND        (___WAITABLE_KIND+262144)
+#define ___UDP_DEVICE_KIND        (___OBJECT_KIND+524288)
 
 #define ___OPEN_STATE(x)      ((x)&(1<<12))
 #define ___OPEN_STATE_MASK(x) ((x)&~(1<<12))
@@ -59,6 +63,13 @@ typedef struct ___device_group_struct
 #define ___STREAM_OPTIONS_INPUT(options) ((options)&((1<<15)-1))
 #define ___STREAM_OPTIONS_OUTPUT(options) (((options)>>15)&((1<<15)-1))
 
+#ifdef USE_OPENSSL
+#define ___TLS_OPTION_SERVER_MODE 1
+#define ___TLS_OPTION_USE_DIFFIE_HELLMAN 1<<1
+#define ___TLS_OPTION_USE_ELLIPTIC_CURVES 1<<2
+#define ___TLS_OPTION_REQUEST_CLIENT_AUTHENTICATION 1<<3
+#define ___TLS_OPTION_INSERT_EMPTY_FRAGMENTS 1<<8
+#endif
 
 typedef struct ___device_struct
   {
@@ -83,37 +94,23 @@ typedef struct ___device_struct
 #define MAX_CONDVARS 8192
 #endif
 
-#ifdef USE_poll
-#ifndef MAX_POLLFDS
-#define MAX_POLLFDS MAX_CONDVARS
-#endif
+#ifdef USE_select_or_poll
 
-typedef ___SIZE_TS ___fdbits;
+typedef ___UWORD ___fdbits;
 
-#define ___FDBITS (8 * sizeof (___fdbits))
-#define ___FD_ELT(fd) ((fd) / ___FDBITS)
-#define ___FD_MASK(fd) ((___fdbits) 1 << ((fd) % ___FDBITS))
+#define ___FDBITS ___WORD_WIDTH
+#define ___FD_ELT(fd) ((fd) >> ___LOG_WORD_WIDTH)
+#define ___FD_MASK(fd) ((___fdbits) 1 << ((fd) % ___WORD_WIDTH))
 
-#define ___FD_ZERO(set)                       \
-  memset ((set), 0, sizeof (___poll_fd_set))
+#define ___FD_ZERO(set, sz)                        \
+  memset ((set), 0, sz/8)
 #define ___FD_SET(fd, set)                    \
-  ((set)->fds[___FD_ELT (fd)] |= ___FD_MASK (fd))
+  ((set)[___FD_ELT (fd)] |= ___FD_MASK (fd))
 #define ___FD_CLR(fd, set)                    \
-  ((set)->fds[___FD_ELT (fd)] &= ~___FD_MASK (fd))
+  ((set)[___FD_ELT (fd)] &= ~___FD_MASK (fd))
 #define ___FD_ISSET(fd, set)                  \
-  ((set)->fds[___FD_ELT (fd)] & ___FD_MASK (fd))
+  ((set)[___FD_ELT (fd)] & ___FD_MASK (fd))
 
-typedef struct ___poll_fd_set {
-  ___fdbits fds[MAX_POLLFDS / ___FDBITS];
-} ___poll_fd_set;
-
-#endif
-
-#ifdef USE_select
-#define ___FD_ZERO  FD_ZERO
-#define ___FD_ISSET FD_ISSET
-#define ___FD_CLR   FD_CLR
-#define ___FD_SET   FD_SET
 #endif
 
 typedef struct ___device_select_state_struct
@@ -126,19 +123,23 @@ typedef struct ___device_select_state_struct
 
     int devs_next[MAX_CONDVARS];
 
+#ifdef USE_select_or_poll
+
 #ifdef USE_select
     int highest_fd_plus_1;
-    fd_set readfds;
-    fd_set writefds;
-    fd_set exceptfds;
+    ___fdbits *readfds;
+    ___fdbits *writefds;
+    ___fdbits *exceptfds;
 #endif
 
 #ifdef USE_poll
-    struct pollfd pollfds[MAX_POLLFDS];
+    struct pollfd pollfds[MAX_CONDVARS];
     int pollfd_count;
     /* active set bitmaps */
-    ___poll_fd_set readfds;
-    ___poll_fd_set writefds;
+    ___fdbits *readfds;
+    ___fdbits *writefds;
+#endif
+
 #endif
 
 #ifdef USE_MsgWaitForMultipleObjects
@@ -155,6 +156,20 @@ typedef struct ___device_select_state_struct
   } ___device_select_state;
 
 
+#ifdef USE_FDSET_RESIZING
+
+extern void ___fdset_resize_pstate
+   ___P((___processor_state ___ps,
+         int maxfd),
+        ());
+
+extern ___BOOL ___fdset_resize
+   ___P((int fd1,
+         int fd2),
+        ());
+
+#endif
+
 extern void ___device_select_add_relative_timeout
    ___P((___device_select_state *state,
          int i,
@@ -168,12 +183,16 @@ void ___device_select_add_timeout
         ());
 
 
+#define FOR_READING 0
+#define FOR_WRITING 1
+#define FOR_EVENT   2
+
 #ifdef USE_POSIX
 
 extern void ___device_select_add_fd
    ___P((___device_select_state *state,
          int fd,
-         ___BOOL for_writing),
+         int for_op),
         ());
 
 #endif
@@ -197,12 +216,12 @@ ___CAST(___device_vtbl*,(self)->vtbl)->kind(self)
 
     int (*kind) ___P((___device *self),());
 
-#define ___device_select_virt(self,for_writing,i,pass,state) \
-___CAST(___device_vtbl*,(self)->vtbl)->select_virt(self,for_writing,i,pass,state)
+#define ___device_select_virt(self,for_op,i,pass,state) \
+___CAST(___device_vtbl*,(self)->vtbl)->select_virt(self,for_op,i,pass,state)
 
     ___SCMOBJ (*select_virt)
        ___P((___device *self,
-             ___BOOL for_writing,
+             int for_op,
              int i,
              int pass,
              ___device_select_state *state),
@@ -251,9 +270,8 @@ typedef struct ___io_module_struct
 #ifdef USE_WIN32
 
     HANDLE always_signaled;  /* this event is always signaled */
-    HANDLE abort_select;     /* ___device_select exits when this is signaled */
 
-#define ___IO_MODULE_INIT , 0, 0
+#define ___IO_MODULE_INIT , 0
 
 #endif
   } ___io_module;
@@ -289,7 +307,7 @@ extern ___device_group *___global_device_group ___PVOID;
 
 /*---------------------------------------------------------------------------*/
 
-typedef int ___stream_index;
+typedef ___SSIZE_T ___stream_index;
 
 /* Nonblocking pipes */
 
@@ -430,45 +448,6 @@ typedef struct ___device_stream_pump_struct
 
 /*---------------------------------------------------------------------------*/
 
-/* Miscellaneous utility functions. */
-
-#ifdef USE_POSIX
-
-extern pid_t waitpid_no_EINTR
-   ___P((pid_t pid,
-         int *stat_loc,
-         int options),
-        ());
-
-extern ___SSIZE_T read_no_EINTR
-   ___P((int fd,
-         void *buf,
-         ___SIZE_T len),
-        ());
-
-extern int close_no_EINTR
-   ___P((int fd),
-        ());
-
-extern int dup_no_EINTR
-   ___P((int fd),
-        ());
-
-extern int dup2_no_EINTR
-   ___P((int fd,
-         int fd2),
-        ());
-
-extern int set_fd_blocking_mode
-   ___P((int fd,
-         ___BOOL blocking),
-        ());
-
-#endif
-
-
-/*---------------------------------------------------------------------------*/
-
 /* Devices. */
 
 
@@ -511,12 +490,12 @@ typedef struct ___device_stream_vtbl_struct
   {
     ___device_vtbl base;
 
-#define ___device_stream_select_raw_virt(self,for_writing,i,pass,state) \
-___CAST(___device_stream_vtbl*,(self)->base.vtbl)->select_raw_virt(self,for_writing,i,pass,state)
+#define ___device_stream_select_raw_virt(self,for_op,i,pass,state) \
+___CAST(___device_stream_vtbl*,(self)->base.vtbl)->select_raw_virt(self,for_op,i,pass,state)
 
     ___SCMOBJ (*select_raw_virt)
        ___P((___device_stream *self,
-             ___BOOL for_writing,
+             int for_op,
              int i,
              int pass,
              ___device_select_state *state),
@@ -599,7 +578,7 @@ ___CAST(___device_stream_vtbl*,(self)->base.vtbl)->options_set(self,options)
 
 extern ___SCMOBJ ___device_stream_select_virt
    ___P((___device *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
@@ -646,41 +625,16 @@ extern ___SCMOBJ ___device_stream_setup
          int pumps_on),
         ());
 
-
-#if 0
-/* Tty stream device. */
-
-typedef struct ___device_tty_struct
-  {
-    ___device_stream base;
-    tty t;
-  } ___device_tty;
-
-typedef struct ___device_tty_vtbl_struct
-  {
-    ___device_stream_vtbl base;
-  } ___device_tty_vtbl;
-
-extern ___SCMOBJ ___device_tty_open
-   ___P((___device_tty **dev,
-         ___device_group *dgroup,
-         int fd,
-         int direction),
-        ());
-#endif
-
-
-
-
-
-
-
-
 extern ___SCMOBJ ___device_select
    ___P((___device **devs,
          int nb_read_devs,
          int nb_write_devs,
+         int nb_event_devs,
          ___time timeout),
+        ());
+
+extern void ___device_select_abort
+   ___P((___processor_state ___ps),
         ());
 
 extern ___SCMOBJ ___device_force_output
@@ -711,7 +665,7 @@ extern ___SCMOBJ ___os_device_kind
         ());
 
 extern ___SCMOBJ ___os_device_force_output
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ level),
         ());
 
@@ -725,27 +679,27 @@ extern ___SCMOBJ ___os_device_close
 /* Stream device operations. */
 
 extern ___SCMOBJ ___os_device_stream_seek
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ pos,
          ___SCMOBJ whence),
         ());
 
 extern ___SCMOBJ ___os_device_stream_read
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ buffer,
          ___SCMOBJ lo,
          ___SCMOBJ hi),
         ());
 
 extern ___SCMOBJ ___os_device_stream_write
-   ___P((___SCMOBJ dev,
+   ___P((___SCMOBJ dev_condvar,
          ___SCMOBJ buffer,
          ___SCMOBJ lo,
          ___SCMOBJ hi),
         ());
 
 extern ___SCMOBJ ___os_device_stream_width
-   ___P((___SCMOBJ dev),
+   ___P((___SCMOBJ dev_condvar),
         ());
 
 extern ___SCMOBJ ___os_device_stream_default_options
@@ -795,14 +749,20 @@ extern ___SCMOBJ ___os_device_process_status
    ___P((___SCMOBJ dev),
         ());
 
+extern void ___cleanup_child_interrupt_handling ___PVOID;
+
 /*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
 
 /* Opening a TCP client. */
 
 extern ___SCMOBJ ___os_device_tcp_client_open
-   ___P((___SCMOBJ server_addr,
+   ___P((___SCMOBJ local_addr,
+         ___SCMOBJ local_port_num,
+         ___SCMOBJ addr,
          ___SCMOBJ port_num,
-         ___SCMOBJ options),
+         ___SCMOBJ options,
+         ___SCMOBJ tls_context,
+         ___SCMOBJ server_name),
         ());
 
 extern ___SCMOBJ ___os_device_tcp_client_socket_info
@@ -815,18 +775,68 @@ extern ___SCMOBJ ___os_device_tcp_client_socket_info
 /* Opening and reading a TCP server. */
 
 extern ___SCMOBJ ___os_device_tcp_server_open
-   ___P((___SCMOBJ server_addr,
-         ___SCMOBJ port_num,
+   ___P((___SCMOBJ local_addr,
+         ___SCMOBJ local_port_num,
          ___SCMOBJ backlog,
-         ___SCMOBJ options),
+         ___SCMOBJ options,
+         ___SCMOBJ tls_context),
         ());
 
 extern ___SCMOBJ ___os_device_tcp_server_read
-   ___P((___SCMOBJ dev),
+   ___P((___SCMOBJ dev_condvar),
         ());
 
 extern ___SCMOBJ ___os_device_tcp_server_socket_info
    ___P((___SCMOBJ dev),
+        ());
+
+/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+
+/* TLS context. */
+
+extern ___SCMOBJ ___os_make_tls_context
+   ___P((___SCMOBJ min_tls_version,
+         ___SCMOBJ options,
+         ___SCMOBJ certificate_path,
+         ___SCMOBJ private_key_path,
+         ___SCMOBJ dh_params_path,
+         ___SCMOBJ elliptic_curve_name,
+         ___SCMOBJ client_ca_path),
+        ());
+
+/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+
+/* Opening a UDP socket. */
+
+extern ___SCMOBJ ___os_device_udp_open
+   ___P((___SCMOBJ local_addr,
+         ___SCMOBJ local_port_num,
+         ___SCMOBJ options),
+        ());
+
+extern ___SCMOBJ ___os_device_udp_read_subu8vector
+   ___P((___SCMOBJ dev_condvar,
+         ___SCMOBJ buffer,
+         ___SCMOBJ lo,
+         ___SCMOBJ hi),
+        ());
+
+extern ___SCMOBJ ___os_device_udp_write_subu8vector
+   ___P((___SCMOBJ dev_condvar,
+         ___SCMOBJ buffer,
+         ___SCMOBJ lo,
+         ___SCMOBJ hi),
+        ());
+
+extern ___SCMOBJ ___os_device_udp_destination_set
+   ___P((___SCMOBJ dev_condvar,
+         ___SCMOBJ addr,
+         ___SCMOBJ port_num),
+        ());
+
+extern ___SCMOBJ ___os_device_udp_socket_info
+   ___P((___SCMOBJ dev,
+         ___SCMOBJ source),
         ());
 
 /*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
@@ -839,7 +849,7 @@ extern ___SCMOBJ ___os_device_directory_open_path
         ());
 
 extern ___SCMOBJ ___os_device_directory_read
-   ___P((___SCMOBJ dev),
+   ___P((___SCMOBJ dev_condvar),
         ());
 
 /*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
@@ -851,15 +861,23 @@ extern ___SCMOBJ ___os_device_event_queue_open
         ());
 
 extern ___SCMOBJ ___os_device_event_queue_read
-   ___P((___SCMOBJ dev),
+   ___P((___SCMOBJ dev_condvar),
         ());
+
+/* Opening a raw device (file descriptor) */
+
+extern ___SCMOBJ ___os_device_raw_open_from_fd
+   ___P((___SCMOBJ fd,
+         ___SCMOBJ flags),
+        ());
+
 
 /*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
 
 /* Waiting for I/O to become possible on a set of devices. */
 
 extern ___SCMOBJ ___os_condvar_select
-   ___P((___SCMOBJ run_queue,
+   ___P((___SCMOBJ devices,
          ___SCMOBJ timeout),
         ());
 
@@ -880,153 +898,27 @@ extern ___SCMOBJ ___os_port_encode_chars
    ___P((___SCMOBJ port),
         ());
 
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Change file times. */
-
-extern ___SCMOBJ ___os_file_times_set
-   ___P((___SCMOBJ path,
-         ___SCMOBJ modification_time,
-         ___SCMOBJ access_time),
-        ());
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to file information. */
-
-extern ___SCMOBJ ___os_file_info
-   ___P((___SCMOBJ path,
-         ___SCMOBJ chase),
-        ());
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to user information. */
-
-extern ___SCMOBJ ___os_user_info
-   ___P((___SCMOBJ user),
-        ());
-
-extern ___SCMOBJ ___os_user_name ___PVOID;
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to group information. */
-
-extern ___SCMOBJ ___os_group_info
-   ___P((___SCMOBJ group),
-        ());
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to host information. */
-
-extern ___SCMOBJ ___os_address_infos
-   ___P((___SCMOBJ host,
-         ___SCMOBJ serv,
-         ___SCMOBJ flags,
-         ___SCMOBJ family,
-         ___SCMOBJ socktype,
-         ___SCMOBJ protocol),
-        ());
-
-extern ___SCMOBJ ___os_host_info
-   ___P((___SCMOBJ host),
-        ());
-
-extern ___SCMOBJ ___os_host_name ___PVOID;
-
-#ifdef USE_NETWORKING
-
-extern ___SCMOBJ ___SCMOBJ_to_in_addr
-   ___P((___SCMOBJ addr,
-         struct in_addr *ia,
-         int arg_num),
-        ());
-
-extern ___SCMOBJ ___in_addr_to_SCMOBJ
-   ___P((struct in_addr *ia,
-         int arg_num),
-        ());
-
-#ifdef USE_IPV6
-
-extern ___SCMOBJ ___SCMOBJ_to_in6_addr
-   ___P((___SCMOBJ addr,
-         struct in6_addr *ia,
-         int arg_num),
-        ());
-
-extern ___SCMOBJ ___in6_addr_to_SCMOBJ
-   ___P((struct in6_addr *ia,
-         int arg_num),
-        ());
-
-#endif
-
-extern ___SCMOBJ ___SCMOBJ_to_sockaddr
-   ___P((___SCMOBJ addr,
-         ___SCMOBJ port_num,
-         struct sockaddr *sa,
-         int *salen,
-         int arg_num),
-        ());
-
-extern ___SCMOBJ ___sockaddr_to_SCMOBJ
-   ___P((struct sockaddr *sa,
-         int salen,
-         int arg_num),
-        ());
-
-extern ___SCMOBJ ___addr_to_SCMOBJ
-   ___P((void *sa,
-         int salen,
-         int arg_num),
-        ());
-
-#endif
-
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to service information. */
-
-extern ___SCMOBJ ___os_service_info
-   ___P((___SCMOBJ service,
-         ___SCMOBJ protocol),
-        ());
-
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to protocol information. */
-
-extern ___SCMOBJ ___os_protocol_info
-   ___P((___SCMOBJ protocol),
-        ());
-
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to network information. */
-
-extern ___SCMOBJ ___os_network_info
-   ___P((___SCMOBJ network),
-        ());
-
-
-/*   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-
-/* Access to process information. */
-
-extern ___SCMOBJ ___os_getpid ___PVOID;
-extern ___SCMOBJ ___os_getppid ___PVOID;
-
 
 /*---------------------------------------------------------------------------*/
 
 /* I/O module initialization/finalization. */
 
+
+extern ___SCMOBJ ___setup_io_pstate
+   ___P((___processor_state ___ps),
+        ());
+
+extern void ___cleanup_io_pstate
+   ___P((___processor_state ___ps),
+        ());
+
+extern ___SCMOBJ ___setup_io_vmstate
+   ___P((___virtual_machine_state ___vms),
+        ());
+
+extern void ___cleanup_io_vmstate
+   ___P((___virtual_machine_state ___vms),
+        ());
 
 extern ___SCMOBJ ___setup_io_module ___PVOID;
 

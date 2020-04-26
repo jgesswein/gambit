@@ -1,6 +1,6 @@
 /* File: "os.h" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved. */
 
 #ifndef ___OS_H
 #define ___OS_H
@@ -10,9 +10,11 @@
 
 /* Determine subsystems to debug.  */
 
-#define ___DEBUG_not
+#define ___DEBUG_LOG_not
+
+#ifdef ___DEBUG_LOG
 #define ___DEBUG_TTY_not
-#define ___DEBUG_ALLOC_MEM_TRACE_not
+#endif
 
 
 /*---------------------------------------------------------------------------*/
@@ -31,10 +33,6 @@
 
 /* Determine if we are using POSIX or WIN32.  */
 
-#ifdef ___OS_WIN32
-#define USE_WIN32
-#endif
-
 #ifdef HAVE_WAITPID
 
 /*
@@ -43,21 +41,37 @@
 
 #define USE_POSIX
 
-#endif
+#else
 
-#ifndef USE_WIN32
-#ifndef USE_POSIX
+#ifdef ___OS_WIN32
 
 /*
- * If this is not a WIN32 or POSIX system, the OS is generic.
+ * ___OS_WIN32 is set by gambit.h when the C compiler defines _WIN32,
+ * a good indication that this is a WIN32 system.
+ */
+
+#define USE_WIN32
+
+#else
+
+/*
+ * If this is not a POSIX or WIN32 system, the OS is generic.
  */
 
 #define USE_GENERIC_OS
 
 #endif
+
 #endif
 
 /*---------------------------------------------------------------------------*/
+
+/*
+ * Build with support for long paths.
+ */
+
+#define ___SUPPORT_LONG_PATH
+
 
 /*
  * We assume that the following basic features are available
@@ -74,6 +88,17 @@
  * The following basic features are used if they are available.
  */
 
+#ifdef HAVE_ENVIRON
+#ifndef USE_WIN32
+/* Windows doesn't propagate environ to subprocesses, so avoid it there */
+#define USE_environ
+#endif
+#else
+#ifdef HAVE__NSGETENVIRON
+#define USE_environ
+#endif
+#endif
+
 #ifdef HAVE_GETENV
 #define USE_getenv
 #endif
@@ -86,22 +111,106 @@
 #define USE_unsetenv
 #endif
 
+#ifndef USE_WIN32
+
+/* avoid using these functions in favour of the Windows equivalents */
+
+#ifdef HAVE_OPEN
+#define USE_open
+#ifdef ___SUPPORT_LONG_PATH
+#ifdef HAVE_OPENAT
+#define USE_openat
+#endif
+#endif
+#endif
+
+#ifdef HAVE_OPENDIR
+#define USE_opendir
+#ifdef USE_openat
+#ifdef HAVE_FDOPENDIR
+#define USE_fdopendir
+#endif
+#endif
+#endif
+
+#ifdef HAVE_REMOVE
+#define USE_remove_dir
+#define USE_remove_file
+#endif
+
+#ifdef HAVE_RENAME
+#define USE_rename
+#ifdef USE_openat
+#ifdef HAVE_RENAMEAT
+#define USE_renameat
+#ifdef HAVE_RENAMEAT2
+#define USE_renameat2
+#ifdef HAVE_SYS_SYSCALL_H
+#ifdef HAVE_LINUX_FS_H
+#define USE_renameat2_syscall
+#endif
+#endif
+#else
+#ifdef HAVE_RENAMEATX_NP
+#define USE_renameatx_np
+#endif
+#endif
+#endif
+#endif
+#endif
+
+#ifdef HAVE_MKDIR
+#define USE_mkdir
+#ifdef USE_openat
+#ifdef HAVE_MKDIRAT
+#define USE_mkdirat
+#endif
+#endif
+#endif
+
+#if defined(HAVE_STAT64) && defined(HAVE_STRUCT_STAT64) && !(defined(__MACOSX__) || (defined(__APPLE__) && defined(__MACH__)))
+#define USE_stat
+#define ___struct_stat struct stat64
+#define ___stat stat64
+#define ___lstat lstat64
+#define ___fstat fstat64
+#else
+#ifdef HAVE_STAT
+#define USE_stat
+#define ___struct_stat struct stat
+#define ___stat stat
+#define ___lstat lstat
+#define ___fstat fstat
+#ifdef USE_openat
+#ifdef HAVE_FSTATAT
+#define USE_fstatat
+#endif
+#endif
+#endif
+#endif
+
+#endif
+
+#ifdef HAVE_GETCWD
+#define USE_getcwd
+#endif
+
+#ifdef HAVE_SNPRINTF
+#define USE_snprintf
+#endif
+
+#ifdef HAVE_TERMIOS_H
+#define USE_tcgetsetattr
+#endif
+
 
 /* Operating-system specific features we require */
 
 #ifdef USE_POSIX
 
-#define USE_open
+#define USE_FDSET_RESIZING
 
 /* Select features based on availability */
-
-#ifdef HAVE_ENVIRON
-#define USE_environ
-#else
-#ifdef HAVE__NSGETENVIRON
-#define USE_environ
-#endif
-#endif
 
 #ifdef HAVE_PIPE
 #define USE_pipe
@@ -141,22 +250,20 @@
 
 #ifdef HAVE_LINK
 #define USE_link
+#ifdef USE_openat
+#ifdef HAVE_LINKAT
+#define USE_linkat
 #endif
-
-#ifdef HAVE_MKDIR
-#define USE_mkdir
+#endif
 #endif
 
 #ifdef HAVE_MKFIFO
 #define USE_mkfifo
+#ifdef USE_openat
+#ifdef HAVE_MKFIFOAT
+#define USE_mkfifoat
 #endif
-
-#ifdef HAVE_OPENDIR
-#define USE_opendir
 #endif
-
-#ifdef HAVE_RENAME
-#define USE_rename
 #endif
 
 #ifdef HAVE_RMDIR
@@ -168,39 +275,17 @@
 #define USE_NETWORKING
 #endif
 
-#if defined(HAVE_STAT64) && defined(HAVE_STRUCT_STAT64) && !(defined(__MACOSX__) || (defined(__APPLE__) && defined(__MACH__)))
-#define USE_stat
-#define ___struct_stat struct stat64
-#define ___stat stat64
-#define ___lstat lstat64
-#define ___fstat fstat64
-#else
-#ifdef HAVE_STAT
-#define USE_stat
-#define ___struct_stat struct stat
-#define ___stat stat
-#define ___lstat lstat
-#define ___fstat fstat
-#endif
-#endif
-
-#define USE_NONBLOCKING_FILE_IO
-
-#ifdef HAVE_TARGETCONDITIONALS_H
-#include <TargetConditionals.h>
-#ifdef TARGET_OS_IPHONE
-#if TARGET_OS_IPHONE == 1
-#undef USE_NONBLOCKING_FILE_IO
-#endif
-#endif
-#endif
-
 #ifdef HAVE_STRERROR
 #define USE_strerror
 #endif
 
 #ifdef HAVE_SYMLINK
 #define USE_symlink
+#ifdef USE_openat
+#ifdef HAVE_SYMLINKAT
+#define USE_symlinkat
+#endif
+#endif
 #endif
 
 #ifdef HAVE_SYSCONF
@@ -208,19 +293,38 @@
 #endif
 
 #ifdef HAVE_SYSCTL
+#ifndef __linux__
 #define USE_sysctl
+#endif
+#endif
+
+#ifdef HAVE_SYSCTLBYNAME
+#ifndef __linux__
+#define USE_sysctlbyname
+#endif
 #endif
 
 #ifdef HAVE_SYSLOG
+/*
+ * Also check for the presence of a working syslog.h, which
+ * causes problems with Xcode 9.2 + gcc-7.
+ */
+#ifdef HAVE_SYSLOG_H
 #define USE_syslog
 #endif
+#endif
 
-#ifdef HAVE_TCGETSETATTR
-#define USE_tcgetsetattr
+#ifdef HAVE_BACKTRACE_SYMBOLS_FD
+#define USE_backtrace_symbols_fd
 #endif
 
 #ifdef HAVE_UNLINK
 #define USE_unlink
+#ifdef USE_openat
+#ifdef HAVE_UNLINKAT
+#define USE_unlinkat
+#endif
+#endif
 #endif
 
 #ifdef HAVE_WAITPID
@@ -285,6 +389,7 @@
 #define USE_GetFileAttributesEx
 #define USE_GetLastError
 #define USE_MoveFile
+#define USE_MoveFileEx
 #define USE_RemoveDirectory
 #define USE_SetCurrentDirectory
 #define USE_SetEnvironmentVariable
@@ -298,6 +403,7 @@
 #define HAVE_CREATETHREAD 1
 #define HAVE_GETPROCESSTIMES 1
 #define HAVE_GETSYSTEMTIMEASFILETIME 1
+#define HAVE_QUERYPERFORMANCECOUNTER 1
 #define HAVE_SETFILETIME 1
 #define HAVE_TIMEBEGINPERIOD 1
 #define HAVE_GETSYSTEMINFO 1
@@ -342,12 +448,39 @@
 #endif
 
 
+/* Make exceptions for iOS which doesn't support some features it claims to. */
+
+#define USE_NONBLOCKING_FILE_IO
+
+#ifdef HAVE_TARGETCONDITIONALS_H
+#include <TargetConditionals.h>
+#ifdef TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE == 1
+#undef USE_NONBLOCKING_FILE_IO
+#undef HAVE_CLOCK_GETTIME
+#endif
+#endif
+#endif
+
+/* clock_gettime only available since MacOS 10.12 */
+
+#ifdef HAVE_AVAILABILITYMACROS_H
+#include <AvailabilityMacros.h>
+#if defined(__APPLE__) && MAC_OS_X_VERSION_MIN_REQUIRED < 101200
+#undef HAVE_CLOCK_GETTIME
+#endif
+#endif
+
+
 /*---------------------------------------------------------------------------*/
 
 /* Determine which function for getting real time is most precise.  */
 
+#ifdef HAVE_EMSCRIPTEN_GET_NOW
+#define USE_emscripten_get_now
+#else
 #ifdef HAVE_CLOCK_GETTIME
-#define USE_clock_gettime
+#define USE_clock_gettime_realtime
 #else
 #ifdef HAVE_GETCLOCK
 #define USE_getclock
@@ -366,6 +499,22 @@
 #endif
 #endif
 #endif
+#endif
+#endif
+#endif
+#endif
+
+
+/* Determine which function for getting monotonic time is most precise.  */
+
+#ifdef HAVE_MACH_ABSOLUTE_TIME
+#define USE_mach_absolute_time
+#else
+#ifdef HAVE_QUERYPERFORMANCECOUNTER
+#define USE_QueryPerformanceCounter
+#else
+#ifdef HAVE_CLOCK_GETTIME
+#define USE_clock_gettime_monotonic
 #endif
 #endif
 #endif
@@ -434,8 +583,11 @@
 
 /* Determine which signal interface to use.  */
 
+#ifndef USE_WIN32
+
 #ifdef HAVE_SIGACTION
 #define USE_sigaction
+#define USE_SIGNALS
 #ifndef HAVE_SIGEMPTYSET
 #undef USE_sigaction
 #endif
@@ -450,7 +602,10 @@
 #ifndef USE_sigaction
 #ifdef HAVE_SIGNAL
 #define USE_signal
+#define USE_SIGNALS
 #endif
+#endif
+
 #endif
 
 
@@ -485,7 +640,25 @@
 #endif
 
 
+/* Determine how to get the executable's path.  */
+
+#ifdef HAVE__NSGETEXECUTABLEPATH
+#define USE__NSGetExecutablePath
+#else
+#ifdef HAVE_READLINK
+#define USE_readlink
+#ifdef USE_openat
+#ifdef HAVE_READLINKAT
+#define USE_readlinkat
+#endif
+#endif
+#endif
+#endif
+
+
 /* Determine which function to use for miscellaneous networking features.  */
+
+#ifdef USE_NETWORKING
 
 #ifdef HAVE_GETHOSTNAME
 #define USE_gethostname
@@ -535,6 +708,8 @@
 #define USE_getnetbyname
 #endif
 
+#endif
+
 
 /* Determine which select interface should be used.  */
 
@@ -558,6 +733,24 @@
 #define USE_select
 #endif
 #endif
+#endif
+
+#ifdef USE_select
+#define USE_select_or_poll
+#else
+#ifdef USE_poll
+#define USE_select_or_poll
+#endif
+#endif
+
+#ifdef ___OS_WIN32
+#undef USE_ASYNC_DEVICE_SELECT_ABORT
+#define USE_ASYNC_DEVICE_SELECT_ABORT
+#endif
+
+#ifndef ___SINGLE_THREADED_VMS
+#undef USE_ASYNC_DEVICE_SELECT_ABORT
+#define USE_ASYNC_DEVICE_SELECT_ABORT
 #endif
 
 
@@ -722,11 +915,23 @@ ___END_C_LINKAGE
 #define INCLUDE_dirent_h
 #endif
 
+#ifdef USE_snprintf
+#undef INCLUDE_stdio_h
+#define INCLUDE_stdio_h
+#undef INCLUDE_float_h
+#define INCLUDE_float_h
+#endif
+
 #ifdef USE_stat
 #undef INCLUDE_sys_types_h
 #define INCLUDE_sys_types_h
 #undef INCLUDE_sys_stat_h
 #define INCLUDE_sys_stat_h
+#undef INCLUDE_unistd_h
+#define INCLUDE_unistd_h
+#endif
+
+#ifdef USE_getcwd
 #undef INCLUDE_unistd_h
 #define INCLUDE_unistd_h
 #endif
@@ -807,9 +1012,24 @@ ___END_C_LINKAGE
 #define INCLUDE_sys_times_h
 #endif
 
-#ifdef USE_clock_gettime
+#ifdef USE_emscripten_get_now
+#undef INCLUDE_emscripten_h
+#define INCLUDE_emscripten_h
+#endif
+
+#ifdef USE_clock_gettime_realtime
 #undef INCLUDE_time_h
 #define INCLUDE_time_h
+#endif
+
+#ifdef USE_clock_gettime_monotonic
+#undef INCLUDE_time_h
+#define INCLUDE_time_h
+#endif
+
+#ifdef USE_mach_absolute_time
+#undef INCLUDE_mach_mach_time_h
+#define INCLUDE_mach_mach_time_h
 #endif
 
 #ifdef USE_getclock
@@ -844,6 +1064,16 @@ ___END_C_LINKAGE
 #ifdef USE_NSLinkModule
 #undef INCLUDE_mach_o_dyld_h
 #define INCLUDE_mach_o_dyld_h
+#endif
+
+#ifdef USE__NSGetExecutablePath
+#undef INCLUDE_mach_o_dyld_h
+#define INCLUDE_mach_o_dyld_h
+#endif
+
+#ifdef USE_readlink
+#undef INCLUDE_unistd_h
+#define INCLUDE_unistd_h
 #endif
 
 #ifdef USE_signal
@@ -971,6 +1201,19 @@ ___END_C_LINKAGE
 #define INCLUDE_netdb_h
 #endif
 
+#ifdef USE_OPENSSL
+#undef INCLUDE_openssl_ssl_h
+#define INCLUDE_openssl_ssl_h
+#undef INCLUDE_openssl_dh_h
+#define INCLUDE_openssl_dh_h
+#undef INCLUDE_openssl_ecdh_h
+#define INCLUDE_openssl_ecdh_h
+#undef INCLUDE_openssl_rand_h
+#define INCLUDE_openssl_rand_h
+#undef INCLUDE_openssl_err_h
+#define INCLUDE_openssl_err_h
+#endif
+
 #ifdef USE_getnetbyname
 #undef INCLUDE_sys_socket_h
 #define INCLUDE_sys_socket_h
@@ -1058,9 +1301,21 @@ ___END_C_LINKAGE
 #define INCLUDE_sys_sysctl_h
 #endif
 
+#ifdef USE_sysctlbyname
+#undef INCLUDE_sys_types_h
+#define INCLUDE_sys_types_h
+#undef INCLUDE_sys_sysctl_h
+#define INCLUDE_sys_sysctl_h
+#endif
+
 #ifdef USE_syslog
 #undef INCLUDE_syslog_h
 #define INCLUDE_syslog_h
+#endif
+
+#ifdef USE_backtrace_symbols_fd
+#undef INCLUDE_execinfo_h
+#define INCLUDE_execinfo_h
 #endif
 
 #ifdef USE_tcgetsetattr
@@ -1088,6 +1343,13 @@ ___END_C_LINKAGE
 #ifdef USE_fcntl
 #undef INCLUDE_fcntl_h
 #define INCLUDE_fcntl_h
+#endif
+
+#ifdef USE_renameat2_syscall
+#undef INCLUDE_sys_syscall_h
+#define INCLUDE_sys_syscall_h
+#undef INCLUDE_linux_fs_h
+#define INCLUDE_linux_fs_h
 #endif
 
 
@@ -1179,6 +1441,12 @@ ___END_C_LINKAGE
 #endif
 #endif
 
+#ifdef INCLUDE_mach_mach_time_h
+#ifdef HAVE_MACH_MACH_TIME_H
+#include <mach/mach_time.h>
+#endif
+#endif
+
 #ifdef INCLUDE_sys_resource_h
 #ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
@@ -1208,9 +1476,27 @@ ___END_C_LINKAGE
 #endif
 #endif
 
+#ifdef INCLUDE_sys_syscall_h
+#ifdef HAVE_SYS_SYSCALL_H
+#include <sys/syscall.h>
+#endif
+#endif
+
+#ifdef INCLUDE_linux_fs_h
+#ifdef HAVE_LINUX_FS_H
+#include <linux/fs.h>
+#endif
+#endif
+
 #ifdef INCLUDE_syslog_h
 #ifdef HAVE_SYSLOG_H
 #include <syslog.h>
+#endif
+#endif
+
+#ifdef INCLUDE_execinfo_h
+#ifdef HAVE_EXECINFO_H
+#include <execinfo.h>
 #endif
 #endif
 
@@ -1222,7 +1508,10 @@ ___END_C_LINKAGE
 
 #ifdef INCLUDE_signal_h
 #ifdef HAVE_SIGNAL_H
+/* Only include signal.h if gambit.h hasn't already done so */
+#ifndef ___USE_SIGSET_T
 #include <signal.h>
+#endif
 #endif
 #endif
 
@@ -1249,9 +1538,23 @@ extern int h_errno;
 #endif
 #endif
 
+#ifndef NETDB_INTERNAL
+#define NETDB_INTERNAL -1
+#endif
+
+#ifndef NETDB_SUCCESS
+#define NETDB_SUCCESS 0
+#endif
+
 #ifdef INCLUDE_grp_h
 #ifdef HAVE_GRP_H
 #include <grp.h>
+#endif
+#endif
+
+#ifdef INCLUDE_emscripten_h
+#ifdef HAVE_EMSCRIPTEN_H
+#include "emscripten.h"
 #endif
 #endif
 
@@ -1508,6 +1811,12 @@ typedef unsigned int fpu_control_t __attribute__ ((__mode__ (__HI__)));
 #endif
 #endif
 
+#ifdef INCLUDE_stdio_h
+#ifdef HAVE_STDIO_H
+#include <stdio.h>
+#endif
+#endif
+
 #ifdef INCLUDE_stdint_h
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
@@ -1550,6 +1859,32 @@ typedef unsigned int fpu_control_t __attribute__ ((__mode__ (__HI__)));
 #endif
 #endif
 
+#ifdef INCLUDE_openssl_ssl_h
+#include <openssl/ssl.h>
+#endif
+
+#ifdef INCLUDE_openssl_dh_h
+#ifndef OPENSSL_NO_DH
+#include <openssl/dh.h>
+#endif
+#endif
+
+#ifdef INCLUDE_openssl_ecdh_h
+#if OPENSSL_VERSION_NUMBER >= 0x0090800fL
+#ifndef OPENSSL_NO_ECDH
+#include <openssl/ecdh.h>
+#endif
+#endif
+#endif
+
+#ifdef INCLUDE_openssl_rand_h
+#include <openssl/rand.h>
+#endif
+
+#ifdef INCLUDE_openssl_err_h
+#include <openssl/err.h>
+#endif
+
 /*
  * Use the process-time timer unless only the real-time timer is
  * available (e.g. DJGPP).  Note that on some systems (e.g. MkLinux)
@@ -1577,6 +1912,63 @@ typedef unsigned int fpu_control_t __attribute__ ((__mode__ (__HI__)));
 
 /*---------------------------------------------------------------------------*/
 
+#ifdef USE_NETWORKING
+
+/* Socket utilities */
+
+#ifdef USE_POSIX
+#define SOCKET_TYPE int
+#define SOCKET_CALL_ERROR(s) ((s) < 0)
+#define SOCKET_CALL_ERROR2(s) ((s) < 0)
+#define CONNECT_IN_PROGRESS (errno == EINPROGRESS)
+#define CONNECT_WOULD_BLOCK (errno == EAGAIN)
+#define NOT_CONNECTED(e) ((e) == ___FIX(___ERRNO_ERR(ENOTCONN)))
+#define CLOSE_SOCKET(s) ___close_no_EINTR (s)
+#define ERR_CODE_FROM_SOCKET_CALL err_code_from_errno ()
+#define IOCTL_SOCKET(s,cmd,argp) ioctl (s,cmd,argp)
+#define SOCKET_LEN_TYPE socklen_t
+#endif
+
+#ifdef USE_WIN32
+#define SOCKET_TYPE SOCKET
+#define SOCKET_CALL_ERROR(s) ((s) == SOCKET_ERROR)
+#define SOCKET_CALL_ERROR2(s) ((s) == INVALID_SOCKET)
+#define CONNECT_IN_PROGRESS ((WSAGetLastError () == WSAEALREADY) || \
+(WSAGetLastError () == WSAEISCONN))
+#define CONNECT_WOULD_BLOCK ((WSAGetLastError () == WSAEWOULDBLOCK) || \
+(WSAGetLastError () == WSAEINVAL))
+#define NOT_CONNECTED(e) ((e) == ___FIX(___WIN32_ERR(WSAENOTCONN)))
+#define CLOSE_SOCKET(s) closesocket (s)
+#define ERR_CODE_FROM_SOCKET_CALL err_code_from_WSAGetLastError ()
+#define IOCTL_SOCKET(s,cmd,argp) ioctlsocket (s,cmd,argp)
+#define SOCKET_LEN_TYPE int
+#endif
+
+#ifdef SHUT_RD
+#define SHUTDOWN_RD SHUT_RD
+#else
+#ifdef SD_RECEIVE
+#define SHUTDOWN_RD SD_RECEIVE
+#else
+#define SHUTDOWN_RD 0
+#endif
+#endif
+
+#ifdef SHUT_WR
+#define SHUTDOWN_WR SHUT_WR
+#else
+#ifdef SD_SEND
+#define SHUTDOWN_WR SD_SEND
+#else
+#define SHUTDOWN_WR 1
+#endif
+#endif
+
+#endif
+
+
+/*---------------------------------------------------------------------------*/
+
 #define ___CHAR_TYPE(ce) \
 ce(___ISO_8859_1,char,___UCS_2,___UCS_4,___WCHAR,char)
 
@@ -1590,64 +1982,6 @@ ce(___CHAR_ENCODING_ISO_8859_1, \
    ___CHAR_ENCODING_UCS_4, \
    ___CHAR_ENCODING_WCHAR, \
    ___CHAR_ENCODING_NATIVE)
-
-
-extern ___SCMOBJ ___setup_os_interrupt_handling ___PVOID;
-
-extern void ___cleanup_os_interrupt_handling ___PVOID;
-
-extern void ___disable_os_interrupts ___PVOID;
-
-extern void ___enable_os_interrupts ___PVOID;
-
-
-/*---------------------------------------------------------------------------*/
-
-/* Processor information. */
-
-extern int ___processor_count ___PVOID;
-
-extern int ___processor_cache_size
-   ___P((___BOOL instruction_cache,
-         int level),
-        ());
-
-
-/* Virtual memory statistics. */
-
-extern void ___vm_stats
-   ___P((___SIZE_TS *minflt,
-         ___SIZE_TS *majflt),
-        ());
-
-
-/* Formatting of source code position. */
-
-extern char *___format_filepos
-   ___P((char *path,
-         ___SIZE_TS filepos,
-         ___BOOL pinpoint),
-        ());
-
-
-/* System type information. */
-
-extern char **___os_system_type ___PVOID;
-extern char *___os_system_type_string ___PVOID;
-extern char *___os_configure_command_string ___PVOID;
-
-
-/* C compilation environment information. */
-
-extern char *___os_obj_extension_string ___PVOID;
-extern char *___os_exe_extension_string ___PVOID;
-extern char *___os_bat_extension_string ___PVOID;
-
-
-/* OS initialization/finalization. */
-
-extern ___SCMOBJ ___setup_os ___PVOID;
-extern void ___cleanup_os ___PVOID;
 
 
 /* Utilities for machine encoding of characters. */

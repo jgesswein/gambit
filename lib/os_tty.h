@@ -1,6 +1,6 @@
 /* File: "os_tty.h" */
 
-/* Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 #ifndef ___OS_TTY_H
 #define ___OS_TTY_H
@@ -60,21 +60,29 @@ typedef int tty_text_attrs;
 #define TEXT_STYLE_UNDERLINE 2
 #define TEXT_STYLE_REVERSE   4
 
-#define TEXT_COLOR_BLACK   0
-#define TEXT_COLOR_RED     1
-#define TEXT_COLOR_GREEN   2
-#define TEXT_COLOR_YELLOW  3
-#define TEXT_COLOR_BLUE    4
-#define TEXT_COLOR_MAGENTA 5
-#define TEXT_COLOR_CYAN    6
-#define TEXT_COLOR_WHITE   7
-#define DEFAULT_TEXT_COLOR 8
+#define TEXT_COLOR_BLACK          0
+#define TEXT_COLOR_RED            1
+#define TEXT_COLOR_GREEN          2
+#define TEXT_COLOR_YELLOW         3
+#define TEXT_COLOR_BLUE           4
+#define TEXT_COLOR_MAGENTA        5
+#define TEXT_COLOR_CYAN           6
+#define TEXT_COLOR_WHITE          7
+#define TEXT_COLOR_BRIGHT_BLACK   8
+#define TEXT_COLOR_BRIGHT_RED     9
+#define TEXT_COLOR_BRIGHT_GREEN   10
+#define TEXT_COLOR_BRIGHT_YELLOW  11
+#define TEXT_COLOR_BRIGHT_BLUE    12
+#define TEXT_COLOR_BRIGHT_MAGENTA 13
+#define TEXT_COLOR_BRIGHT_CYAN    14
+#define TEXT_COLOR_BRIGHT_WHITE   15
+#define DEFAULT_TEXT_COLOR        256
 
-#define GET_STYLE(x)(((x)>>8)&3)
-#define GET_FOREGROUND_COLOR(x)((x)&15)
-#define GET_BACKGROUND_COLOR(x)(((x)>>4)&15)
+#define GET_STYLE(x)(((x)>>18)&3)
+#define GET_FOREGROUND_COLOR(x)((x)&511)
+#define GET_BACKGROUND_COLOR(x)(((x)>>9)&511)
 
-#define MAKE_TEXT_ATTRS(s,f,b)(((s)<<8)+(f)+((b)<<4))
+#define MAKE_TEXT_ATTRS(s,f,b)(((s)<<18)+(f)+((b)<<9))
 
 #define INITIAL_TEXT_ATTRS \
 MAKE_TEXT_ATTRS(TEXT_STYLE_NORMAL,DEFAULT_TEXT_COLOR,DEFAULT_TEXT_COLOR)
@@ -92,6 +100,7 @@ MAKE_TEXT_ATTRS(TEXT_STYLE_NORMAL,DEFAULT_TEXT_COLOR,DEFAULT_TEXT_COLOR)
 
 
 #define LINEEDITOR_EV_NONE            0
+#define LINEEDITOR_EV_EOF             -1
 #define LINEEDITOR_EV_KEY             1
 #define LINEEDITOR_EV_RETURN          2
 #define LINEEDITOR_EV_BACK            3
@@ -289,6 +298,8 @@ typedef struct ___device_tty_struct
     ___BOOL output_raw;           /* write bytes directly to device  */
     int speed;                    /* baud rate                       */
 
+#define TERMINAL_NB_COLS_UNLIMITED (1U<<17) /* fake unlimited width */
+
 #ifdef USE_LINEEDITOR
 
     /* for terminal emulation */
@@ -298,6 +309,7 @@ typedef struct ___device_tty_struct
     int terminal_nb_cols;  /* size of terminal (number of columns)    */
     int terminal_nb_rows;  /* size of terminal (number of rows)       */
     int terminal_size;     /* size of terminal (number of characters) */
+
     ___BOOL has_auto_left_margin;
     ___BOOL has_auto_right_margin;
     ___BOOL has_eat_newline_glitch;
@@ -381,11 +393,15 @@ typedef struct ___device_tty_struct
 #endif
 
 #ifdef USE_POSIX
-
     int fd;
-    struct termios initial_termios;
-    int initial_flags;
+#endif
 
+#ifdef USE_tcgetsetattr
+    struct termios initial_termios;
+#endif
+
+#ifdef USE_fcntl
+    int initial_flags;
 #endif
 
 #ifdef USE_WIN32
@@ -484,22 +500,13 @@ extern ___SCMOBJ ___os_device_tty_mode_set
          ___SCMOBJ speed),
         ());
 
-extern ___SCMOBJ ___os_device_tty_input_set
-   ___P((___SCMOBJ dev,
-         ___SCMOBJ input),
-        ());
+extern ___SCMOBJ ___os_device_tty_mode_reset ___PVOID;
 
 
 /*---------------------------------------------------------------------------*/
 
 
-#ifdef USE_POSIX
 #define TERMINAL_EMULATION_USES_CURSES
-#endif
-
-#ifdef USE_WIN32
-#define TERMINAL_EMULATION_USES_CURSES
-#endif
 
 
 struct ___curses_struct
@@ -549,10 +556,6 @@ extern ___tty_module ___tty_mod;
 extern ___SCMOBJ ___setup_user_interrupt_handling ___PVOID;
 
 extern void ___cleanup_user_interrupt_handling ___PVOID;
-
-extern void ___disable_user_interrupts ___PVOID;
-
-extern void ___enable_user_interrupts ___PVOID;
 
 
 /*---------------------------------------------------------------------------*/

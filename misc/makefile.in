@@ -1,6 +1,6 @@
-# makefile for Gambit-C miscellanea.
+# makefile for Gambit miscellanea.
 
-# Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+# Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 herefromroot = misc
 rootfromhere = ..
@@ -25,18 +25,20 @@ FLAGS_OBJ = @FLAGS_OBJ_MF@
 FLAGS_DYN = @FLAGS_DYN_MF@
 FLAGS_LIB = @FLAGS_LIB_MF@
 FLAGS_EXE = @FLAGS_EXE_MF@
+FLAGS_OPT = @FLAGS_OPT_MF@
+FLAGS_OPT_RTS = @FLAGS_OPT_RTS_MF@
 DEFS = @DEFS@
 LIBS = @LIBS@
 
-GAMBCLIB_DEFS = @GAMBCLIB_DEFS_MF@
+GAMBITLIB_DEFS = @GAMBITLIB_DEFS_MF@
 LIB_PREFIX = @LIB_PREFIX@
 LIB_VERSION_SUFFIX = @LIB_VERSION_SUFFIX@
 LIB_MAJOR_VERSION_SUFFIX = @LIB_MAJOR_VERSION_SUFFIX@
 
 LIB_EXTENSION = @LIB_EXTENSION@
-GAMBCLIB = @GAMBCLIB@
-GAMBCGSCLIB = @GAMBCGSCLIB@
-GAMBCGSILIB = @GAMBCGSILIB@
+GAMBITLIB = @GAMBITLIB@
+GAMBITGSCLIB = @GAMBITGSCLIB@
+GAMBITGSILIB = @GAMBITGSILIB@
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL_DATA@
 INSTALL_LIB = @INSTALL_LIB@
@@ -68,8 +70,9 @@ mandir = @mandir@
 
 .SUFFIXES:
 
-RCFILES = makefile.in README bench.tgz simple-make-project.tgz \
+RCFILES = makefile.in README simple-make-project.tgz \
 openwatcom.bat vcexpress.bat vctoolkit.bat vc2008.bat vstudio.zip \
+vstudio.bat vc2012.bat configure-vstudio.js vswsl.bat \
 proj_msc.zip conf_msc conf_msc.sed conf_mpp.sed \
 proj_wat.zip conf_wat conf_wat.sed conf_wpp.sed conf_win.sed \
 proj_bor.zip conf_bor conf_bor.sed conf_bpp.sed \
@@ -78,9 +81,9 @@ conf_lcc conf_lcc.sed \
 proj_cw.hqx \
 gambit.el \
 changev changev1 \
-set-regs \
+change-gvm-regs \
 publish-release \
-build-gambit-iOS build-gambit-android \
+build-gambit-iOS build-gambit-android build-gambit-emscripten \
 bench-gccs install-gnu-gcc checkout-latest-good-commit
 
 GENDISTFILES =
@@ -102,73 +105,73 @@ bootstrap-post:
 install-pre:
 
 install-post: all
-	c_emacsdir=$(DESTDIR)$(prefix)/share/emacs/site-lisp; \
-	i_emacsdir=$(DESTDIR)$(emacsdir); \
-	t_emacsdir=$$i_emacsdir; \
-	$(srcdirpfx)$(rootfromhere)/mkidirs $$i_emacsdir; \
+	c_emacsdir="$(DESTDIR)$(prefix)/share/emacs/site-lisp"; \
+	i_emacsdir="$(DESTDIR)$(emacsdir)"; \
+	t_emacsdir="$$i_emacsdir"; \
+	$(srcdirpfx)$(rootfromhere)/mkidirs "$$i_emacsdir"; \
 	if test "@ENABLE_SYMLINKS@" = "yes"; then \
-	  $(srcdirpfx)$(rootfromhere)/mkidirs $$c_emacsdir; \
-	  t_emacsdir=$$c_emacsdir; \
+	  $(srcdirpfx)$(rootfromhere)/mkidirs "$$c_emacsdir"; \
+	  t_emacsdir="$$c_emacsdir"; \
 	fi; \
 	for file in $(INSTFILES_EMACS); do \
-	  $(INSTALL_DATA) $(srcdirpfx)$$file $$t_emacsdir/$$file; \
+	  $(INSTALL_DATA) "$(srcdirpfx)$$file" "$$t_emacsdir/$$file"; \
 	done; \
 	if test "$$t_emacsdir" != "$$i_emacsdir"; then \
 	  r_emacsdir=`$(rootfromhere)/relpath "$$t_emacsdir" "$$i_emacsdir" @ENABLE_MULTIPLE_VERSIONS@`; \
 	  for file in $(INSTFILES_EMACS); do \
-	    (cd $$i_emacsdir && $(LN_S) $$r_emacsdir$$file $$file); \
+	    (cd "$$i_emacsdir" && $(LN_S) "$$r_emacsdir$$file" "$$file"); \
 	  done; \
 	fi
 
 uninstall-pre:
 
 uninstall-post:
-	c_emacsdir=$(DESTDIR)$(prefix)/share/emacs/site-lisp; \
-	i_emacsdir=$(DESTDIR)$(emacsdir); \
-	t_emacsdir=$$i_emacsdir; \
+	c_emacsdir="$(DESTDIR)$(prefix)/share/emacs/site-lisp"; \
+	i_emacsdir="$(DESTDIR)$(emacsdir)"; \
+	t_emacsdir="$$i_emacsdir"; \
 	if test "@ENABLE_SYMLINKS@" = "yes"; then \
-	  t_emacsdir=$$c_emacsdir; \
+	  t_emacsdir="$$c_emacsdir"; \
 	fi; \
 	for file in $(INSTFILES_EMACS); do \
-	  rm -f $$t_emacsdir/$$file; \
+	  rm -f "$$t_emacsdir/$$file"; \
 	done; \
 	if test "$$t_emacsdir" != "$$i_emacsdir"; then \
 	  for file in $(INSTFILES_EMACS); do \
-	    rm -f $$i_emacsdir/$$file; \
+	    rm -f "$$i_emacsdir/$$file"; \
 	  done; \
 	fi; \
-	rmdir $$t_emacsdir 2> /dev/null; \
+	rmdir "$$t_emacsdir" 2> /dev/null; \
 	if test "$$t_emacsdir" != "$$i_emacsdir"; then \
-	  rmdir $$i_emacsdir 2> /dev/null; \
+	  rmdir "$$i_emacsdir" 2> /dev/null; \
 	fi
 
 select-gen-for-commit-pre:
 
-select-gen-for-commit-post:
+select-gen-for-commit-post select-gen-for-commit-post-nonrec:
 
 deselect-gen-for-commit-pre:
 
-deselect-gen-for-commit-post:
+deselect-gen-for-commit-post deselect-gen-for-commit-post-nonrec:
 
 mostlyclean-pre:
 
-mostlyclean-post:
+mostlyclean-post mostlyclean-post-nonrec:
 
 clean-pre: mostlyclean-pre
 
-clean-post: mostlyclean-post
+clean-post clean-post-nonrec: mostlyclean-post-nonrec
 
 distclean-pre: clean-pre
 
-distclean-post: clean-post
+distclean-post distclean-post-nonrec: clean-post-nonrec
 
 bootclean-pre: distclean-pre
 
-bootclean-post: distclean-post
+bootclean-post bootclean-post-nonrec: distclean-post-nonrec
 
 realclean-pre: bootclean-pre
 
-realclean-post: bootclean-post
+realclean-post realclean-post-nonrec: bootclean-post-nonrec
 	rm -f makefile
 
 rc-setup-pre:
@@ -225,43 +228,43 @@ select-gen-for-commit: select-gen-for-commit-post
 
 select-gen-for-commit-post: select-gen-for-commit-recursive
 
-select-gen-for-commit-recursive: select-gen-for-commit-pre
+select-gen-for-commit-post-nonrec select-gen-for-commit-recursive: select-gen-for-commit-pre
 
 deselect-gen-for-commit: deselect-gen-for-commit-post
 
 deselect-gen-for-commit-post: deselect-gen-for-commit-recursive
 
-deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
+deselect-gen-for-commit-post-nonrec deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
 
 mostlyclean: mostlyclean-post
 
 mostlyclean-post: mostlyclean-recursive
 
-mostlyclean-recursive: mostlyclean-pre
+mostlyclean-post-nonrec mostlyclean-recursive: mostlyclean-pre
 
 clean: clean-post
 
 clean-post: clean-recursive
 
-clean-recursive: clean-pre
+clean-post-nonrec clean-recursive: clean-pre
 
 distclean: distclean-post
 
 distclean-post: distclean-recursive
 
-distclean-recursive: distclean-pre
+distclean-post-nonrec distclean-recursive: distclean-pre
 
 bootclean: bootclean-post
 
 bootclean-post: bootclean-recursive
 
-bootclean-recursive: bootclean-pre
+bootclean-post-nonrec bootclean-recursive: bootclean-pre
 
 realclean: realclean-post
 
 realclean-post: realclean-recursive
 
-realclean-recursive: realclean-pre
+realclean-post-nonrec realclean-recursive: realclean-pre
 
 rc-setup: rc-setup-post
 

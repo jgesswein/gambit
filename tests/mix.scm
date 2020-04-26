@@ -1,6 +1,6 @@
-; File: "mix.scm", Time-stamp: <2015-01-16 14:02:30 feeley>
+; File: "mix.scm"
 
-; Copyright (c) 1998-2007 by Marc Feeley, All Rights Reserved.
+; Copyright (c) 1998-2017 by Marc Feeley, All Rights Reserved.
 
 (##declare
   (standard-bindings)
@@ -1169,7 +1169,7 @@
   (test (string? "5678") #t)
   (test (string? 123456789012345678901) #f)
   (test (make-string 0) "")
-  (test (make-string 3) "\0\0\0")
+  (test (string-length (make-string 3)) 3)
   (test (make-string 5 #\6) "66666")
   (test (string-length (make-string 4194303)) 4194303)
   (test (string) "")
@@ -1204,7 +1204,7 @@
   (test (vector? '#(5 6 7 8)) #t)
   (test (vector? 123456789012345678901) #f)
   (test (make-vector 0) #())
-  (test (make-vector 3) #(0 0 0))
+  (test (vector-length (make-vector 3)) 3)
   (test (make-vector 5 'a) #(a a a a a))
   (let ((n (quotient 16777215 word-size))) (test (= n (vector-length (make-vector n))) #t))
   (test (vector) #())
@@ -1235,7 +1235,7 @@
   (test (s8vector? '#s8(5 6 7 8)) #t)
   (test (s8vector? 123456789012345678901) #f)
   (test (make-s8vector 0) #s8())
-  (test (make-s8vector 3) #s8(0 0 0))
+  (test (s8vector-length (make-s8vector 3)) 3)
   (test (make-s8vector 5 6) #s8(6 6 6 6 6))
   (test (s8vector-length (make-s8vector 16777215)) 16777215)
   (test (s8vector) #s8())
@@ -1274,7 +1274,7 @@
   (test (u8vector? '#u8(5 6 7 8)) #t)
   (test (u8vector? 123456789012345678901) #f)
   (test (make-u8vector 0) #u8())
-  (test (make-u8vector 3) #u8(0 0 0))
+  (test (u8vector-length (make-u8vector 3)) 3)
   (test (make-u8vector 5 6) #u8(6 6 6 6 6))
   (test (u8vector-length (make-u8vector 16777215)) 16777215)
   (test (u8vector) #u8())
@@ -1313,7 +1313,7 @@
   (test (s16vector? '#s16(5 6 7 8)) #t)
   (test (s16vector? 123456789012345678901) #f)
   (test (make-s16vector 0) #s16())
-  (test (make-s16vector 3) #s16(0 0 0))
+  (test (s16vector-length (make-s16vector 3)) 3)
   (test (make-s16vector 5 6) #s16(6 6 6 6 6))
   (test (s16vector-length (make-s16vector 8388607)) 8388607)
   (test (s16vector) #s16())
@@ -1352,7 +1352,7 @@
   (test (u16vector? '#u16(5 6 7 8)) #t)
   (test (u16vector? 123456789012345678901) #f)
   (test (make-u16vector 0) #u16())
-  (test (make-u16vector 3) #u16(0 0 0))
+  (test (u16vector-length (make-u16vector 3)) 3)
   (test (make-u16vector 5 6) #u16(6 6 6 6 6))
   (test (u16vector-length (make-u16vector 8388607)) 8388607)
   (test (u16vector) #u16())
@@ -1391,7 +1391,7 @@
   (test (s32vector? '#s32(5 6 7 8)) #t)
   (test (s32vector? 123456789012345678901) #f)
   (test (make-s32vector 0) #s32())
-  (test (make-s32vector 3) #s32(0 0 0))
+  (test (s32vector-length (make-s32vector 3)) 3)
   (test (make-s32vector 5 6) #s32(6 6 6 6 6))
   (test (s32vector-length (make-s32vector 4194303)) 4194303)
   (test (s32vector) #s32())
@@ -1430,7 +1430,7 @@
   (test (u32vector? '#u32(5 6 7 8)) #t)
   (test (u32vector? 123456789012345678901) #f)
   (test (make-u32vector 0) #u32())
-  (test (make-u32vector 3) #u32(0 0 0))
+  (test (u32vector-length (make-u32vector 3)) 3)
   (test (make-u32vector 5 6) #u32(6 6 6 6 6))
   (test (u32vector-length (make-u32vector 4194303)) 4194303)
   (test (u32vector) #u32())
@@ -1469,7 +1469,7 @@
   (test (s64vector? '#s64(5 6 7 8)) #t)
   (test (s64vector? 123456789012345678901) #f)
   (test (make-s64vector 0) #s64())
-  (test (make-s64vector 3) #s64(0 0 0))
+  (test (s64vector-length (make-s64vector 3)) 3)
   (test (make-s64vector 5 6) #s64(6 6 6 6 6))
   (test (s64vector-length (make-s64vector 2097151)) 2097151)
   (test (s64vector) #s64())
@@ -1508,7 +1508,7 @@
   (test (u64vector? '#u64(5 6 7 8)) #t)
   (test (u64vector? 123456789012345678901) #f)
   (test (make-u64vector 0) #u64())
-  (test (make-u64vector 3) #u64(0 0 0))
+  (test (u64vector-length (make-u64vector 3)) 3)
   (test (make-u64vector 5 6) #u64(6 6 6 6 6))
   (test (u64vector-length (make-u64vector 2097151)) 2097151)
   (test (u64vector) #u64())
@@ -1547,7 +1547,7 @@
   (test (f32vector? '#f32(5. 6. 7. 8.)) #t)
   (test (f32vector? 123456789012345678901) #f)
   (test (make-f32vector 0) #f32())
-  (test (make-f32vector 3) #f32(0. 0. 0.))
+  (test (f32vector-length (make-f32vector 3)) 3)
   (test (make-f32vector 5 6.) #f32(6. 6. 6. 6. 6.))
   (test (f32vector-length (make-f32vector 4194303)) 4194303)
   (test (f32vector) #f32())
@@ -1582,7 +1582,7 @@
   (test (f64vector? '#f64(5. 6. 7. 8.)) #t)
   (test (f64vector? 123456789012345678901) #f)
   (test (make-f64vector 0) #f64())
-  (test (make-f64vector 3) #f64(0. 0. 0.))
+  (test (f64vector-length (make-f64vector 3)) 3)
   (test (make-f64vector 5 6.) #f64(6. 6. 6. 6. 6.))
   (test (f32vector-length (make-f32vector 2097151)) 2097151)
   (test (f64vector) #f64())
@@ -1750,11 +1750,7 @@
 
 ;------------------------------------------------------------------------------
 
-(##declare
-  (not safe)
-  (fixnum)
-  (separate)
-)
+(##declare (generic))
 
 (define c1 2.)
 (define c2 209.177)
@@ -1824,26 +1820,20 @@
 
 ;------------------------------------------------------------------------------
 
-(##declare (generic))
-
 (define heartbeat-interval
-  (##thread-heartbeat-interval-set! 0.001)) ; set small interval
+  (let ((v (f64vector 0.0)))
+    (##set-heartbeat-interval! 0.001) ;; set small heartbeat interval
+    (##get-heartbeat-interval! v 0)
+    (f64vector-ref v 0)))
 
-(define intrs 0.0)
+(define intrs 0)
 
-(define interrupt-thread
- (make-thread
-  (lambda ()
-    (let loop ()
-      (thread-sleep! 0.0001) ; sleep until next heartbeat interrupt
-      (set! intrs (+ intrs 1.0))
-      (loop)))))
-
-;; The interrupt-thread priority must be above the primordial thread's
-;; priority which is 0.
-(thread-base-priority-set! interrupt-thread 1)
-
-(thread-start! interrupt-thread)
+(##interrupt-vector-set!
+ 2 ;; ___INTR_HEARTBEAT
+ (lambda ()
+   (if (##fxzero? (processor-id (current-processor)))
+       (set! intrs (+ intrs 1)))
+   (##thread-heartbeat!)))
 
 (define start-time (cpu-time))
 
@@ -1854,6 +1844,10 @@
       (test2)
       (loop (- i 1)))))
 
+(##interrupt-vector-set!
+ 2 ;; ___INTR_HEARTBEAT
+ ##thread-heartbeat!)
+
 (let ((ct (time->seconds (current-time))))
   (if (< ct 964727878.343539) ; Thu Jul 27 15:57:58 EDT 2000
     (begin
@@ -1863,7 +1857,7 @@
   (newline))
 
 (let* ((i
-        intrs)
+        (exact->inexact intrs))
        (end-time
         (cpu-time))
        (cpu-time-according-to-os

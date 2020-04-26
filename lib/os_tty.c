@@ -1,6 +1,6 @@
 /* File: "os_tty.c" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 /*
  * This module implements the operating system specific routines
@@ -8,13 +8,16 @@
  */
 
 #define ___INCLUDED_FROM_OS_TTY
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
+#include "os_setup.h"
+#include "os_thread.h"
 #include "os_base.h"
 #include "os_tty.h"
 #include "os_shell.h"
 #include "os_io.h"
+#include "os_files.h"
 #include "mem.h"
 #include "c_intf.h"
 
@@ -38,7 +41,7 @@ int n;)
     n = EXTENSIBLE_STRING_INITIAL_BUFFER_SIZE;
 
   str->buffer = ___CAST(extensible_string_char*,
-                        ___alloc_mem (n * sizeof (extensible_string_char)));
+                        ___ALLOC_MEM(n * sizeof (extensible_string_char)));
 
   if (str->buffer == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -55,7 +58,7 @@ ___HIDDEN void extensible_string_cleanup
         (str)
 extensible_string *str;)
 {
-  ___free_mem (str->buffer);
+  ___FREE_MEM(str->buffer);
 }
 
 
@@ -76,7 +79,7 @@ int fudge;)
   extensible_string_char *buf;
 
   buf = ___CAST(extensible_string_char*,
-                ___alloc_mem ((len+fudge) * sizeof (extensible_string_char)));
+                ___ALLOC_MEM((len+fudge) * sizeof (extensible_string_char)));
 
   if (buf == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -110,8 +113,8 @@ int fudge;)
       extensible_string_char *old_buffer = str->buffer;
       extensible_string_char *new_buffer =
         ___CAST(extensible_string_char*,
-                ___alloc_mem (new_max_length *
-                              sizeof (extensible_string_char)));
+                ___ALLOC_MEM(new_max_length *
+                             sizeof (extensible_string_char)));
 
       if (new_buffer == NULL)
         return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -123,7 +126,7 @@ int fudge;)
       while (i-- > 0)
         new_buffer[i] = old_buffer[i];
 
-      ___free_mem (old_buffer);
+      ___FREE_MEM(old_buffer);
       str->buffer = new_buffer;
       str->max_length = new_max_length;
     }
@@ -231,31 +234,49 @@ ___device_tty *self;)
 {
   ___device_tty *d = self;
 
-#ifdef USE_tcgetsetattr
-#ifdef USE_fcntl
+#ifdef USE_POSIX
 
-#ifdef ___DEBUG_TTY
+  int fd = d->fd;
 
-  ___printf ("tcgetattr  d->fd = %d\n", d->fd);
+  if (fd < 0)
+    return ___FIX(___NO_ERR);
+
+#else
+
+#if defined(USE_tcgetsetattr) || defined(USE_fcntl)
+
+  int fd = 0; /* fileno(___stdin) */
 
 #endif
 
-  if (d->fd < 0)
-    return ___FIX(___NO_ERR);
+#endif
 
-  if (tcgetattr (d->fd, &d->initial_termios) < 0 ||
-      (d->initial_flags = fcntl (d->fd, F_GETFL, 0)) < 0)
+#ifdef USE_tcgetsetattr
+
+#ifdef ___DEBUG_TTY
+
+  ___printf ("tcgetattr  fd = %d\n", fd);
+
+#endif
+
+  if (tcgetattr (fd, &d->initial_termios) < 0)
     return err_code_from_errno ();
 
 #ifdef ___DEBUG_TTY
 
-  ___printf ("___device_tty_mode_get  d->fd = %d\n", d->fd);
+  ___printf ("___device_tty_mode_get  fd = %d\n", fd);
   ___printf ("  d->initial_termios.c_iflag = 0x%08x\n", d->initial_termios.c_iflag);
   ___printf ("  d->initial_termios.c_oflag = 0x%08x\n", d->initial_termios.c_oflag);
   ___printf ("  d->initial_termios.c_lflag = 0x%08x\n", d->initial_termios.c_lflag);
 
 #endif
+
 #endif
+
+#ifdef USE_fcntl
+
+  if ((d->initial_flags = fcntl (fd, F_GETFL, 0)) < 0)
+    return err_code_from_errno ();
 
 #endif
 
@@ -294,28 +315,40 @@ ___device_tty *self;)
 
 ___HIDDEN ___SCMOBJ ___device_tty_mode_update
    ___P((___device_tty *self,
-         ___BOOL current),
+         ___BOOL undo),
         (self,
-         current)
+         undo)
 ___device_tty *self;
-___BOOL current;)
+___BOOL undo;)
 {
   ___device_tty *d = self;
   ___SCMOBJ e = ___FIX(___NO_ERR);
 
-#ifdef USE_tcgetsetattr
-#ifdef USE_fcntl
+#ifdef USE_POSIX
 
-  if (d->fd < 0)
+  int fd = d->fd;
+
+  if (fd < 0)
     return ___FIX(___NO_ERR);
+
+#else
+
+#if defined(USE_tcgetsetattr) || defined(USE_fcntl)
+
+  int fd = 0; /* fileno(___stdin) */
+
+#endif
+
+#endif
+
+#ifdef USE_tcgetsetattr
 
   {
     struct termios new_termios = d->initial_termios;
-    int new_flags = d->initial_flags;
 
 #ifdef ___DEBUG_TTY
 
-    ___printf ("tcsetattr  d->fd = %d\n", d->fd);
+    ___printf ("tcsetattr  fd = %d\n", fd);
     ___printf ("  d->lineeditor_mode = %d\n", d->lineeditor_mode);
     ___printf ("  d->input_allow_special = %d\n", d->input_allow_special);
     ___printf ("  d->input_echo = %d\n", d->input_echo);
@@ -327,7 +360,7 @@ ___BOOL current;)
 
 #endif
 
-    if (current)
+    if (!undo)
       {
         if (d->input_allow_special)
           {
@@ -351,14 +384,12 @@ ___BOOL current;)
                                      | ICRNL
                                      | INLCR
                                      | IGNCR
-                                     | ICRNL
                                      | IXON
                                      | IXOFF
 #ifdef IUCLC
                                      | IUCLC
 #endif
                                      );
-            new_termios.c_iflag &= ~(ICRNL);
             new_termios.c_lflag &= ~(ICANON | ECHO | ECHOCTL);
 
 #ifndef _POSIX_VDISABLE
@@ -394,8 +425,13 @@ ___BOOL current;)
             new_termios.c_cc[VSTATUS]  = _POSIX_VDISABLE;
 #endif
 
-            new_termios.c_cc[VMIN]     = 1;
-            new_termios.c_cc[VTIME]    = 0;
+#ifdef USE_POSIX
+            new_termios.c_cc[VMIN]     = 1; /* wait for first char then */
+            new_termios.c_cc[VTIME]    = 0; /* return it if no other avail */
+#else
+            new_termios.c_cc[VMIN]     = 0; /* wait up to 1/10 of a second */
+            new_termios.c_cc[VTIME]    = 1; /* for a character */
+#endif
           }
         else
           {
@@ -521,8 +557,6 @@ ___BOOL current;)
                 cfsetospeed (&new_termios, speed_code);
               }
           }
-
-        new_flags = new_flags | O_NONBLOCK;
       }
 
 #ifdef ___DEBUG_TTY
@@ -533,12 +567,25 @@ ___BOOL current;)
 
 #endif
 
-    if (tcsetattr (d->fd, TCSANOW, &new_termios) < 0 ||
-        fcntl (d->fd, F_SETFL, new_flags) < 0)
+    if (tcsetattr (fd, TCSANOW, &new_termios) < 0)
       e = err_code_from_errno ();
   }
 
 #endif
+
+#ifdef USE_fcntl
+  {
+    int new_flags = d->initial_flags;
+
+    if (!undo)
+      {
+        new_flags = new_flags | O_NONBLOCK;
+      }
+
+    if (fcntl (fd, F_SETFL, new_flags) < 0)
+      e = err_code_from_errno ();
+  }
+
 #endif
 
 #ifdef USE_WIN32
@@ -547,7 +594,7 @@ ___BOOL current;)
     DWORD hin_mode = d->hin_initial_mode;
     DWORD hout_mode = d->hout_initial_mode;
 
-    if (current)
+    if (!undo)
       {
         if (d->input_allow_special)
           hin_mode |= (ENABLE_PROCESSED_INPUT);
@@ -602,8 +649,10 @@ ___BOOL remove;)
 
   while (curr != d)
     {
-      if ((e = ___device_tty_mode_update (curr, 0)) != ___FIX(___NO_ERR))
+      if ((e = ___device_tty_mode_update (curr, 1)) != ___FIX(___NO_ERR))
         break;
+      if (d == NULL)
+        curr->stage = TTY_STAGE_MODE_NOT_SAVED;
       next = curr->mode_save_stack_next;
       curr->mode_save_stack_next = prev;
       prev = curr;
@@ -611,26 +660,35 @@ ___BOOL remove;)
     }
 
   if (e == ___FIX(___NO_ERR) &&
-      curr != NULL &&
-      (e = ___device_tty_mode_update (curr, !remove)) == ___FIX(___NO_ERR) &&
+      d == NULL &&
       remove)
     {
-      d->stage = TTY_STAGE_MODE_NOT_SAVED;
-      curr = curr->mode_save_stack_next; /* remove d from mode save stack */
+      ___tty_mod.mode_save_stack = NULL; /* save stack has been emptied */
     }
-
-  while (prev != NULL)
+  else
     {
-      ___SCMOBJ e2;
-      next = curr;
-      curr = prev;
-      prev = prev->mode_save_stack_next;
-      curr->mode_save_stack_next = next;
-      if ((e2 = ___device_tty_mode_get (curr)) != ___FIX(___NO_ERR) ||
-          (e2 = ___device_tty_mode_update (curr, 1)) != ___FIX(___NO_ERR))
+      if (e == ___FIX(___NO_ERR) &&
+          curr != NULL &&
+          (e = ___device_tty_mode_update (curr, remove)) == ___FIX(___NO_ERR))
         {
-          if (e == ___FIX(___NO_ERR))
-            e = e2;
+          curr->stage = TTY_STAGE_MODE_NOT_SAVED;
+          if (remove)
+            curr = curr->mode_save_stack_next; /* remove d from mode save stack */
+        }
+
+      while (prev != NULL)
+        {
+          ___SCMOBJ e2;
+          next = curr;
+          curr = prev;
+          prev = prev->mode_save_stack_next;
+          curr->mode_save_stack_next = next;
+          if ((e2 = ___device_tty_mode_get (curr)) != ___FIX(___NO_ERR) ||
+              (e2 = ___device_tty_mode_update (curr, 0)) != ___FIX(___NO_ERR))
+            {
+              if (e == ___FIX(___NO_ERR))
+                e = e2;
+            }
         }
     }
 
@@ -670,7 +728,7 @@ int speed;)
   d->speed = speed;
   /**************** TODO: end critical section (must block SIGCONT) */
 
-  return ___device_tty_mode_restore (d, 0);
+  return ___device_tty_mode_restore (d, 1);
 }
 
 
@@ -695,17 +753,20 @@ ___device_tty *self;)
 
       if (d->fd < 0)
         {
-          size.ws_row = 24;
-          size.ws_col = 80;
+          d->terminal_nb_cols = TERMINAL_NB_COLS_UNLIMITED;
+          d->terminal_nb_rows = 24;
         }
-      else if (ioctl (d->fd, TIOCGWINSZ, &size) < 0)
-        return err_code_from_errno ();
+      else
+        {
+          if (ioctl (d->fd, TIOCGWINSZ, &size) < 0)
+            return err_code_from_errno ();
 
-      if (size.ws_col > 0)
-        d->terminal_nb_cols = size.ws_col;
+          if (size.ws_col > 0)
+            d->terminal_nb_cols = size.ws_col;
 
-      if (size.ws_row > 0)
-        d->terminal_nb_rows = size.ws_row;
+          if (size.ws_row > 0)
+            d->terminal_nb_rows = size.ws_row;
+        }
 
 #endif
 #endif
@@ -742,21 +803,33 @@ ___device_tty *self;)
 }
 
 
-___HIDDEN ___BOOL lineeditor_under_emacs ___PVOID
+___HIDDEN ___BOOL env_var_defined_UCS_2
+   ___P((___UCS_2 *name),
+        (name)
+___UCS_2 *name;)
 {
-  static ___UCS_2 emacs_env_name[] = { 'E', 'M', 'A', 'C', 'S', '\0' };
   ___UCS_2STRING cvalue;
 
-  if (___getenv_UCS_2 (emacs_env_name, &cvalue) == ___FIX(___NO_ERR))
+  if (___getenv_UCS_2 (name, &cvalue) == ___FIX(___NO_ERR))
     {
       if (cvalue != 0)
         {
-          ___free_mem (cvalue);
+          ___FREE_MEM(cvalue);
           return 1;
         }
     }
 
   return 0;
+}
+
+
+___HIDDEN ___BOOL lineeditor_under_emacs ___PVOID
+{
+  static ___UCS_2 emacs_env_name_old[] = { 'E', 'M', 'A', 'C', 'S', '\0' };
+  static ___UCS_2 emacs_env_name_new[] = { 'I', 'N', 'S', 'I', 'D', 'E', '_', 'E', 'M', 'A', 'C', 'S', '\0' };
+
+  return env_var_defined_UCS_2 (emacs_env_name_old) ||
+         env_var_defined_UCS_2 (emacs_env_name_new);
 }
 
 
@@ -808,15 +881,15 @@ ___device_tty *self;)
         ctermid (term_name); /* get controlling terminal's name */
 #endif
 
-        if ((fd = open (term_name,
+        if ((fd = open_long_path (term_name,
 #ifdef LINEEDITOR_WITH_NONBLOCKING_IO
-                        O_NONBLOCK |
+                                  O_NONBLOCK |
 #endif
 #ifdef O_BINARY
-                        O_BINARY |
+                                  O_BINARY |
 #endif
-                        O_RDWR,
-                        0))
+                                  O_RDWR,
+                                  0))
             < 0)
           {
 #ifdef ENXIO
@@ -984,6 +1057,26 @@ ___stream_index *len_done;)
 {
   ___device_tty *d = self;
 
+#ifndef USE_POSIX
+#ifndef USE_WIN32
+
+  {
+    int n;
+
+    if ((n = ___fwrite (buf, 1, len, ___stdout)) != len)
+      {
+        ___clearerr (___stdout);
+        return ___FIX(___UNKNOWN_ERR);
+      }
+
+    ___fflush (___stdout);
+
+    *len_done = n;
+  }
+
+#endif
+#endif
+
 #ifdef USE_POSIX
 
   {
@@ -1045,6 +1138,7 @@ ___stream_index *len_done;)
   return ___device_tty_write (d, buf, len, len_done);
 }
 
+
 ___HIDDEN ___SCMOBJ ___device_tty_read_raw_no_lineeditor
    ___P((___device_tty *self,
          ___U8 *buf,
@@ -1064,12 +1158,43 @@ ___stream_index *len_done;)
   if (d->base.base.read_stage != ___STAGE_OPEN)
     return ___FIX(___CLOSED_DEVICE_ERR);
 
+#ifndef USE_POSIX
+#ifndef USE_WIN32
+
+  {
+    int n;
+
+#ifdef ___DEBUG_TTY
+    ___printf ("read len=%d\n", len);
+#endif
+
+    if ((n = ___fread (buf, 1, len, ___stdin)) == 0)
+      {
+        /*
+         * The TTY is set with a VMIN=0 and VTIME=1 so it will
+         * return n=0 when no key has been pressed, so don't
+         * treat this as an end of file.
+         */
+        ___clearerr (___stdin);
+        return ___ERR_CODE_EAGAIN;
+      }
+
+#ifdef ___DEBUG_TTY
+    ___printf ("read n=%d\n", n);
+#endif
+
+    *len_done = n;
+  }
+
+#endif
+#endif
+
 #ifdef USE_POSIX
 
   {
     int n;
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_TTY
     ___printf ("read len=%d\n", len);
 #endif
 
@@ -1078,7 +1203,7 @@ ___stream_index *len_done;)
     else if ((n = read (d->fd, buf, len)) < 0)
       return err_code_from_errno ();
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_TTY
     ___printf ("read n=%d\n", n);
 #endif
 
@@ -1326,7 +1451,7 @@ lineeditor_input_decoder *decoder;)
   int n = LINEEDITOR_INPUT_DECODER_INITIAL_BUFFER_SIZE;
 
   decoder->buffer = ___CAST(lineeditor_input_test*,
-                            ___alloc_mem (n * sizeof (lineeditor_input_test)));
+                            ___ALLOC_MEM(n * sizeof (lineeditor_input_test)));
 
   if (decoder->buffer == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -1343,7 +1468,7 @@ ___HIDDEN void lineeditor_input_decoder_cleanup
         (decoder)
 lineeditor_input_decoder *decoder;)
 {
-  ___free_mem (decoder->buffer);
+  ___FREE_MEM(decoder->buffer);
 }
 
 
@@ -1368,8 +1493,8 @@ int fudge;)
       lineeditor_input_test *old_buffer = decoder->buffer;
       lineeditor_input_test *new_buffer =
         ___CAST(lineeditor_input_test*,
-                ___alloc_mem (new_max_length *
-                              sizeof (lineeditor_input_test)));
+                ___ALLOC_MEM(new_max_length *
+                             sizeof (lineeditor_input_test)));
 
       if (new_buffer == NULL)
         return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -1381,7 +1506,7 @@ int fudge;)
       while (i-- > 0)
         new_buffer[i] = old_buffer[i];
 
-      ___free_mem (old_buffer);
+      ___FREE_MEM(old_buffer);
       decoder->buffer = new_buffer;
       decoder->max_length = new_max_length;
     }
@@ -2047,14 +2172,14 @@ lineeditor_history **hist;)
   lineeditor_history *h;
 
   h = ___CAST(lineeditor_history*,
-              ___alloc_mem (sizeof (lineeditor_history)));
+              ___ALLOC_MEM(sizeof (lineeditor_history)));
 
   if (h == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
 
   if ((e = extensible_string_setup (&h->actual, 0)) != ___FIX(___NO_ERR))
     {
-      ___free_mem (h);
+      ___FREE_MEM(h);
       return e;
     }
 
@@ -2083,7 +2208,7 @@ lineeditor_history *h;)
 
   extensible_string_cleanup (&h->actual);
 
-  ___free_mem (h);
+  ___FREE_MEM(h);
 
   return ___FIX(___NO_ERR);
 }
@@ -2318,6 +2443,9 @@ ___device_tty *self;)
           }
 
 #endif
+
+          if (byte_avail ==  ___NBELEMS(d->output_byte) - d->output_byte_hi)
+            break;  /* not enough space for a full multibyte character, first flush what we have */
 
           d->output_char_lo = d->output_char.length - len;
 
@@ -2605,6 +2733,20 @@ int rep;)
                           n = stack[--sp];
                         else
                           n = 0;
+
+                        /*
+                         * support 256 colors by using
+                         *   "\033[38;5;%p1%dm" instead of "\033[3%p1%dm"
+                         * and
+                         *   "\033[48;5;%p1%dm" instead of "\033[4%p1%dm"
+                         */
+                        if (*p == 'm' && n >= 8)
+                          {
+                            lineeditor_output_curses ('8');
+                            lineeditor_output_curses (';');
+                            lineeditor_output_curses ('5');
+                            lineeditor_output_curses (';');
+                          }
 
                         while (d*10 <= n)
                           d *= 10;
@@ -3087,19 +3229,17 @@ ___U8 *text_arg;)
 
     case TERMINAL_CTRL - ___UNICODE_BELL:
       {
-#ifdef USE_POSIX
+#ifdef USE_WIN32
+
+        if (!MessageBeep (MB_OK))
+          e = err_code_from_GetLastError ();
+
+#else
 
         {
           ___C c = ___UNICODE_BELL;
           e = lineeditor_output (d, &c, 1);
         }
-
-#endif
-
-#ifdef USE_WIN32
-
-        if (!MessageBeep (MB_OK))
-          e = err_code_from_GetLastError ();
 
 #endif
 
@@ -3120,15 +3260,6 @@ ___U8 *text_arg;)
                              d->terminal_col;
 
         d->terminal_delayed_wrap = 0;
-
-#ifdef USE_POSIX
-
-        {
-          ___C c = ___UNICODE_BACKSPACE;
-          e = lineeditor_output (d, &c, 1);
-        }
-
-#endif
 
 #ifdef USE_WIN32
 
@@ -3152,6 +3283,13 @@ ___U8 *text_arg;)
               if (!SetConsoleCursorPosition (d->hout, pos))
                 e = err_code_from_GetLastError ();
             }
+        }
+
+#else
+
+        {
+          ___C c = ___UNICODE_BACKSPACE;
+          e = lineeditor_output (d, &c, 1);
         }
 
 #endif
@@ -3181,15 +3319,6 @@ ___U8 *text_arg;)
                              d->terminal_col;
 
         d->terminal_delayed_wrap = 0;
-
-#ifdef USE_POSIX
-
-        {
-          ___C c = ___UNICODE_LINEFEED;
-          e = lineeditor_output (d, &c, 1);
-        }
-
-#endif
 
 #ifdef USE_WIN32
 
@@ -3243,6 +3372,13 @@ ___U8 *text_arg;)
             }
         }
 
+#else
+
+        {
+          ___C c = ___UNICODE_LINEFEED;
+          e = lineeditor_output (d, &c, 1);
+        }
+
 #endif
 
         break;
@@ -3253,15 +3389,6 @@ ___U8 *text_arg;)
         d->terminal_col = 0;
         d->terminal_cursor = d->terminal_row * d->terminal_nb_cols;
         d->terminal_delayed_wrap = 0;
-
-#ifdef USE_POSIX
-
-        {
-          ___C c = ___UNICODE_RETURN;
-          e = lineeditor_output (d, &c, 1);
-        }
-
-#endif
 
 #ifdef USE_WIN32
 
@@ -3281,6 +3408,13 @@ ___U8 *text_arg;)
             }
         }
 
+#else
+
+        {
+          ___C c = ___UNICODE_RETURN;
+          e = lineeditor_output (d, &c, 1);
+        }
+
 #endif
 
         break;
@@ -3288,12 +3422,6 @@ ___U8 *text_arg;)
 
     case TERMINAL_SET_ATTRS:
       {
-#ifdef USE_POSIX
-
-        e = lineeditor_output_set_attrs (d, arg);
-
-#endif
-
 #ifdef USE_WIN32
 
         {
@@ -3344,6 +3472,10 @@ ___U8 *text_arg;)
           if (!SetConsoleTextAttribute (d->hout, attr))
             e = err_code_from_GetLastError ();
         }
+
+#else
+
+        e = lineeditor_output_set_attrs (d, arg);
 
 #endif
 
@@ -3912,6 +4044,25 @@ int len;)
                           fg = x-30;
                         else if (x >= 40 && x <= 47)
                           bg = x-40;
+                        else if (x >= 90 && x <= 97)
+                          fg = (x-90)+8;
+                        else if (x >= 100 && x <= 107)
+                          bg = (x-100)+8;
+                        else if (x == 38 || x == 48)
+                          {
+                            if (j+2 <= pn && d->terminal_param[j+1] == 5)
+                              {
+                                int n = d->terminal_param[j+2];
+                                if (n >= 0 && n <= 255)
+                                  {
+                                    if (x == 38)
+                                      fg = n;
+                                    else
+                                      bg = n;
+                                  }
+                              }
+                            j += 2;
+                          }
                       }
                     arg = MAKE_TEXT_ATTRS(style,fg,bg);
                   }
@@ -4580,7 +4731,7 @@ ___device_tty *self;)
   ___C *str;
 
   str = ___CAST(___C*,
-                ___alloc_mem ((len+1) * sizeof (___C)));
+                ___ALLOC_MEM((len+1) * sizeof (___C)));
 
   if (str == NULL)
     e = ___FIX(___HEAP_OVERFLOW_ERR);
@@ -4591,7 +4742,7 @@ ___device_tty *self;)
         str[len] = d->clipboard.buffer[len];
 
       if (d->paste_text != NULL)
-        ___free_mem (d->paste_text);
+        ___FREE_MEM(d->paste_text);
 
       d->paste_index = 0;
       d->paste_text = str;
@@ -4624,7 +4775,7 @@ ___device_tty *self;)
                     len++;
 
                   str = ___CAST(___C*,
-                                ___alloc_mem ((len+1) * sizeof (___C)));
+                                ___ALLOC_MEM((len+1) * sizeof (___C)));
 
                   if (str == NULL)
                     e = ___FIX(___HEAP_OVERFLOW_ERR);
@@ -4635,7 +4786,7 @@ ___device_tty *self;)
                         str[len] = locked_copy[len];
 
                       if (d->paste_text != NULL)
-                        ___free_mem (d->paste_text);
+                        ___FREE_MEM(d->paste_text);
 
                       d->paste_index = 0;
                       d->paste_text = str;
@@ -4696,12 +4847,13 @@ ___stream_index *len_done;)
        * device will be read.  If a read error occurs (including
        * EAGAIN) an error code is returned, otherwise ___NO_ERR is
        * returned.  ___NO_ERR is returned if and only if at least one
-       * character was added to the character buffer.
+       * character was added to the character buffer, or no character
+       * was added because EOF was reached.
        */
 
       ___SCMOBJ e;
       ___stream_index len;
-      ___stream_index len_done;
+      ___stream_index done;
       ___U8 *byte_buf;
       int byte_buf_avail;
       int char_buf_avail;
@@ -4737,11 +4889,26 @@ ___stream_index *len_done;)
                      (d,
                       d->input_byte + d->input_byte_hi,
                       ___NBELEMS(d->input_byte) - d->input_byte_hi,
-                      &len_done))
+                      &done))
               != ___FIX(___NO_ERR))
             return e;
 
-          byte_buf_avail = (d->input_byte_hi += len_done) - d->input_byte_lo;
+          if (done == 0)
+            {
+              if (d->input_byte_hi > d->input_byte_lo)
+                {
+                  d->input_byte_lo = 0;
+                  d->input_byte_hi = 0;
+                  return ___FIX(___UNKNOWN_ERR);
+                }
+              else
+                {
+                  *len_done = 0;
+                  return ___FIX(___NO_ERR);
+                }
+            }
+
+          byte_buf_avail = (d->input_byte_hi += done) - d->input_byte_lo;
 
           /*
            * Extract as many characters as possible from byte buffer to
@@ -4828,7 +4995,7 @@ lineeditor_event *ev;)
       if (d->paste_cancel ||
           (c = d->paste_text[d->paste_index++]) == 0)
         {
-          ___free_mem (d->paste_text);
+          ___FREE_MEM(d->paste_text);
           d->paste_text = NULL;
         }
       else
@@ -4841,35 +5008,46 @@ lineeditor_event *ev;)
 
   next_char:
 
-  if ((e = lineeditor_input_read (d, &c, 1, &len_done))
-       == ___FIX(___NO_ERR) &&
-      len_done == 1)
+  if ((e = lineeditor_input_read (d, &c, 1, &len_done)) == ___FIX(___NO_ERR))
     {
-      while (s < d->input_decoder.length)
+      if (len_done == 1)
         {
-          if (d->input_decoder.buffer[s].trigger == c)
+          while (s < d->input_decoder.length)
             {
-              int a = d->input_decoder.buffer[s].action;
-              if (a < LINEEDITOR_INPUT_DECODER_MAX_LENGTH)
+              if (d->input_decoder.buffer[s].trigger == c)
                 {
-                  s = a;
-                  first_char = 0;
-                  goto next_char;
+                  int a = d->input_decoder.buffer[s].action;
+                  if (a < LINEEDITOR_INPUT_DECODER_MAX_LENGTH)
+                    {
+                      s = a;
+                      first_char = 0;
+                      goto next_char;
+                    }
+                  d->input_decoder_state = 0;
+                  ev->event_kind = LINEEDITOR_INPUT_DECODER_STATE_MAX-a;
+                  return ___FIX(___NO_ERR);
                 }
-              d->input_decoder_state = 0;
-              ev->event_kind = LINEEDITOR_INPUT_DECODER_STATE_MAX-a;
+              else
+                s = d->input_decoder.buffer[s].next;
+            }
+          if (first_char)
+            {
+              ev->event_kind = LINEEDITOR_EV_KEY;
+              ev->event_char = c;
               return ___FIX(___NO_ERR);
             }
-          else
-            s = d->input_decoder.buffer[s].next;
+          s = 0; /* ignore the sequence including last character read */
         }
-      if (first_char)
+      else
         {
-          ev->event_kind = LINEEDITOR_EV_KEY;
-          ev->event_char = c;
+          /*
+           * EOF was reached.
+           */
+
+          d->input_decoder_state = 0;
+          ev->event_kind = LINEEDITOR_EV_EOF;
           return ___FIX(___NO_ERR);
         }
-      s = 0; /* ignore the sequence including last character read */
     }
 
   d->input_decoder_state = s;
@@ -4899,7 +5077,7 @@ ___BOOL emacs_bindings;)
   /* default values appropriate for "xterm": */
 
   int rows = 24;
-  int cols = 80;
+  int cols = TERMINAL_NB_COLS_UNLIMITED;
   ___BOOL has_auto_left_margin = 0;
   ___BOOL has_auto_right_margin = 1;
   ___BOOL has_eat_newline_glitch = 1;
@@ -4953,7 +5131,7 @@ ___BOOL emacs_bindings;)
 
       if (seq != NULL)
         {
-          ___free_mem (seq);
+          ___FREE_MEM(seq);
           d->capability[i] = NULL;
         }
     }
@@ -5030,7 +5208,7 @@ ___BOOL emacs_bindings;)
               int len = 0;
               while (seq[len] != '\0')
                 len++;
-              p = ___CAST(char*,___alloc_mem (len+1));
+              p = ___CAST(char*,___ALLOC_MEM(len+1));
               if (p != NULL)
                 {
                   p[len] = '\0';
@@ -5070,7 +5248,7 @@ ___BOOL emacs_bindings;)
   if (rows <= 0)
     rows = 24;
   if (cols <= 0)
-    cols = 80;
+    cols = TERMINAL_NB_COLS_UNLIMITED;
 
   d->terminal_nb_cols = cols;
   d->terminal_nb_rows = rows;
@@ -5140,18 +5318,20 @@ int plain;)
 
   if (lineeditor_under_emacs ())
     d->input_echo = 0;
+#if defined(USE_POSIX) || defined(USE_WIN32) || defined(USE_tcgetsetattr)
   else
     {
       if (___TERMINAL_LINE_EDITING(___GSTATE->setup_params.terminal_settings) !=
           ___TERMINAL_LINE_EDITING_OFF)
         d->lineeditor_mode = LINEEDITOR_MODE_SCHEME;
     }
+#endif
 
   /* for terminal emulation */
 
   d->emulate_terminal = 1;
 
-  d->terminal_nb_cols = 80;
+  d->terminal_nb_cols = TERMINAL_NB_COLS_UNLIMITED;
   d->terminal_nb_rows = 24;
   d->terminal_size = d->terminal_nb_rows * d->terminal_nb_cols;
   d->has_auto_left_margin = 0;
@@ -5306,7 +5486,7 @@ ___device_tty *self;)
       {
         char *seq = d->capability[i];
         if (seq != NULL)
-          ___free_mem (seq);
+          ___FREE_MEM(seq);
       }
   }
 #endif
@@ -5326,11 +5506,11 @@ ___device_tty *self;)
     extensible_string_cleanup (&d->input_line);
 
   if (d->paste_text != NULL)
-    ___free_mem (d->paste_text); /* discard paste text */
+    ___FREE_MEM(d->paste_text); /* discard paste text */
 
 #if 0
   /******************** device should be freed elsewhere */
-  ___free_mem (d);
+  ___FREE_MEM(d);
 #endif
 }
 
@@ -6961,6 +7141,9 @@ lineeditor_event *ev;)
     case LINEEDITOR_EV_NONE:
       return ___FIX(___NO_ERR);
 
+    case LINEEDITOR_EV_EOF:
+      return lineeditor_line_done (d, 1);
+
     case LINEEDITOR_EV_KEY:
       if (ev->event_char < ___UNICODE_SPACE || /* discard control characters */
           ev->event_char == ___UNICODE_RUBOUT)
@@ -7403,17 +7586,17 @@ int direction;)
 
 ___HIDDEN ___SCMOBJ ___device_tty_select_raw_virt
    ___P((___device_stream *self,
-         ___BOOL for_writing,
+         int for_op,
          int i,
          int pass,
          ___device_select_state *state),
         (self,
-         for_writing,
+         for_op,
          i,
          pass,
          state)
 ___device_stream *self;
-___BOOL for_writing;
+int for_op;
 int i;
 int pass;
 ___device_select_state *state;)
@@ -7424,7 +7607,9 @@ ___device_select_state *state;)
   if ((e = ___device_tty_force_open (d)) != ___FIX(___NO_ERR))
     return e;
 
-  if ((for_writing ? d->base.base.write_stage : d->base.base.read_stage)
+  if ((for_op == FOR_READING
+       ? d->base.base.read_stage
+       : d->base.base.write_stage)
       != ___STAGE_OPEN)
     return ___FIX(___CLOSED_DEVICE_ERR);
 
@@ -7440,7 +7625,7 @@ ___device_select_state *state;)
              ___time_mod.time_neg_infinity);
         }
       else
-        ___device_select_add_fd (state, d->fd, for_writing);
+        ___device_select_add_fd (state, d->fd, for_op);
 
 #endif
 
@@ -7448,10 +7633,10 @@ ___device_select_state *state;)
 
       HANDLE wait_obj;
 
-      if (for_writing)
-        wait_obj = d->hin;
-      else
+      if (for_op == FOR_READING)
         wait_obj = d->hout;
+      else
+        wait_obj = d->hin;
 
       ___device_select_add_wait_obj (state, i, wait_obj);
 
@@ -7459,7 +7644,7 @@ ___device_select_state *state;)
 
 #ifdef USE_LINEEDITOR
 
-      if (!for_writing)
+      if (for_op == FOR_READING)
         {
           if (lineeditor_read_ready (d))
             ___device_select_add_timeout
@@ -7480,27 +7665,19 @@ ___device_select_state *state;)
 
   /* pass == ___SELECT_PASS_CHECK */
 
-  if (for_writing)
+  if (for_op == FOR_READING)
     {
-#ifdef USE_POSIX
+#ifndef USE_POSIX
+#ifndef USE_WIN32
 
-      if (d->fd < 0 || ___FD_ISSET(d->fd, &state->writefds))
-        state->devs[i] = NULL;
+      state->devs[i] = NULL;
 
 #endif
-
-#ifdef USE_WIN32
-
-      if (state->devs_next[i] != -1)
-        state->devs[i] = NULL;
-
 #endif
-    }
-  else
-    {
+
 #ifdef USE_POSIX
 
-      if (d->fd < 0 || ___FD_ISSET(d->fd, &state->readfds))
+      if (d->fd < 0 || ___FD_ISSET(d->fd, state->readfds))
         state->devs[i] = NULL;
 
 #endif
@@ -7518,6 +7695,30 @@ ___device_select_state *state;)
           (d->current.paren_balance_in_progress &&
            state->timeout_reached &&
            !___time_less (state->timeout, d->current.paren_balance_end)))
+        state->devs[i] = NULL;
+
+#endif
+    }
+  else
+    {
+#ifndef USE_POSIX
+#ifndef USE_WIN32
+
+      state->devs[i] = NULL;
+
+#endif
+#endif
+
+#ifdef USE_POSIX
+
+      if (d->fd < 0 || ___FD_ISSET(d->fd, state->writefds))
+        state->devs[i] = NULL;
+
+#endif
+
+#ifdef USE_WIN32
+
+      if (state->devs_next[i] != -1)
         state->devs[i] = NULL;
 
 #endif
@@ -7810,7 +8011,12 @@ ___device_stream *self;)
     return e;
 
   if ((e = ___device_tty_update_size (d)) == ___FIX(___NO_ERR))
-    return ___FIX(d->terminal_nb_cols);
+    {
+      if (d->terminal_nb_cols == TERMINAL_NB_COLS_UNLIMITED)
+        return ___FIX(80); /* reasonable for pretty-printing */
+      else
+        return ___FIX(d->terminal_nb_cols);
+    }
 
   return e;
 }
@@ -7851,9 +8057,9 @@ ___device_stream *self;)
     case 0:
 #ifdef USE_WIN32
       char_encoding =
-        TTY_CHAR_SELECT(___CHAR_ENCODING_ISO_8859_1,___CHAR_ENCODING_UCS_2LE);
+        TTY_CHAR_SELECT(___CHAR_ENCODING_ASCII,___CHAR_ENCODING_UCS_2LE);
 #else
-      char_encoding = ___CHAR_ENCODING_ISO_8859_1;
+      char_encoding = ___CHAR_ENCODING_ASCII;
 #endif
       break;
     }
@@ -7987,7 +8193,7 @@ ___device_tty *self;)
           == d->base.base.direction)
         {
 #ifdef USE_POSIX
-          if (d->fd >= 0 && close_no_EINTR (d->fd) < 0)
+          if (d->fd >= 0 && ___close_no_EINTR (d->fd) < 0)
             return err_code_from_errno ();
 #endif
 
@@ -8023,7 +8229,7 @@ int direction;)
   ___SCMOBJ e;
 
   d = ___CAST(___device_tty*,
-              ___alloc_mem (sizeof (___device_tty)));
+              ___ALLOC_MEM(sizeof (___device_tty)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -8036,7 +8242,7 @@ int direction;)
 
   if ((e = ___device_tty_setup (d, 1)) != ___FIX(___NO_ERR))
     {
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -8076,8 +8282,15 @@ int close_direction;)
               (fd == STDOUT_FILENO) ||
               (fd == STDERR_FILENO);
 
+#ifdef USE_FDSET_RESIZING
+
+  if (!___fdset_resize (fd, fd))
+    return ___FIX(___HEAP_OVERFLOW_ERR);
+
+#endif
+
   d = ___CAST(___device_tty*,
-              ___alloc_mem (sizeof (___device_tty)));
+              ___ALLOC_MEM(sizeof (___device_tty)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -8091,7 +8304,7 @@ int close_direction;)
 
   if ((e = ___device_tty_setup (d, plain)) != ___FIX(___NO_ERR))
     {
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -8124,7 +8337,7 @@ int direction;)
   ___SCMOBJ e;
 
   d = ___CAST(___device_tty*,
-              ___alloc_mem (sizeof (___device_tty)));
+              ___ALLOC_MEM(sizeof (___device_tty)));
 
   if (d == NULL)
     return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -8137,7 +8350,7 @@ int direction;)
 
   if ((e = ___device_tty_setup (d, 0)) != ___FIX(___NO_ERR))
     {
-      ___free_mem (d);
+      ___FREE_MEM(d);
       return e;
     }
 
@@ -8165,6 +8378,9 @@ int direction;)
 {
 #ifndef USE_POSIX
 #ifndef USE_WIN32
+
+  ___setbuf (___stdin, NULL);
+  ___setbuf (___stdout, NULL);
 
   return ___device_tty_setup_from_stdio (dev,
                                          dgroup,
@@ -8449,7 +8665,13 @@ ___SCMOBJ speed;)
 }
 
 
-#ifdef USE_POSIX
+___SCMOBJ ___os_device_tty_mode_reset ___PVOID
+{
+  return ___device_tty_mode_restore (NULL, 1);
+}
+
+
+#ifdef USE_SIGNALS
 
 
 void tty_signal_handler (int sig)
@@ -8472,17 +8694,19 @@ void tty_signal_handler (int sig)
       {
         ___device_tty *probe = ___tty_mod.mode_save_stack;
 
-        while (probe != NULL)
-          {
-            probe->size_needs_update = 1;
-            probe = probe->mode_save_stack_next;
-          }
+        if (probe != NULL)
+          do
+            {
+              probe->size_needs_update = 1;
+              probe = probe->mode_save_stack_next;
+            }
+          while (probe != NULL && probe != ___tty_mod.mode_save_stack);
 
         break;
       }
 
     case SIGCONT:
-      ___device_tty_mode_restore (0, 0); /***************/
+      ___device_tty_mode_restore (NULL, 0); /***************/
       break;
     }
 }
@@ -8512,41 +8736,7 @@ DWORD dwCtrlType;)
       break;
     }
 
-  SetEvent (___io_mod.abort_select); /* ignore error */
-
   return TRUE;
-
-#if 0
-#if 0
-  /**********************************/
-  switch (dwCtrlType)
-    {
-    case CTRL_C_EVENT:
-      io_mod.got_event = 1;
-      break;
-    case CTRL_BREAK_EVENT:
-      io_mod.got_event = 2;
-      break;
-    case CTRL_CLOSE_EVENT:
-      io_mod.got_event = 3;
-      break;
-    case CTRL_LOGOFF_EVENT:
-      io_mod.got_event = 4;
-      break;
-    case CTRL_SHUTDOWN_EVENT:
-      io_mod.got_event = 5;
-      break;
-    default:
-      io_mod.got_event = 999;
-    }
-
-  SetEvent (io_mod.abort_select); /* ignore error */
-
-  return TRUE;
-#else
-  return FALSE;
-#endif
-#endif
 }
 
 
@@ -8555,12 +8745,26 @@ DWORD dwCtrlType;)
 
 ___SCMOBJ ___setup_user_interrupt_handling ___PVOID
 {
-#ifdef USE_POSIX
+#ifdef USE_SIGNALS
 
   ___set_signal_handler (SIGINT, tty_signal_handler);
   ___set_signal_handler (SIGTERM, tty_signal_handler);
   ___set_signal_handler (SIGWINCH, tty_signal_handler);
   ___set_signal_handler (SIGCONT, tty_signal_handler);
+  ___set_signal_handler (SIGTTOU, SIG_IGN);
+  ___set_signal_handler (SIGTTIN, SIG_IGN);
+
+  {
+    ___sigset_type sigs;
+
+    sigemptyset (&sigs);
+    sigaddset (&sigs, SIGINT);
+    sigaddset (&sigs, SIGTERM);
+    sigaddset (&sigs, SIGWINCH);
+    sigaddset (&sigs, SIGCONT);
+
+    ___thread_sigmask (SIG_UNBLOCK, &sigs, NULL);
+  }
 
 #endif
 
@@ -8576,12 +8780,26 @@ ___SCMOBJ ___setup_user_interrupt_handling ___PVOID
 
 void ___cleanup_user_interrupt_handling ___PVOID
 {
-#ifdef USE_POSIX
+#ifdef USE_SIGNALS
 
   ___set_signal_handler (SIGINT, SIG_DFL);
   ___set_signal_handler (SIGTERM, SIG_DFL);
   ___set_signal_handler (SIGWINCH, SIG_DFL);
   ___set_signal_handler (SIGCONT, SIG_DFL);
+  ___set_signal_handler (SIGTTOU, SIG_DFL);
+  ___set_signal_handler (SIGTTIN, SIG_DFL);
+
+  {
+    ___sigset_type sigs;
+
+    sigemptyset (&sigs);
+    sigaddset (&sigs, SIGINT);
+    sigaddset (&sigs, SIGTERM);
+    sigaddset (&sigs, SIGWINCH);
+    sigaddset (&sigs, SIGCONT);
+
+    ___thread_sigmask (SIG_UNBLOCK, &sigs, NULL);
+  }
 
 #endif
 
@@ -8593,12 +8811,14 @@ void ___cleanup_user_interrupt_handling ___PVOID
 }
 
 
-void ___disable_user_interrupts ___PVOID
+___EXP_FUNC(void,___mask_user_interrupts_begin)
+   ___P((___mask_user_interrupts_state *state),
+        (state)
+___mask_user_interrupts_state *state;)
 {
-#ifdef USE_POSIX
-#ifdef HAVE_SIGPROCMASK
+#ifdef USE_SIGNALS
 
-  sigset_t sigs;
+  ___sigset_type sigs;
 
   sigemptyset (&sigs);
   sigaddset (&sigs, SIGINT);
@@ -8606,28 +8826,21 @@ void ___disable_user_interrupts ___PVOID
   sigaddset (&sigs, SIGWINCH);
   sigaddset (&sigs, SIGCONT);
 
-  sigprocmask (SIG_BLOCK, &sigs, NULL);
+  ___thread_sigmask (SIG_BLOCK, &sigs, state->sigset+1);
 
-#endif
 #endif
 }
 
-void ___enable_user_interrupts ___PVOID
+
+___EXP_FUNC(void,___mask_user_interrupts_end)
+   ___P((___mask_user_interrupts_state *state),
+        (state)
+___mask_user_interrupts_state *state;)
 {
-#ifdef USE_POSIX
-#ifdef HAVE_SIGPROCMASK
+#ifdef USE_SIGNALS
 
-  sigset_t sigs;
+  ___thread_sigmask (SIG_SETMASK, state->sigset+1, NULL);
 
-  sigemptyset (&sigs);
-  sigaddset (&sigs, SIGINT);
-  sigaddset (&sigs, SIGTERM);
-  sigaddset (&sigs, SIGWINCH);
-  sigaddset (&sigs, SIGCONT);
-
-  sigprocmask (SIG_UNBLOCK, &sigs, NULL);
-
-#endif
 #endif
 }
 

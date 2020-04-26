@@ -2,7 +2,7 @@
 
 ;;; File: "_t-c-2.scm"
 
-;;; Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 (include "fixnum.scm")
 
@@ -36,16 +36,14 @@
         (write (string->canonical-symbol (proc-obj-name proc)) targ-info-port)
         (display ">" targ-info-port)))
 
-    (set! targ-proc-name               (proc-obj-name proc))
+    (set! targ-proc-unique-name        (targ-unique-name proc))
     (set! targ-proc-code               (make-stretchable-vector #f))
     (set! targ-proc-code-length        0)
     (set! targ-proc-rd-res             (make-stretchable-vector #f))
     (set! targ-proc-wr-res             (make-stretchable-vector #f))
     (set! targ-proc-lbl-tbl            (queue-empty))
     (set! targ-proc-lbl-tbl-ord        (queue-empty))
-    (set! targ-debug-info?             #f)
-    (set! targ-var-descr-queue         (queue-empty))
-    (set! targ-first-class-label-queue (queue-empty))
+    (set! targ-debug-info-state        (make-debug-info-state))
 
 ;;    (targ-repr-begin-proc!)
 
@@ -70,7 +68,8 @@
                 (targ-cell-set! (targ-lbl-num x) i)
                 (loop2 (cdr l) (+ i 1) (cons x val-lbls)))
               (loop2 (cdr l) i val-lbls)))
-          (let ((info (targ-debug-info)))
+          (let ((info (debug-info-generate targ-debug-info-state
+                                           targ-sharing-table)))
             (targ-use-obj info)
             (set! targ-lbl-alloc (+ targ-lbl-alloc (+ i 1)))
             (set-car! p
@@ -93,19 +92,6 @@
       (newline targ-info-port))
 
     ))
-
-(define (targ-debug-info)
-
-  (define (number i lst)
-    (if (null? lst)
-      '()
-      (cons (list->vect (cons i (car lst)))
-            (number (+ i 1) (cdr lst)))))
-
-  (if targ-debug-info?
-    (vector (list->vect (number 0 (queue->list targ-first-class-label-queue)))
-            (list->vect (queue->list targ-var-descr-queue)))
-    #f))
 
 (define (targ-scan-scheme-procedure bbs)
 
@@ -162,7 +148,8 @@
                      (targ-ref-lbl-val targ-proc-entry-lbl)
                      arity 0 0))
     (targ-emit (list 'append
-                     (list "DEF_GLBL" (targ-make-glbl "" targ-proc-name))
+                     (list "DEF_GLBL"
+                           (targ-make-glbl "" targ-proc-unique-name))
                      #\newline))
 
 ;;    (targ-repr-begin-block! 'entry targ-proc-entry-lbl)
@@ -170,7 +157,7 @@
     ; move arguments from registers to stack frame
 
     (let loop1 ((i 1))
-      (if (and (<= i arity) (<= i targ-nb-arg-regs))
+      (if (and (<= i arity) (<= i (targ-nb-arg-regs)))
         (begin
           (targ-emit
             (targ-loc (make-stk (+ pc-fs i)) (targ-opnd (make-reg i))))
@@ -226,7 +213,7 @@
 
 ;; Information attached to a procedure
 
-(define targ-proc-name            #f) ; procedure's name
+(define targ-proc-unique-name     #f) ; procedure's unique name
 (define targ-proc-code            #f) ; code of the procedure
 (define targ-proc-code-length     #f) ; length of code of the procedure
 (define targ-proc-entry-lbl       #f) ; entry label
@@ -239,9 +226,7 @@
 (define targ-proc-heap-reserved   #f) ; heap space reserved
 (define targ-proc-ssb-reserved    #f) ; SSB space reserved
 
-(define targ-debug-info?             #f) ; generate debug information?
-(define targ-var-descr-queue         #f)
-(define targ-first-class-label-queue #f)
+(define targ-debug-info-state     #f) ; debug information accumulator
 
 (define targ-proc-instr-node      #f)
 (define targ-proc-entry-frame     #f)
@@ -315,7 +300,7 @@
 (define (targ-ref-lbl-goto n)
   (let ((x (targ-get-lbl n)))
     (vector-set! x 1 #t)
-    (targ-make-glbl (targ-lbl-num x) targ-proc-name)))
+    (targ-make-glbl (targ-lbl-num x) targ-proc-unique-name)))
 
 (define (targ-lbl-goto? lbl-struct)
   (vector-ref lbl-struct 1))
@@ -429,10 +414,10 @@
   (let ((x (if (< i targ-nb-non-reg-res)
              (cons op (vector-ref '#("HEAP" "FP") i))
              (let ((j (- i targ-nb-non-reg-res)))
-               (if (< j targ-nb-gvm-regs)
+               (if (< j (targ-nb-gvm-regs))
                  (cons op (string-append "R" (number->string j)))
                  (if (eq? op 'd-)
-                   (let ((k (- j targ-nb-gvm-regs)))
+                   (let ((k (- j (targ-nb-gvm-regs))))
                      (list "D_F64"
                            (targ-unboxed-index->code k)))
                    #f))))))
@@ -442,7 +427,7 @@
   (cond ((reg? loc)
          (reg-num loc))
         ((stk? loc)
-         (+ (- (stk-num loc) 1) targ-nb-gvm-regs))
+         (+ (- (stk-num loc) 1) (targ-nb-gvm-regs)))
         (else
          (compiler-internal-error
            "targ-unboxed-loc->index, invalid 'loc'" loc))))
@@ -456,14 +441,14 @@
          (list (string-append
                 "F64V"
                 (number->string i))))
-        ((< i targ-nb-gvm-regs)
+        ((< i (targ-nb-gvm-regs))
          (list (string-append
                 "F64R"
                 (number->string i))))
         (else
          (list (string-append
                 "F64STK"
-                (number->string (+ (- i targ-nb-gvm-regs) 1)))))))
+                (number->string (+ (- i (targ-nb-gvm-regs)) 1)))))))
 
 (define (targ-unboxed-loc->code loc stamp)
   (targ-unboxed-index->code
@@ -500,10 +485,10 @@
 
 (define (targ-need-unboxed n)
   (targ-wr-res
-    (+ n (+ targ-nb-non-reg-res targ-nb-gvm-regs))))
+    (+ n (+ targ-nb-non-reg-res (targ-nb-gvm-regs)))))
 
 (define (targ-use-all-res)
-  (let loop ((i (- (+ targ-nb-non-reg-res targ-nb-gvm-regs) 1)))
+  (let loop ((i (- (+ targ-nb-non-reg-res (targ-nb-gvm-regs)) 1)))
     (if (>= i 0)
       (begin
         (targ-wr-res i)
@@ -541,162 +526,14 @@
 
 ;;;----------------------------------------------------------------------------
 
-(define (targ-add-var-descr! descr)
-
-  (define (index x l)
-    (let loop ((l l) (i 0))
-      (cond ((not (pair? l))    #f)
-            ((equal? (car l) x) i)
-            (else               (loop (cdr l) (+ i 1))))))
-
-  (let ((n (index descr (queue->list targ-var-descr-queue))))
-    (if n
-      n
-      (let ((m (length (queue->list targ-var-descr-queue))))
-        (queue-put! targ-var-descr-queue descr)
-        m))))
-
-(define (targ-add-first-class-label! node slots frame)
-
-  (define (encode slot)
-    (let ((v (car slot))
-          (i (cdr slot)))
-      (+ (* i 32768)
-         (if (pair? v)
-           (* (targ-add-var-descr! (map encode v)) 2)
-           (+ (* (targ-add-var-descr! (var-name v)) 2)
-              (if (var-boxed? v) 1 0))))))
-
-  (define (closure-env-slot closure-vars stack-slots)
-    (let loop ((i 1) (lst1 closure-vars) (lst2 '()))
-      (if (null? lst1)
-        lst2
-        (let ((x (car lst1)))
-          (if (not (frame-live? x frame))
-            (loop (+ i 1)
-                  (cdr lst1)
-                  lst2)
-            (let ((y (assq (var-name x) stack-slots)))
-              (if (and y (not (eq? x (cadr y))))
-                (begin
-                  (if (< (var-lexical-level (cadr y))
-                         (var-lexical-level x))
-                      (let ()
-                        (##namespace ("" pp));****************
-                        (pp (list
-                             'closure-vars: (map var-name closure-vars)
-                             'stack-slots: (map car stack-slots)
-                             'source: (source->expression (node-source node))
-                             ))
-                        (compiler-internal-error
-                         "targ-add-first-class-label!, variable conflict")))
-                  (loop (+ i 1)
-                        (cdr lst1)
-                        lst2))
-                (loop (+ i 1)
-                      (cdr lst1)
-                      (cons (cons x i) lst2)))))))))
-
-  (define (accessible-slots)
-    (let loop1 ((i 1)
-                (lst1 slots)
-                (lst2 '())
-                (closure-env #f)
-                (closure-env-index #f))
-      (if (pair? lst1)
-        (let* ((var (car lst1))
-               (x (frame-live? var frame)))
-          (cond ((pair? x) ; closure environment?
-                 (if (or (not closure-env) (eq? var closure-env))
-                   (loop1 (+ i 1)
-                          (cdr lst1)
-                          lst2
-                          var
-                          i)
-                   (compiler-internal-error
-                    "targ-add-first-class-label!, multiple closure environments")))
-                ((or (not x) (temp-var? x)) ; not live or temporary var
-                 (loop1 (+ i 1)
-                        (cdr lst1)
-                        lst2
-                        closure-env
-                        closure-env-index))
-                (else
-                 (let* ((name (var-name x))
-                        (y (assq name lst2)))
-                   (if (and y (not (eq? x (cadr y))))
-                     (let ((level-x (var-lexical-level x))
-                           (level-y (var-lexical-level (cadr y))))
-                       (cond ((< level-x level-y)
-                              (loop1 (+ i 1)
-                                     (cdr lst1)
-                                     lst2
-                                     closure-env
-                                     closure-env-index))
-                             ((< level-y level-x)
-                              (loop1 (+ i 1)
-                                     (cdr lst1)
-                                     (cons (cons name (cons x i)) (remq y lst2))
-                                     closure-env
-                                     closure-env-index))
-                             (else
-                              ; Two different live variables have the same
-                              ; name and lexical level, both variables will
-                              ; be kept in the debugging information
-                              ; descriptor even though in the actual program
-                              ; only one of the two variables is in scope.
-                              ; "flatten" causes this condition to happen.
-                              ; TODO: take variable scopes into account.
-                              (loop1 (+ i 1)
-                                     (cdr lst1)
-                                     (cons (cons name (cons x i)) lst2)
-                                     closure-env
-                                     closure-env-index))))
-                     (loop1 (+ i 1)
-                            (cdr lst1)
-                            (cons (cons name (cons x i)) lst2)
-                            closure-env
-                            closure-env-index))))))
-        (let* ((x
-                (if closure-env
-                  (closure-env-slot (frame-live? closure-env frame) lst2)
-                  '()))
-               (accessible-stack-slots
-                (map cdr lst2)))
-          (if (null? x)
-            accessible-stack-slots
-            (cons (cons x closure-env-index)
-                  accessible-stack-slots))))))
-
-  (let* ((env
-          (and node (node-env node)))
-         (label-descr
-          (cons (if (and env
-                         (debug? env)
-                         (or (debug-location? env)
-                             (debug-source? env)))
-                    (let ((src (node-source node)))
-                      (set! targ-debug-info? #t)
-                      (if (debug-location? env)
-                          (if (debug-source? env)
-                              src
-                              (source-locat src))
-                          (source->expression src)))
-                    #f)
-                (if (and env
-                         (or (and (debug? env)
-                                  (debug-environments? env))
-                             (environment-map? env)))
-                    (begin
-                      (set! targ-debug-info? #t)
-                      (map encode (accessible-slots)))
-                    '()))))
-    (queue-put! targ-first-class-label-queue label-descr)
-    label-descr))
-
-;;;----------------------------------------------------------------------------
-
 (define (targ-gen-gvm-instr prev-gvm-instr gvm-instr next-gvm-instr sn)
+
+  (define (next-lbl)
+    (if (and next-gvm-instr
+             (memq (label-type next-gvm-instr)
+                   '(simple task-entry)))
+        (label-lbl-num next-gvm-instr)
+        #f))
 
   (set! targ-proc-instr-node
     (comment-get (gvm-instr-comment gvm-instr) 'node))
@@ -747,10 +584,11 @@
           "targ-gen-gvm-instr, unknown label type"))))
 
     ((apply)
-     (targ-gen-apply (apply-prim gvm-instr)
-                     (apply-opnds gvm-instr)
-                     (apply-loc gvm-instr)
-                     sn))
+     (if (not (targ-apply-ifjump-optimization? gvm-instr next-gvm-instr))
+         (targ-gen-apply (apply-prim gvm-instr)
+                         (apply-opnds gvm-instr)
+                         (apply-loc gvm-instr)
+                         sn)))
 
     ((copy)
      (targ-gen-copy (copy-opnd gvm-instr)
@@ -762,42 +600,70 @@
                      sn))
 
     ((ifjump)
-     (targ-gen-ifjump (ifjump-test gvm-instr)
-                      (ifjump-opnds gvm-instr)
-                      (ifjump-true gvm-instr)
-                      (ifjump-false gvm-instr)
-                      (ifjump-poll? gvm-instr)
-                      (if (and next-gvm-instr
-                               (memq (label-type next-gvm-instr)
-                                     '(simple task-entry)))
-                        (label-lbl-num next-gvm-instr)
-                        #f)))
+     (let ((test (ifjump-test gvm-instr))
+           (opnds (ifjump-opnds gvm-instr))
+           (true (ifjump-true gvm-instr))
+           (false (ifjump-false gvm-instr))
+           (poll? (ifjump-poll? gvm-instr)))
+       (if (targ-apply-ifjump-optimization? prev-gvm-instr gvm-instr)
+           (let ((not? (eq? test **not-proc-obj)))
+             (targ-gen-ifjump (apply-prim prev-gvm-instr)
+                              (apply-opnds prev-gvm-instr)
+                              (apply-loc prev-gvm-instr)
+                              not?
+                              (if not? false true)
+                              (if not? true false)
+                              poll?
+                              (next-lbl)))
+           (targ-gen-ifjump test
+                            opnds
+                            #f ;; loc
+                            #f ;; not?
+                            true
+                            false
+                            poll?
+                            (next-lbl)))))
 
     ((switch)
      (targ-gen-switch (switch-opnd gvm-instr)
                       (switch-cases gvm-instr)
                       (switch-default gvm-instr)
                       (switch-poll? gvm-instr)
-                      (if (and next-gvm-instr
-                               (memq (label-type next-gvm-instr)
-                                     '(simple task-entry)))
-                        (label-lbl-num next-gvm-instr)
-                        #f)))
+                      (next-lbl)))
 
     ((jump)
      (targ-gen-jump (jump-opnd gvm-instr)
+                    (jump-ret gvm-instr)
                     (jump-nb-args gvm-instr)
                     (jump-poll? gvm-instr)
                     (jump-safe? gvm-instr)
-                    (if (and next-gvm-instr
-                             (memq (label-type next-gvm-instr)
-                                   '(simple task-entry)))
-                      (label-lbl-num next-gvm-instr)
-                      #f)))
+                    (next-lbl)))
 
     (else
      (compiler-internal-error
        "targ-gen-gvm-instr, unknown 'gvm-instr'" gvm-instr))))
+
+(define (targ-apply-ifjump-optimization? gvm-instr1 gvm-instr2)
+
+  ;; check for the pattern:
+  ;;
+  ;;    loc = (prim ...)         <- gvm-instr1
+  ;;    if loc ...               <- gvm-instr2
+
+  (and (eq? (gvm-instr-type gvm-instr1) 'apply)
+       (eq? (gvm-instr-type gvm-instr2) 'ifjump)
+       (let* ((prim (apply-prim gvm-instr1))
+              (x (proc-obj-test prim)))
+         (and x
+              (vector-ref x 2))) ;; primitive optimizable in apply-ifjump
+       (let ((test (ifjump-test gvm-instr2)))
+         (or (eq? test **identity-proc-obj)
+             (eq? test **not-proc-obj)))
+       (let ((opnds (ifjump-opnds gvm-instr2)))
+         (and (pair? opnds)
+              (null? (cdr opnds))
+              (eqv? (apply-loc gvm-instr1)
+                    (car opnds))))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -811,10 +677,12 @@
 
 (define (targ-gen-label-entry lbl nb-parms opts keys rest? closed? sn)
 
-  (let ((label-descr (targ-add-first-class-label!
-                       targ-proc-instr-node
-                       '()
-                       targ-proc-exit-frame)))
+  (let ((label-descr
+         (debug-info-add!
+          targ-debug-info-state
+          targ-proc-instr-node
+          '()
+          targ-proc-exit-frame)))
     (if (= lbl targ-proc-entry-lbl)
       (begin
         (targ-emit-label-entry lbl nb-parms label-descr)
@@ -861,8 +729,8 @@
            (list (if rest? "GET_REST" "WRONG_NARGS")
                  lbl* nb-req nb-opts nb-keys)))
 
-        (let ((nb-stacked (max 0 (- nb-args targ-nb-arg-regs)))
-              (nb-stacked* (max 0 (- nb-parms targ-nb-arg-regs))))
+        (let ((nb-stacked (max 0 (- nb-args (targ-nb-arg-regs))))
+              (nb-stacked* (max 0 (- nb-parms (targ-nb-arg-regs)))))
 
           (define (setup-parameter i)
             (if (<= i nb-parms)
@@ -901,7 +769,8 @@
 
     (if (= lbl targ-proc-entry-lbl)
       (targ-emit (list 'append
-                       (list "DEF_GLBL" (targ-make-glbl "" targ-proc-name))
+                       (list "DEF_GLBL"
+                             (targ-make-glbl "" targ-proc-unique-name))
                        #\newline)))
 
     (targ-begin-fr)
@@ -923,7 +792,8 @@
 
     (define (generate fs vars gc-map)
       (let ((label-descr
-             (targ-add-first-class-label!
+             (debug-info-add!
+              targ-debug-info-state
               targ-proc-instr-node
               vars
               frame))
@@ -965,11 +835,11 @@
                                             (- cfs-after-alignment
                                                (frame-size frame))))
                       (reverse (extend-vars (reverse regs)
-                                            (- targ-nb-gvm-regs
+                                            (- (targ-nb-gvm-regs)
                                                (length regs))))
                       (list return-var)
                       (extend-vars '()
-                                   (let ((n (+ targ-nb-gvm-regs 1)))
+                                   (let ((n (+ (targ-nb-gvm-regs) 1)))
                                      (- (targ-align-frame-without-reserve n)
                                         n)))))
              (gc-map
@@ -979,7 +849,7 @@
                  (or (frame-live? var frame)
                      (let ((j (- i cfs-after-alignment)))
                        (and (>= j 0) ; all saved GVM regs are live
-                            (<= j targ-nb-gvm-regs))))))))
+                            (<= j (targ-nb-gvm-regs)))))))))
         (generate cfs vars gc-map))
       (let* ((fs ; remove frame reserve from actual frame size
               (- targ-proc-fp targ-frame-reserve))
@@ -1121,7 +991,7 @@
                     (let ((loc (closure-parms-loc parm))
                           (opnds (closure-parms-opnds parm)))
                       (targ-emit
-                        (targ-loc loc (list "ALLOC_CLO" (length opnds))))))
+                        (targ-loc loc (list "ALLOC_CLO" (targ-c-unsigned-long (length opnds)))))))
                   parms))))
 
   (close (reverse parms) sn)
@@ -1130,7 +1000,7 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define (targ-gen-ifjump test opnds true-lbl false-lbl poll? next-lbl)
+(define (targ-gen-ifjump test opnds loc not? true-lbl false-lbl poll? next-lbl)
   (let ((x (proc-obj-test test)))
     (if x
 
@@ -1149,12 +1019,18 @@
             (targ-emit
               (targ-adjust-stack fs))
             (targ-emit
-              (list "IF" (proc not? opnds fs)))
+              (list "IF" (proc not? opnds loc fs)))
 ;;            (targ-repr-exit-block! branch-lbl)
+            (if (and loc not?)
+                (targ-emit
+                 (targ-loc loc (targ-opnd (make-obj false-object)))))
             (targ-emit
               (list "GOTO" (targ-ref-lbl-goto branch-lbl)))
             (targ-emit
               '("END_IF"))
+            (if (and loc (not not?))
+                (targ-emit
+                 (targ-loc loc (targ-opnd (make-obj false-object)))))
 ;;            (targ-repr-exit-block! fall-lbl)
             (if (not (eqv? fall-lbl next-lbl))
               (targ-emit
@@ -1366,7 +1242,11 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define (targ-gen-jump opnd nb-args poll? safe? next-lbl)
+(define (targ-gen-jump opnd ret nb-args poll? safe? next-lbl)
+
+  (if ret
+      (targ-emit
+       (targ-loc (make-reg 0) (targ-opnd (make-lbl ret)))))
 
   (targ-update-fr targ-proc-entry-frame)
 
@@ -1409,24 +1289,25 @@
                      (list "JUMPPRM"
                            set-nargs
                            x))
-                   (let ((name (proc-obj-name proc)))
+                   (let ((name (proc-obj-name proc))
+                         (unique-name (targ-unique-name proc)))
                      (if (targ-arg-check-avoidable? proc nb-args)
                        (targ-emit
                          (list "JUMPINT"
                                set-nargs
                                x
-                               (targ-make-glbl "" name)))
+                               (targ-make-glbl "" unique-name)))
                        (targ-emit
                          (list 'seq
                                set-nargs
                                (list "JUMPINT"
                                      '("NOTHING")
                                      x
-                                     (targ-make-glbl 0 name)))))))))
+                                     (targ-make-glbl 0 unique-name)))))))))
               ((glo? opnd)
 ;;               (targ-repr-exit-block! #f)
                (let ((name (glo-name opnd)))
-                 (targ-wr-reg (+ targ-nb-arg-regs 1))
+                 (targ-wr-reg (+ (targ-nb-arg-regs) 1))
                  (targ-emit
                   (list (if safe? "JUMPGLOSAFE" "JUMPGLONOTSAFE")
                         (if nb-args set-nargs '("NOTHING"))
@@ -1437,7 +1318,7 @@
                (targ-emit
                  (list (if nb-args
                          (begin
-                           (targ-wr-reg (+ targ-nb-arg-regs 1))
+                           (targ-wr-reg (+ (targ-nb-arg-regs) 1))
                            (if safe? "JUMPGENSAFE" "JUMPGENNOTSAFE"))
                          "JUMPPRM")
                        (if nb-args set-nargs '("NOTHING"))
@@ -1598,7 +1479,7 @@
                 (if (targ-repr-empty? src-have)
                   (targ-repr-need-reprs src-descr)
                   src-have)))
-          (if (< i targ-nb-gvm-regs)
+          (if (< i (targ-nb-gvm-regs))
             (let ((dst-descr
                     (stretchable-vector-ref dst-loc-descrs i)))
               (stretchable-vector-set!
@@ -1613,10 +1494,10 @@
             (let* ((j
                     (- i offs))
                    (dst-descr
-                     (if (>= j targ-nb-gvm-regs)
+                     (if (>= j (targ-nb-gvm-regs))
                        (stretchable-vector-ref dst-loc-descrs j)
                        0)))
-              (if (>= j targ-nb-gvm-regs)
+              (if (>= j (targ-nb-gvm-regs))
                 (stretchable-vector-set!
                   dst-loc-descrs
                   j
@@ -1642,7 +1523,7 @@
                 (if (targ-repr-empty? src-have)
                   (targ-repr-need-reprs src-descr)
                   src-have)))
-          (if (< i targ-nb-gvm-regs)
+          (if (< i (targ-nb-gvm-regs))
             (let ((dst1-descr
                     (stretchable-vector-ref dst1-loc-descrs i))
                   (dst2-descr
@@ -1671,14 +1552,14 @@
                    (j2
                     (- i offs2))
                    (dst1-descr
-                     (if (>= j1 targ-nb-gvm-regs)
+                     (if (>= j1 (targ-nb-gvm-regs))
                        (stretchable-vector-ref dst1-loc-descrs j1)
                        0))
                    (dst2-descr
-                     (if (>= j2 targ-nb-gvm-regs)
+                     (if (>= j2 (targ-nb-gvm-regs))
                        (stretchable-vector-ref dst2-loc-descrs j2)
                        0)))
-              (if (>= j1 targ-nb-gvm-regs)
+              (if (>= j1 (targ-nb-gvm-regs))
                 (stretchable-vector-set!
                   dst1-loc-descrs
                   j1
@@ -1687,7 +1568,7 @@
                     (targ-repr-intersection
                       (targ-repr-entry-reprs dst1-descr)
                       src-reprs))))
-              (if (>= j2 targ-nb-gvm-regs)
+              (if (>= j2 (targ-nb-gvm-regs))
                 (stretchable-vector-set!
                   dst2-loc-descrs
                   j2
@@ -1758,7 +1639,7 @@
                   (cons (targ-repr-to-boxed! (targ-repr-index->loc i) r)
                         lst)))))))
 
-      (let loop ((i (- (+ targ-nb-gvm-regs src-fs) 1)))
+      (let loop ((i (- (+ (targ-nb-gvm-regs) src-fs) 1)))
         (if (>= i 0)
           (let ((descr-i (stretchable-vector-ref src-loc-descrs i)))
             (if (targ-repr-live2? descr-i)
@@ -1833,11 +1714,11 @@
                   (cons (targ-repr-to-boxed! (targ-repr-index->loc i) r)
                         lst)))))))
 
-      (let loop ((i (- (+ targ-nb-gvm-regs src-fs) 1)))
+      (let loop ((i (- (+ (targ-nb-gvm-regs) src-fs) 1)))
         (if (>= i 0)
-          (let ((j (if (< i targ-nb-gvm-regs) i (- i offs))))
-            (if (and (>= i targ-nb-gvm-regs)
-                     (< j targ-nb-gvm-regs))
+          (let ((j (if (< i (targ-nb-gvm-regs)) i (- i offs))))
+            (if (and (>= i (targ-nb-gvm-regs))
+                     (< j (targ-nb-gvm-regs)))
               (conversion i i (targ-repr-empty))
               (let ((descr-j (stretchable-vector-ref dst-loc-descrs j)))
                 (if (targ-repr-live1? descr-j)
@@ -2142,7 +2023,7 @@
       (let ((loc-descrs (targ-block-loc-descrs targ-repr-current-block)))
         (if (memq kind
                   '(entry return task-entry task-return))
-          (let loop ((i (- (+ targ-nb-gvm-regs fs) 1)))
+          (let loop ((i (- (+ (targ-nb-gvm-regs) fs) 1)))
             (if (>= i 0)
               (let ((descr (stretchable-vector-ref loc-descrs i)))
                 (stretchable-vector-set!
@@ -2191,20 +2072,20 @@
   (cond ((reg? loc)
          (reg-num loc))
         ((stk? loc)
-         (+ (- (stk-num loc) 1) targ-nb-gvm-regs))
+         (+ (- (stk-num loc) 1) (targ-nb-gvm-regs)))
         (else
          (compiler-internal-error
            "targ-repr-loc->index, invalid 'loc'" loc))))
 
 (define (targ-repr-index->loc i)
-  (if (< i targ-nb-gvm-regs)
+  (if (< i (targ-nb-gvm-regs))
     (make-reg i)
-    (make-stk (+ (- i targ-nb-gvm-regs) 1))))
+    (make-stk (+ (- i (targ-nb-gvm-regs)) 1))))
 
 (define (targ-repr-unboxed-index->code i repr)
   (let ((type (vector-ref targ-repr-types (- repr 1))))
     (targ-need-unboxed i repr)
-    (if (< i targ-nb-gvm-regs)
+    (if (< i (targ-nb-gvm-regs))
       (list (string-append
               type
               "R"
@@ -2212,13 +2093,13 @@
       (list (string-append
               type
               "STK"
-              (number->string (+ (- i targ-nb-gvm-regs) 1)))))))
+              (number->string (+ (- i (targ-nb-gvm-regs)) 1)))))))
 
 (define (targ-repr-index->code i repr)
   (if (= repr targ-repr-boxed)
-    (if (< i targ-nb-gvm-regs)
+    (if (< i (targ-nb-gvm-regs))
       (cons 'r i)
-      (list "STK" (- (+ (- i targ-nb-gvm-regs) 1) targ-proc-fp)))
+      (list "STK" (- (+ (- i (targ-nb-gvm-regs)) 1) targ-proc-fp)))
     (targ-repr-unboxed-index->code i repr)))
 
 (define (targ-repr-unboxed-loc->code loc repr)
@@ -2433,6 +2314,21 @@
          (compiler-internal-error
            "targ-opnd, unknown 'opnd'" opnd))))
 
+(define (targ-loc-opnd loc)
+
+  (cond ((reg? loc)
+         (let ((n (reg-num loc)))
+           (targ-wr-reg n)))
+
+        ((stk? loc)
+         (targ-rd-fp))
+
+        ((glo? loc)
+         (let ((name (glo-name loc)))
+           (targ-use-glo name #t))))
+
+  (targ-opnd loc))
+
 (define (targ-loc loc val) ; store GVM location
   (let ((x (targ-loc-no-invalidate loc val)))
 
@@ -2613,13 +2509,6 @@
 
 ;; DATABASE OF PRIMITIVES
 
-(for-each targ-prim-proc-add!
-          '(
-            ("##c-code"  0            #t 0        0 (#f)   extended)
-           ))
-
-;;;----------------------------------------------------------------------------
-
 (define (targ-op name descr)
   (descr (targ-get-prim-info name)))
 
@@ -2659,7 +2548,7 @@
              (let* ((rev-elements (reverse (map targ-opnd opnds)))
                     (n (length rev-elements)))
                (targ-emit
-                 (list "BEGIN_ALLOC_LIST" n (car rev-elements)))
+                 (list "BEGIN_ALLOC_LIST" (targ-c-unsigned-long n) (car rev-elements)))
                (for-each-index (lambda (elem i)
                                  (targ-emit
                                    (list "ADD_LIST_ELEM" (+ i 1) elem)))
@@ -2685,13 +2574,13 @@
     (lambda (opnds sn)
       (targ-apply-simp-gen opnds #f "MAKEWILL"))))
 
-(define (targ-apply-make-promise)
+(define (targ-apply-make-delay-promise)
   (targ-apply-alloc
-    (lambda (n) targ-promise-space)
+    (lambda (n) targ-delay-promise-space)
     #t
     #f
     #f
-    (targ-apply-simp-generator #f #f "MAKEPROMISE")))
+    (targ-apply-simp-generator #f #f "MAKEDELAYPROMISE")))
 
 (define (targ-apply-make-continuation)
   (targ-apply-alloc
@@ -2844,7 +2733,7 @@
             (let* ((flo? (or (eq? kind 'f32vector) (eq? kind 'f64vector)))
                    (elements (map (if flo? targ-opnd-flo targ-opnd) opnds)))
               (targ-emit
-                (list begin-allocator-name n))
+                (list begin-allocator-name (targ-c-unsigned-long n)))
               (for-each-index (lambda (elem i)
                                 (targ-emit
                                   (list add-element i elem)))
@@ -2911,6 +2800,7 @@
   (targ-setup-test-proc*
     proc-safe?
     flo?
+    #f ;; not optimizable in apply-ifjump
     (targ-ifjump-simp-generator flo? name)))
 
 (define (targ-ifjump-fold-s flo? name)
@@ -2923,6 +2813,7 @@
   (targ-setup-test-proc*
     proc-safe?
     flo?
+    #f ;; not optimizable in apply-ifjump
     (targ-ifjump-fold-generator flo? name)))
 
 (define (targ-ifjump-apply-s name)
@@ -2969,6 +2860,39 @@
         #f
         #f
         generator))))
+
+(define (targ-apply-ifjump proc-safe? name0 name1 name2)
+  (let* ((apply-generator
+          (lambda (opnds sn)
+            (if (not (pair? opnds))
+                (list name0)
+                (let ((o1 (car opnds)))
+                  (if (not (pair? (cdr opnds)))
+                      (list name1 (targ-opnd o1))
+                      (let ((o2 (cadr opnds)))
+                        (list name2 (targ-opnd o1) (targ-opnd o2))))))))
+         (ifjump-generator
+          (lambda (opnds loc sn)
+            (let ((x (apply-generator opnds sn)))
+              (if loc
+                  (cons (string-append (car x) "_NOTFALSEP")
+                        (cons (targ-loc-opnd loc)
+                              (cdr x)))
+                  (list "NOTFALSEP" x))))))
+
+    (lambda (prim)
+      ((targ-setup-inlinable-proc
+        proc-safe?
+        #f
+        #f
+        apply-generator)
+       prim)
+      ((targ-setup-test-proc
+        proc-safe?
+        #f
+        #t ;; optimizable in apply-ifjump
+        ifjump-generator)
+       prim))))
 
 (define (targ-apply-simpflo-s flo? name)
   (targ-apply-simpflo #t flo? name))
@@ -3035,40 +2959,45 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define (targ-setup-test-proc* proc-safe? args-flo? generator)
+(define (targ-setup-test-proc* proc-safe? args-flo? optimizable? generator)
   (lambda (prim)
-    ((targ-setup-test-proc proc-safe? args-flo? generator)
+    ((targ-setup-test-proc
+       proc-safe?
+       args-flo?
+       optimizable?
+       generator)
      prim)
     ((targ-setup-inlinable-proc
        proc-safe?
        #f
        #f
        (lambda (opnds sn)
-         (list "BOOLEAN" (generator opnds sn))))
+         (list "BOOLEAN" (generator opnds #f sn))))
      prim)))
 
-(define (targ-setup-test-proc proc-safe? args-flo? generator)
+(define (targ-setup-test-proc proc-safe? args-flo? optimizable? generator)
   (lambda (prim)
     (proc-obj-testable?-set!
-      prim
-      (lambda (env)
-        (or proc-safe?
-            (not (safe? env)))))
+     prim
+     (lambda (env)
+       (or proc-safe?
+           (not (safe? env)))))
     (proc-obj-test-set!
-      prim
-      (vector
-        args-flo?
-        (lambda (not? opnds fs)
-          (let ((test (generator opnds fs)))
-            (if not?
+     prim
+     (vector
+      args-flo?
+      (lambda (not? opnds loc fs)
+        (let ((test (generator opnds loc fs)))
+          (if not?
               (list "NOT" test)
-              test)))))))
+              test)))
+      optimizable?))))
 
 (define (targ-ifjump-simp-generator flo? name)
-  (lambda (opnds fs)
-    (targ-ifjump-simp-gen opnds flo? name)))
+  (lambda (opnds loc fs)
+    (targ-ifjump-simp-gen opnds loc flo? name)))
 
-(define (targ-ifjump-simp-gen opnds flo? name)
+(define (targ-ifjump-simp-gen opnds loc flo? name)
   (let loop ((l opnds) (args '()))
     (if (pair? l)
       (let ((opnd (car l)))
@@ -3078,10 +3007,10 @@
       (cons name (reverse args)))))
 
 (define (targ-ifjump-fold-generator flo? name)
-  (lambda (opnds fs)
-    (targ-ifjump-fold-gen opnds flo? name)))
+  (lambda (opnds loc fs)
+    (targ-ifjump-fold-gen opnds loc flo? name)))
 
-(define (targ-ifjump-fold-gen opnds flo? name)
+(define (targ-ifjump-fold-gen opnds loc flo? name)
 
   (define (multi-opnds opnds)
     (let* ((opnd1 (car opnds))
@@ -3105,9 +3034,10 @@
   (lambda (prim)
     ((targ-setup-test-proc
        proc-safe?
-       #f ; safe to assume that arguments are not all flonums
-       (lambda (opnds fs)
-         (list "NOT" (list "FALSEP" (generator opnds fs)))))
+       #f ;; safe to assume that arguments are not all flonums
+       #f ;; not optimizable in apply-ifjump
+       (lambda (opnds loc fs)
+         (list "NOTFALSEP" (generator opnds fs))))
      prim)
     ((targ-setup-inlinable-proc proc-safe? #f #f generator)
      prim)))
@@ -3139,6 +3069,22 @@
             (let ((x (generator opnds sn)))
               (targ-emit
                 (if (eq? side-effects? 'expr) (list "EXPR" x) x)))))))))
+
+(define (targ-setup-inlinable-proc-io-fast-path proc-safe? name)
+  (lambda (prim)
+    (proc-obj-inlinable?-set!
+      prim
+      (lambda (env)
+        (or proc-safe?
+            (not (safe? env)))))
+    (proc-obj-inline-set!
+      prim
+      (lambda (opnds loc sn)
+        (targ-emit
+         (cons name (map (lambda (opnd) (targ-opnd opnd)) opnds)))
+        (if loc ; result is needed?
+            (targ-emit
+             (targ-loc loc '("temp"))))))))
 
 (define (targ-apply-simp-generator flo? ssb-space name)
   (lambda (opnds sn)
@@ -3203,6 +3149,8 @@
 
 ;; Table of inlinable operations (for 'apply' and 'ifjump' GVM instructions)
 
+(define targ-use-c-rts-char-operations #f)
+
 (define (targ-setup-inlinable)
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -3217,6 +3165,8 @@
 (targ-op "##not"              (targ-ifjump-simp-s #f "FALSEP"))
 (targ-op "##boolean?"         (targ-ifjump-simp-s #f "BOOLEANP"))
 (targ-op "##null?"            (targ-ifjump-simp-s #f "NULLP"))
+(targ-op "##false-or-null?"   (targ-ifjump-simp-s #f "FALSEORNULLP"))
+(targ-op "##false-or-void?"   (targ-ifjump-simp-s #f "FALSEORVOIDP"))
 (targ-op "##unbound?"         (targ-ifjump-simp-s #f "UNBOUNDP"))
 (targ-op "##eq?"              (targ-ifjump-simp-s #f "EQP"))
 (targ-op "##eof-object?"      (targ-ifjump-simp-s #f "EOFP"))
@@ -3224,32 +3174,22 @@
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 (targ-op "##fixnum?"          (targ-ifjump-simp-s #f "FIXNUMP"))
-(targ-op "##special?"         (targ-ifjump-simp-s #f "SPECIALP"))
 (targ-op "##pair?"            (targ-ifjump-simp-s #f "PAIRP"))
-(targ-op "##pair-mutable?"    (targ-ifjump-simp-s #f "PAIRMUTABLEP"))
-(targ-op "##subtyped?"        (targ-ifjump-simp-s #f "SUBTYPEDP"))
-(targ-op "##subtyped-mutable?"(targ-ifjump-simp-s #f "SUBTYPEDMUTABLEP"))
-(targ-op "##subtyped.vector?" (targ-ifjump-simp-u #f "SUBTYPEDVECTORP"))
-(targ-op "##subtyped.symbol?" (targ-ifjump-simp-u #f "SUBTYPEDSYMBOLP"))
-(targ-op "##subtyped.flonum?" (targ-ifjump-simp-u #f "SUBTYPEDFLONUMP"))
-(targ-op "##subtyped.bignum?" (targ-ifjump-simp-u #f "SUBTYPEDBIGNUMP"))
 (targ-op "##vector?"          (targ-ifjump-simp-s #f "VECTORP"))
 (targ-op "##ratnum?"          (targ-ifjump-simp-s #f "RATNUMP"))
 (targ-op "##cpxnum?"          (targ-ifjump-simp-s #f "CPXNUMP"))
 (targ-op "##structure?"       (targ-ifjump-simp-s #f "STRUCTUREP"))
 (targ-op "##box?"             (targ-ifjump-simp-s #f "BOXP"))
 (targ-op "##values?"          (targ-ifjump-simp-s #f "VALUESP"))
-(targ-op "##meroon?"          (targ-ifjump-simp-s #f "MEROONP"))
-(targ-op "##jazz?"            (targ-ifjump-simp-s #f "JAZZP"))
 (targ-op "##symbol?"          (targ-ifjump-simp-s #f "SYMBOLP"))
 (targ-op "##keyword?"         (targ-ifjump-simp-s #f "KEYWORDP"))
 (targ-op "##frame?"           (targ-ifjump-simp-s #f "FRAMEP"))
 (targ-op "##continuation?"    (targ-ifjump-simp-s #f "CONTINUATIONP"))
 (targ-op "##promise?"         (targ-ifjump-simp-s #f "PROMISEP"))
 (targ-op "##will?"            (targ-ifjump-simp-s #f "WILLP"))
-(targ-op "##gc-hash-table?"   (targ-ifjump-simp-s #f "GCHASHTABLEP"))
-(targ-op "##mem-allocated?"   (targ-ifjump-simp-s #f "MEMALLOCATEDP"))
 (targ-op "##procedure?"       (targ-ifjump-simp-s #f "PROCEDUREP"))
+(targ-op "##subprocedure?"    (targ-ifjump-simp-s #f "SUBPROCEDUREP"))
+(targ-op "##closure?"         (targ-ifjump-simp-s #f "CLOSUREP"))
 (targ-op "##return?"          (targ-ifjump-simp-s #f "RETURNP"))
 (targ-op "##foreign?"         (targ-ifjump-simp-s #f "FOREIGNP"))
 (targ-op "##string?"          (targ-ifjump-simp-s #f "STRINGP"))
@@ -3268,6 +3208,7 @@
 (targ-op "##char?"            (targ-ifjump-simp-s #f "CHARP"))
 (targ-op "##number?"          (targ-ifjump-simp-s #f "NUMBERP"))
 (targ-op "##complex?"         (targ-ifjump-simp-s #f "COMPLEXP"))
+(targ-op "##mutable?"         (targ-ifjump-simp-s #f "MUTABLEP"))
 
 ;;the following primitives can't be inlined because they have
 ;;non-trivial definitions which depend on some configuration
@@ -3278,146 +3219,73 @@
 ;;(targ-op "##exact?"           (targ-ifjump-simp-s #f "EXACTP"))
 ;;(targ-op "##inexact?"         (targ-ifjump-simp-s #f "INEXACTP"))
 
-;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+(targ-op "##exact-integer?"     (targ-ifjump-simp-s #f "EXACTINTP"))
 
-;;TODO: REMOVE
-(targ-op "##fixnum.max"       (targ-apply-fold-u #f #f       "FIXPOS" "FIXMAX"))
-(targ-op "##fixnum.min"       (targ-apply-fold-u #f #f       "FIXPOS" "FIXMIN"))
+;; specific to C backend:
 
-(targ-op "##fixnum.wrap+"     (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXADD"))
-(targ-op "##fixnum.+"         (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXADD"))
-(targ-op "##fixnum.+?"        (targ-apply-fold-u #f "FIX_0"  #f       "FIXADDP"))
-(targ-op "##fixnum.wrap*"     (targ-apply-fold-u #f "FIX_1"  "FIXPOS" "FIXMUL"))
-(targ-op "##fixnum.*"         (targ-apply-fold-u #f "FIX_1"  "FIXPOS" "FIXMUL"))
-(targ-op "##fixnum.*?"        (targ-apply-fold-u #f "FIX_1"  #f       "FIXMULP"))
-(targ-op "##fixnum.wrap-"     (targ-apply-fold-u #f #f       "FIXNEG" "FIXSUB"))
-(targ-op "##fixnum.-"         (targ-apply-fold-u #f #f       "FIXNEG" "FIXSUB"))
-(targ-op "##fixnum.-?"        (targ-apply-fold-u #f #f       "FIXNEGP""FIXSUBP"))
-(targ-op "##fixnum.wrapquotient"(targ-apply-fold-u #f #f       #f       "FIXQUO"))
-(targ-op "##fixnum.quotient"  (targ-apply-fold-u #f #f       #f       "FIXQUO"))
-(targ-op "##fixnum.remainder" (targ-apply-fold-u #f #f       #f       "FIXREM"))
-(targ-op "##fixnum.modulo"    (targ-apply-fold-u #f #f       #f       "FIXMOD"))
-(targ-op "##fixnum.bitwise-ior"(targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXIOR"))
-(targ-op "##fixnum.bitwise-xor"(targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXXOR"))
-(targ-op "##fixnum.bitwise-and"(targ-apply-fold-u #f "FIX_M1" "FIXPOS" "FIXAND"))
-(targ-op "##fixnum.bitwise-not"(targ-apply-simp-u #f #f #f "FIXNOT"))
-(targ-op "##fixnum.wraparithmetic-shift"     (targ-apply-simp-u #f #f #f "FIXASH"))
-(targ-op "##fixnum.arithmetic-shift"         (targ-apply-simp-u #f #f #f "FIXASH"))
-(targ-op "##fixnum.arithmetic-shift?"        (targ-apply-simp-u #f #f #f "FIXASHP"))
-(targ-op "##fixnum.wraparithmetic-shift-left"(targ-apply-simp-u #f #f #f "FIXASHL"))
-(targ-op "##fixnum.arithmetic-shift-left"    (targ-apply-simp-u #f #f #f "FIXASHL"))
-(targ-op "##fixnum.arithmetic-shift-left?"   (targ-apply-simp-u #f #f #f "FIXASHLP"))
-(targ-op "##fixnum.arithmetic-shift-right"   (targ-apply-simp-u #f #f #f "FIXASHR"))
-(targ-op "##fixnum.arithmetic-shift-right?"  (targ-apply-simp-u #f #f #f "FIXASHRP"))
-(targ-op "##fixnum.wraplogical-shift-right"  (targ-apply-simp-u #f #f #f "FIXLSHR"))
-(targ-op "##fixnum.wraplogical-shift-right?" (targ-apply-simp-u #f #f #f "FIXLSHRP"))
-(targ-op "##fixnum.wrapabs"    (targ-apply-simp-u #f #f #f "FIXABS"))
-(targ-op "##fixnum.abs"        (targ-apply-simp-u #f #f #f "FIXABS"))
-(targ-op "##fixnum.abs?"       (targ-apply-simp-u #f #f #f "FIXABSP"))
-
-(targ-op "##fixnum.zero?"     (targ-ifjump-simp-u #f "FIXZEROP"))
-(targ-op "##fixnum.positive?" (targ-ifjump-simp-u #f "FIXPOSITIVEP"))
-(targ-op "##fixnum.negative?" (targ-ifjump-simp-u #f "FIXNEGATIVEP"))
-(targ-op "##fixnum.odd?"      (targ-ifjump-simp-u #f "FIXODDP"))
-(targ-op "##fixnum.even?"     (targ-ifjump-simp-u #f "FIXEVENP"))
-(targ-op "##fixnum.="         (targ-ifjump-fold-u #f "FIXEQ"))
-(targ-op "##fixnum.<"         (targ-ifjump-fold-u #f "FIXLT"))
-(targ-op "##fixnum.>"         (targ-ifjump-fold-u #f "FIXGT"))
-(targ-op "##fixnum.<="        (targ-ifjump-fold-u #f "FIXLE"))
-(targ-op "##fixnum.>="        (targ-ifjump-fold-u #f "FIXGE"))
-
-(targ-op "##fixnum.->char"    (targ-apply-simp-u #f #f #f "FIXTOCHR"))
-(targ-op "##fixnum.<-char"    (targ-apply-simp-u #f #f #f "FIXFROMCHR"))
+(targ-op "##special?"         (targ-ifjump-simp-s #f "SPECIALP"))
+(targ-op "##meroon?"          (targ-ifjump-simp-s #f "MEROONP"))
+(targ-op "##jazz?"            (targ-ifjump-simp-s #f "JAZZP"))
+(targ-op "##gc-hash-table?"   (targ-ifjump-simp-s #f "GCHASHTABLEP"))
+(targ-op "##mem-allocated?"   (targ-ifjump-simp-s #f "MEMALLOCATEDP"))
+(targ-op "##subtyped?"        (targ-ifjump-simp-s #f "SUBTYPEDP"))
+(targ-op "##subtyped.vector?" (targ-ifjump-simp-u #f "SUBTYPEDVECTORP"))
+(targ-op "##subtyped.symbol?" (targ-ifjump-simp-u #f "SUBTYPEDSYMBOLP"))
+(targ-op "##subtyped.flonum?" (targ-ifjump-simp-u #f "SUBTYPEDFLONUMP"))
+(targ-op "##subtyped.bignum?" (targ-ifjump-simp-u #f "SUBTYPEDBIGNUMP"))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-;;TODO: REMOVE
-(targ-op "##flonum.->fixnum"  (targ-apply-simp-u #t #f #f "F64TOFIX"));;TODO: REMOVE
-(targ-op "##flonum.<-fixnum"  (targ-apply-simpflo-u #f "F64FROMFIX"));;TODO: REMOVE
-
-(targ-op "##flonum.max"       (targ-apply-fold-u #t #f      "F64POS" "F64MAX"))
-(targ-op "##flonum.min"       (targ-apply-fold-u #t #f      "F64POS" "F64MIN"))
-
-(targ-op "##flonum.+"         (targ-apply-fold-u #t "F64_0" "F64POS" "F64ADD"))
-(targ-op "##flonum.*"         (targ-apply-fold-u #t "F64_1" "F64POS" "F64MUL"))
-(targ-op "##flonum.-"         (targ-apply-fold-u #t #f      "F64NEG" "F64SUB"))
-(targ-op "##flonum./"         (targ-apply-fold-u #t #f      "F64INV" "F64DIV"))
-(targ-op "##flonum.abs"       (targ-apply-simpflo-u #t "F64ABS"))
-(targ-op "##flonum.floor"     (targ-apply-simpflo-u #t "F64FLOOR"))
-(targ-op "##flonum.ceiling"   (targ-apply-simpflo-u #t "F64CEILING"))
-(targ-op "##flonum.truncate"  (targ-apply-simpflo-u #t "F64TRUNCATE"))
-(targ-op "##flonum.round"     (targ-apply-simpflo-u #t "F64ROUND"))
-(targ-op "##flonum.exp"       (targ-apply-simpflo-u #t "F64EXP"))
-(targ-op "##flonum.log"       (targ-apply-simpflo-u #t "F64LOG"))
-(targ-op "##flonum.sin"       (targ-apply-simpflo-u #t "F64SIN"))
-(targ-op "##flonum.cos"       (targ-apply-simpflo-u #t "F64COS"))
-(targ-op "##flonum.tan"       (targ-apply-simpflo-u #t "F64TAN"))
-(targ-op "##flonum.asin"      (targ-apply-simpflo-u #t "F64ASIN"))
-(targ-op "##flonum.acos"      (targ-apply-simpflo-u #t "F64ACOS"))
-(targ-op "##flonum.atan"      (targ-apply-simpflo2-u #t "F64ATAN" "F64ATAN2"))
-(targ-op "##flonum.expt"      (targ-apply-simpflo-u #t "F64EXPT"))
-(targ-op "##flonum.sqrt"      (targ-apply-simpflo-u #t "F64SQRT"))
-(targ-op "##flonum.copysign"  (targ-apply-simpflo-u #t "F64COPYSIGN"))
-
-(targ-op "##flonum.integer?"  (targ-ifjump-simp-u #t "F64INTEGERP"))
-(targ-op "##flonum.zero?"     (targ-ifjump-simp-u #t "F64ZEROP"))
-(targ-op "##flonum.positive?" (targ-ifjump-simp-u #t "F64POSITIVEP"))
-(targ-op "##flonum.negative?" (targ-ifjump-simp-u #t "F64NEGATIVEP"))
-(targ-op "##flonum.odd?"      (targ-ifjump-simp-u #t "F64ODDP"))
-(targ-op "##flonum.even?"     (targ-ifjump-simp-u #t "F64EVENP"))
-(targ-op "##flonum.finite?"   (targ-ifjump-simp-u #t "F64FINITEP"))
-(targ-op "##flonum.infinite?" (targ-ifjump-simp-u #t "F64INFINITEP"))
-(targ-op "##flonum.nan?"      (targ-ifjump-simp-u #t "F64NANP"))
-(targ-op "##flonum.<-fixnum-exact?" (targ-ifjump-simp-u #f "F64FROMFIXEXACTP"))
-(targ-op "##flonum.="         (targ-ifjump-fold-u #t "F64EQ"))
-(targ-op "##flonum.<"         (targ-ifjump-fold-u #t "F64LT"))
-(targ-op "##flonum.>"         (targ-ifjump-fold-u #t "F64GT"))
-(targ-op "##flonum.<="        (targ-ifjump-fold-u #t "F64LE"))
-(targ-op "##flonum.>="        (targ-ifjump-fold-u #t "F64GE"))
-
-;; new fixnum primitives
 
 (targ-op "##fxmax"          (targ-apply-fold-u #f #f       "FIXPOS" "FIXMAX"))
 (targ-op "##fxmin"          (targ-apply-fold-u #f #f       "FIXPOS" "FIXMIN"))
 
-(targ-op "##fxwrap+"        (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXADD"))
+(targ-op "##fxwrap+"        (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXWRAPADD"))
 (targ-op "##fx+"            (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXADD"))
-(targ-op "##fx+?"           (targ-apply-fold-u #f "FIX_0"  #f       "FIXADDP"))
-(targ-op "##fxwrap*"        (targ-apply-fold-u #f "FIX_1"  "FIXPOS" "FIXMUL"))
+(targ-op "##fx+?"           (targ-apply-ifjump #f #f #f "FIXADDP"))
+(targ-op "##fxwrap*"        (targ-apply-fold-u #f "FIX_1"  "FIXPOS" "FIXWRAPMUL"))
 (targ-op "##fx*"            (targ-apply-fold-u #f "FIX_1"  "FIXPOS" "FIXMUL"))
-(targ-op "##fx*?"           (targ-apply-fold-u #f "FIX_1"  #f       "FIXMULP"))
-(targ-op "##fxwrap-"        (targ-apply-fold-u #f #f       "FIXNEG" "FIXSUB"))
+(targ-op "##fx*?"           (targ-apply-ifjump #f #f #f "FIXMULP"))
+(targ-op "##fxwrap-"        (targ-apply-fold-u #f #f       "FIXWRAPNEG" "FIXWRAPSUB"))
 (targ-op "##fx-"            (targ-apply-fold-u #f #f       "FIXNEG" "FIXSUB"))
-(targ-op "##fx-?"           (targ-apply-fold-u #f #f       "FIXNEGP""FIXSUBP"))
-(targ-op "##fxwrapquotient" (targ-apply-fold-u #f #f       #f       "FIXQUO"))
+(targ-op "##fx-?"           (targ-apply-ifjump #f #f "FIXNEGP""FIXSUBP"))
+(targ-op "##fxwrapquotient" (targ-apply-fold-u #f #f       #f       "FIXWRAPQUO"))
 (targ-op "##fxquotient"     (targ-apply-fold-u #f #f       #f       "FIXQUO"))
 (targ-op "##fxremainder"    (targ-apply-fold-u #f #f       #f       "FIXREM"))
 (targ-op "##fxmodulo"       (targ-apply-fold-u #f #f       #f       "FIXMOD"))
-(targ-op "##fxnot"          (targ-apply-simp-u #f #f #f "FIXNOT"))
 (targ-op "##fxand"          (targ-apply-fold-u #f "FIX_M1" "FIXPOS" "FIXAND"))
+(targ-op "##fxandc1"        (targ-apply-simp-u #f #f       #f       "FIXANDC1"))
+(targ-op "##fxandc2"        (targ-apply-simp-u #f #f       #f       "FIXANDC2"))
+(targ-op "##fxeqv"          (targ-apply-fold-u #f "FIX_M1" "FIXPOS" "FIXEQV"))
 (targ-op "##fxior"          (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXIOR"))
+(targ-op "##fxnand"         (targ-apply-simp-u #f #f       #f       "FIXNAND"))
+(targ-op "##fxnor"          (targ-apply-simp-u #f #f       #f       "FIXNOR"))
+(targ-op "##fxnot"          (targ-apply-simp-u #f #f       #f       "FIXNOT"))
+(targ-op "##fxorc1"         (targ-apply-simp-u #f #f       #f       "FIXORC1"))
+(targ-op "##fxorc2"         (targ-apply-simp-u #f #f       #f       "FIXORC2"))
 (targ-op "##fxxor"          (targ-apply-fold-u #f "FIX_0"  "FIXPOS" "FIXXOR"))
 (targ-op "##fxif"           (targ-apply-simp-u #f #f #f "FIXIF"))
 (targ-op "##fxbit-count"    (targ-apply-simp-u #f #f #f "FIXBITCOUNT"))
 (targ-op "##fxlength"       (targ-apply-simp-u #f #f #f "FIXLENGTH"))
 (targ-op "##fxfirst-bit-set"(targ-apply-simp-u #f #f #f "FIXFIRSTBITSET"))
 (targ-op "##fxbit-set?"     (targ-ifjump-simp-u #f "FIXBITSETP"))
-(targ-op "##fxwraparithmetic-shift"     (targ-apply-simp-u #f #f #f "FIXASH"))
+(targ-op "##fxwraparithmetic-shift"     (targ-apply-simp-u #f #f #f "FIXWRAPASH"))
+(targ-op "##fxwraparithmetic-shift?"    (targ-apply-simp-u #f #f #f "FIXWRAPASHP"))
 (targ-op "##fxarithmetic-shift"         (targ-apply-simp-u #f #f #f "FIXASH"))
 (targ-op "##fxarithmetic-shift?"        (targ-apply-simp-u #f #f #f "FIXASHP"))
-(targ-op "##fxwraparithmetic-shift-left"(targ-apply-simp-u #f #f #f "FIXASHL"))
+(targ-op "##fxwraparithmetic-shift-left"(targ-apply-simp-u #f #f #f "FIXWRAPASHL"))
+(targ-op "##fxwraparithmetic-shift-left?"(targ-apply-simp-u #f #f #f "FIXWRAPASHLP"))
 (targ-op "##fxarithmetic-shift-left"    (targ-apply-simp-u #f #f #f "FIXASHL"))
 (targ-op "##fxarithmetic-shift-left?"   (targ-apply-simp-u #f #f #f "FIXASHLP"))
 (targ-op "##fxarithmetic-shift-right"   (targ-apply-simp-u #f #f #f "FIXASHR"))
 (targ-op "##fxarithmetic-shift-right?"  (targ-apply-simp-u #f #f #f "FIXASHRP"))
-(targ-op "##fxwraplogical-shift-right"  (targ-apply-simp-u #f #f #f "FIXLSHR"))
-(targ-op "##fxwraplogical-shift-right?" (targ-apply-simp-u #f #f #f "FIXLSHRP"))
-(targ-op "##fxwrapabs"      (targ-apply-simp-u #f #f #f "FIXABS"))
+(targ-op "##fxwraplogical-shift-right"  (targ-apply-simp-u #f #f #f "FIXWRAPLSHR"))
+(targ-op "##fxwraplogical-shift-right?" (targ-apply-simp-u #f #f #f "FIXWRAPLSHRP"))
+(targ-op "##fxwrapabs"      (targ-apply-simp-u #f #f #f "FIXWRAPABS"))
 (targ-op "##fxabs"          (targ-apply-simp-u #f #f #f "FIXABS"))
-(targ-op "##fxabs?"         (targ-apply-simp-u #f #f #f "FIXABSP"))
-(targ-op "##fxwrapsquare"   (targ-apply-simp-u #f #f #f "FIXSQUARE"))
+(targ-op "##fxabs?"         (targ-apply-ifjump #f #f "FIXABSP" #f))
+(targ-op "##fxwrapsquare"   (targ-apply-simp-u #f #f #f "FIXWRAPSQUARE"))
 (targ-op "##fxsquare"       (targ-apply-simp-u #f #f #f "FIXSQUARE"))
-(targ-op "##fxsquare?"      (targ-apply-simp-u #f #f #f "FIXSQUAREP"))
+(targ-op "##fxsquare?"      (targ-apply-ifjump #f #f "FIXSQUAREP" #f))
 
 (targ-op "##fxzero?"     (targ-ifjump-simp-u #f "FIXZEROP"))
 (targ-op "##fxpositive?" (targ-ifjump-simp-u #f "FIXPOSITIVEP"))
@@ -3430,23 +3298,21 @@
 (targ-op "##fx<="        (targ-ifjump-fold-u #f "FIXLE"))
 (targ-op "##fx>="        (targ-ifjump-fold-u #f "FIXGE"))
 
-(targ-op "##fx->char"    (targ-apply-simp-u #f #f #f "FIXTOCHR"));;TODO: REMOVE
-(targ-op "##fx<-char"    (targ-apply-simp-u #f #f #f "FIXFROMCHR"));;TODO: REMOVE
-(targ-op "##fixnum->char"   (targ-apply-simp-u #f #f #f "FIXTOCHR"));;TODO: REMOVE
-(targ-op "##char->fixnum"   (targ-apply-simp-u #f #f #f "FIXFROMCHR"));;TODO: REMOVE
-
 (targ-op "##integer->char"  (targ-apply-simp-u #f #f #f "FIXTOCHR"))
 (targ-op "##char->integer"  (targ-apply-simp-u #f #f #f "FIXFROMCHR"))
 (targ-op "##flonum->fixnum" (targ-apply-simp-u #t #f #f "F64TOFIX"))
 (targ-op "##fixnum->flonum" (targ-apply-simpflo-u #f "F64FROMFIX"))
 (targ-op "##fixnum->flonum-exact?" (targ-ifjump-simp-u #f "F64FROMFIXEXACTP"))
 
+(targ-op "##flonum->string-host"
+  (targ-apply-alloc
+    (lambda (n) (targ-string-space 50)) ;; account for result of max length 50
+    #t
+    #f
+    #f
+    (targ-apply-simp-generator #t #f "F64TOSTRING")))
+
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-;; new flonum primitives
-
-(targ-op "##fl->fx"  (targ-apply-simp-u #t #f #f "F64TOFIX"));;TODO: REMOVE
-(targ-op "##fl<-fx"  (targ-apply-simpflo-u #f "F64FROMFIX"));;TODO: REMOVE
 
 (targ-op "##flmax"       (targ-apply-fold-u #t #f      "F64POS" "F64MAX"))
 (targ-op "##flmin"       (targ-apply-fold-u #t #f      "F64POS" "F64MIN"))
@@ -3483,7 +3349,7 @@
 
 (targ-op "##flexp"       (targ-apply-simpflo-u #t "F64EXP"))
 (targ-op "##flexpm1"     (targ-apply-simpflo-u #t "F64EXPM1"))
-(targ-op "##fllog"       (targ-apply-simpflo-u #t "F64LOG"))
+(targ-op "##fllog"       (targ-apply-simpflo2-u #t "F64LOG" "F64LOG2"))
 (targ-op "##fllog1p"     (targ-apply-simpflo-u #t "F64LOG1P"))
 (targ-op "##flsin"       (targ-apply-simpflo-u #t "F64SIN"))
 (targ-op "##flcos"       (targ-apply-simpflo-u #t "F64COS"))
@@ -3497,6 +3363,7 @@
 (targ-op "##flasinh"     (targ-apply-simpflo-u #t "F64ASINH"))
 (targ-op "##flacosh"     (targ-apply-simpflo-u #t "F64ACOSH"))
 (targ-op "##flatanh"     (targ-apply-simpflo-u #t "F64ATANH"))
+(targ-op "##flhypot"     (targ-apply-simpflo-u #t "F64HYPOT"))
 (targ-op "##flexpt"      (targ-apply-simpflo-u #t "F64EXPT"))
 (targ-op "##flsqrt"      (targ-apply-simpflo-u #t "F64SQRT"))
 (targ-op "##flsquare"    (targ-apply-simpflo-u #t "F64SQUARE"))
@@ -3511,12 +3378,12 @@
 (targ-op "##flfinite?"   (targ-ifjump-simp-u #t "F64FINITEP"))
 (targ-op "##flinfinite?" (targ-ifjump-simp-u #t "F64INFINITEP"))
 (targ-op "##flnan?"      (targ-ifjump-simp-u #t "F64NANP"))
-(targ-op "##fl<-fx-exact?" (targ-ifjump-simp-u #f "F64FROMFIXEXACTP"));;TODO: REMOVE
 (targ-op "##fl="         (targ-ifjump-fold-u #t "F64EQ"))
 (targ-op "##fl<"         (targ-ifjump-fold-u #t "F64LT"))
 (targ-op "##fl>"         (targ-ifjump-fold-u #t "F64GT"))
 (targ-op "##fl<="        (targ-ifjump-fold-u #t "F64LE"))
 (targ-op "##fl>="        (targ-ifjump-fold-u #t "F64GE"))
+(targ-op "##fleqv?"      (targ-ifjump-simp-u #t "F64EQV"))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -3526,13 +3393,15 @@
 (targ-op "##char<=?"          (targ-ifjump-fold-u #f "CHARLEP"))
 (targ-op "##char>=?"          (targ-ifjump-fold-u #f "CHARGEP"))
 
-(targ-op "##char-alphabetic?" (targ-ifjump-simp-u #f "CHARALPHABETICP"))
-(targ-op "##char-numeric?"    (targ-ifjump-simp-u #f "CHARNUMERICP"))
-(targ-op "##char-whitespace?" (targ-ifjump-simp-u #f "CHARWHITESPACEP"))
-(targ-op "##char-upper-case?" (targ-ifjump-simp-u #f "CHARUPPERCASEP"))
-(targ-op "##char-lower-case?" (targ-ifjump-simp-u #f "CHARLOWERCASEP"))
-(targ-op "##char-upcase"      (targ-apply-simp-u #f #f #f "CHARUPCASE"))
-(targ-op "##char-downcase"    (targ-apply-simp-u #f #f #f "CHARDOWNCASE"))
+(if targ-use-c-rts-char-operations
+    (begin
+      (targ-op "##char-alphabetic?" (targ-ifjump-simp-u #f "CHARALPHABETICP"))
+      (targ-op "##char-numeric?"    (targ-ifjump-simp-u #f "CHARNUMERICP"))
+      (targ-op "##char-whitespace?" (targ-ifjump-simp-u #f "CHARWHITESPACEP"))
+      (targ-op "##char-upper-case?" (targ-ifjump-simp-u #f "CHARUPPERCASEP"))
+      (targ-op "##char-lower-case?" (targ-ifjump-simp-u #f "CHARLOWERCASEP"))
+      (targ-op "##char-upcase"      (targ-apply-simp-u #f #f #f "CHARUPCASE"))
+      (targ-op "##char-downcase"    (targ-apply-simp-u #f #f #f "CHARDOWNCASE"))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -3594,13 +3463,22 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+(targ-op "##foreign-tags"       (targ-ifjump-apply-u "FOREIGNTAGS"))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 (targ-op "##gc-hash-table-ref"     (targ-apply-simp-u #f #f #f "GCHASHTABLEREF"))
 (targ-op "##gc-hash-table-set!"    (targ-apply-simp-u #f #f 0 "GCHASHTABLESET")) ;;TODO: what should be ssb-space?
+(targ-op "##gc-hash-table-union!"  (targ-apply-simp-u #f #f 0 "GCHASHTABLEUNION")) ;;TODO: what should be ssb-space?
+(targ-op "##gc-hash-table-find!"   (targ-apply-simp-u #f #f 0 "GCHASHTABLEFIND")) ;;TODO: what should be ssb-space?
 (targ-op "##gc-hash-table-rehash!" (targ-apply-simp-u #f #f 0 "GCHASHTABLEREHASH")) ;;TODO
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 (targ-op "##values"           (targ-apply-vector-s 'values))
+(targ-op "##values-length"    (targ-apply-simp-u #f #f #f "VALUESLENGTH"))
+(targ-op "##values-ref"       (targ-apply-simp-u #f #f #f "VALUESREF"))
+(targ-op "##values-set!"      (targ-apply-simp-u #f #t #f "VALUESSET"))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -3617,6 +3495,21 @@
 (targ-op "##vector-ref"       (targ-ifjump-apply-u "VECTORREF"))
 (targ-op "##vector-set!"      (targ-apply-simp-u #f #t 1 "VECTORSET"))
 (targ-op "##vector-shrink!"   (targ-apply-simp-u #f #t #f "VECTORSHRINK"))
+(targ-op "##vector-cas!"      (targ-apply-simp-u #f 'expr 1 "VECTORCAS"))
+
+(targ-op
+ "##vector-inc!"
+ (targ-setup-inlinable-proc
+  #f
+  'expr
+  #f
+  (lambda (opnds sn)
+    (let* ((arg1 (targ-opnd (car opnds)))
+           (arg2 (targ-opnd (cadr opnds)))
+           (arg3 (targ-opnd (if (= (length opnds) 3)
+                                (caddr opnds)
+                                (make-obj 1)))))
+      (list "VECTORINC" arg1 arg2 arg3)))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -3702,17 +3595,21 @@
 (targ-op "##bignum.adigit-<"         (targ-ifjump-simp-u #f "BIGALESSP"))
 (targ-op "##bignum.adigit-zero?"     (targ-ifjump-simp-u #f "BIGAZEROP"))
 (targ-op "##bignum.adigit-negative?" (targ-ifjump-simp-u #f "BIGANEGATIVEP"))
-(targ-op "##bignum.->fixnum"         (targ-apply-simp-u #f #f #f "BIGTOFIX"));;TODO: REMOVE
-(targ-op "##bignum.<-fixnum"         (targ-apply-simpbig-u "BIGFROMFIX"));;TODO: REMOVE
-(targ-op "##bignum->fixnum"          (targ-apply-simp-u #f #f #f "BIGTOFIX"));;TODO: REMOVE
 (targ-op "##fixnum->bignum"          (targ-apply-simpbig-u "BIGFROMFIX"))
 (targ-op "##bignum.adigit-shrink!"   (targ-apply-simp-u #f #t #f "BIGASHRINK"))
 (targ-op "##bignum.adigit-copy!"     (targ-apply-simp-u #f #t #f "BIGACOPY"))
 (targ-op "##bignum.adigit-cat!"      (targ-apply-simp-u #f #t #f "BIGACAT"))
-(targ-op "##bignum.adigit-bitwise-and!"(targ-apply-simp-u #f #t #f "BIGAAND"))
-(targ-op "##bignum.adigit-bitwise-ior!"(targ-apply-simp-u #f #t #f "BIGAIOR"))
-(targ-op "##bignum.adigit-bitwise-xor!"(targ-apply-simp-u #f #t #f "BIGAXOR"))
-(targ-op "##bignum.adigit-bitwise-not!"(targ-apply-simp-u #f #t #f "BIGANOT"))
+(targ-op "##bignum.adigit-bitwise-and!"  (targ-apply-simp-u #f #t #f "BIGAAND"))
+(targ-op "##bignum.adigit-bitwise-andc1!"(targ-apply-simp-u #f #t #f "BIGAANDC1"))
+(targ-op "##bignum.adigit-bitwise-andc2!"(targ-apply-simp-u #f #t #f "BIGAANDC2"))
+(targ-op "##bignum.adigit-bitwise-eqv!"  (targ-apply-simp-u #f #t #f "BIGAEQV"))
+(targ-op "##bignum.adigit-bitwise-ior!"  (targ-apply-simp-u #f #t #f "BIGAIOR"))
+(targ-op "##bignum.adigit-bitwise-nand!" (targ-apply-simp-u #f #t #f "BIGANAND"))
+(targ-op "##bignum.adigit-bitwise-nor!"  (targ-apply-simp-u #f #t #f "BIGANOR"))
+(targ-op "##bignum.adigit-bitwise-not!"  (targ-apply-simp-u #f #t #f "BIGANOT"))
+(targ-op "##bignum.adigit-bitwise-orc1!" (targ-apply-simp-u #f #t #f "BIGAORC1"))
+(targ-op "##bignum.adigit-bitwise-orc2!" (targ-apply-simp-u #f #t #f "BIGAORC2"))
+(targ-op "##bignum.adigit-bitwise-xor!"  (targ-apply-simp-u #f #t #f "BIGAXOR"))
 
 (targ-op "##bignum.fdigit-length"    (targ-apply-simp-u #f #f #f "BIGFLENGTH"))
 (targ-op "##bignum.fdigit-ref"       (targ-apply-simp-u #f #f #f "BIGFREF"))
@@ -3729,6 +3626,8 @@
 (targ-op "##cpxnum-make"        (targ-apply-cpxnum-make))
 (targ-op "##cpxnum-real"        (targ-ifjump-apply-u "CPXNUMREAL"))
 (targ-op "##cpxnum-imag"        (targ-ifjump-apply-u "CPXNUMIMAG"))
+(targ-op "##real-part"          (targ-ifjump-apply-u "REALPART"))
+(targ-op "##imag-part"          (targ-ifjump-apply-u "IMAGPART"))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -3762,6 +3661,8 @@
          (targ-ifjump-apply-u "UNCHECKEDSTRUCTUREREF"))
 (targ-op "##unchecked-structure-set!"
          (targ-apply-simp-u #f #t 1 "UNCHECKEDSTRUCTURESET"))
+(targ-op "##unchecked-structure-cas!"
+         (targ-apply-simp-u #f 'expr 1 "UNCHECKEDSTRUCTURECAS"))
 
 (targ-op "##type-id"          (targ-apply-simp-u #f #f #f "TYPEID"))
 (targ-op "##type-name"        (targ-apply-simp-u #f #f #f "TYPENAME"))
@@ -3789,24 +3690,48 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(targ-op "##make-promise"        (targ-apply-make-promise))
-(targ-op "##promise-thunk"       (targ-ifjump-apply-u "PROMISETHUNK"))
-(targ-op "##promise-thunk-set!"  (targ-apply-simp-u #f #t 1 "PROMISETHUNKSET"))
-(targ-op "##promise-result"      (targ-ifjump-apply-u "PROMISERESULT"))
-(targ-op "##promise-result-set!" (targ-apply-simp-u #f #t 1 "PROMISERESULTSET"))
+(targ-op "##make-delay-promise" (targ-apply-make-delay-promise))
+(targ-op "##promise-state"      (targ-ifjump-apply-u "PROMISESTATE"))
+(targ-op "##promise-state-set!" (targ-apply-simp-u #f #t 1 "PROMISESTATESET"))
 
 (targ-op "##force"            (targ-apply-force))
 (targ-op "##void"             (targ-apply-simp-s #f #f #f "VOID"))
+(targ-op "##eof-object"       (targ-apply-simp-s #f #f #f "EOF"))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+(targ-op "##identity"         (targ-apply-first-argument))
 (targ-op "##first-argument"   (targ-apply-first-argument))
 (targ-op "##check-heap-limit" (targ-apply-check-heap-limit))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 (targ-op "##current-thread"   (targ-apply-simp-s #f #f #f "CURRENTTHREAD"))
-(targ-op "##run-queue"        (targ-apply-simp-s #f #f #f "RUNQUEUE"))
+(targ-op "##current-processor" (targ-apply-simp-s #f #f #f "CURRENTPROCESSOR"))
+(targ-op "##current-processor-id" (targ-apply-simp-s #f #f #f "CURRENTPROCESSORID"))
+(targ-op "##processor"        (targ-apply-simp-s #f #f #f "PROCESSOR"))
+(targ-op "##current-vm"       (targ-apply-simp-s #f #f #f "CURRENTVM"))
+
+(targ-op "##primitive-lock!"    (targ-apply-simp-u #f #t 0 "PRIMITIVELOCK"))
+(targ-op "##primitive-trylock!" (targ-ifjump-simp-u #f "PRIMITIVETRYLOCK"))
+(targ-op "##primitive-unlock!"  (targ-apply-simp-u #f #t 0 "PRIMITIVEUNLOCK"))
+
+(targ-op "##object-before?"   (targ-ifjump-simp-s #f "OBJECTBEFOREP"))
+
+(targ-op "##peek-char0?"
+         (targ-setup-inlinable-proc-io-fast-path #t "PEEKCHAR0P"))
+(targ-op "##peek-char1?"
+         (targ-setup-inlinable-proc-io-fast-path #t "PEEKCHAR1P"))
+
+(targ-op "##read-char0?"
+         (targ-setup-inlinable-proc-io-fast-path #t "READCHAR0P"))
+(targ-op "##read-char1?"
+         (targ-setup-inlinable-proc-io-fast-path #t "READCHAR1P"))
+
+(targ-op "##write-char1?"
+         (targ-setup-inlinable-proc-io-fast-path #t "WRITECHAR1P"))
+(targ-op "##write-char2?"
+         (targ-setup-inlinable-proc-io-fast-path #t "WRITECHAR2P"))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -3878,7 +3803,7 @@
            (targ-wr-fp)
            (targ-rd-reg 0)
            (targ-wr-reg 0)
-           (targ-wr-reg (+ targ-nb-arg-regs 1))
+           (targ-wr-reg (+ (targ-nb-arg-regs) 1))
            #t))))
 
 (targ-jump-inline "##thread-restore!"
@@ -3892,7 +3817,7 @@
            (targ-rd-fp)
            (targ-wr-fp)
            (targ-wr-reg 0)
-           (targ-wr-reg (+ targ-nb-arg-regs 1))
+           (targ-wr-reg (+ (targ-nb-arg-regs) 1))
            #t))))
 
 (targ-op "##make-continuation"

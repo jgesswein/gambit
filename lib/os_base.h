@@ -1,6 +1,6 @@
 /* File: "os_base.h" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 #ifndef ___OS_BASE_H
 #define ___OS_BASE_H
@@ -48,7 +48,24 @@ extern int ___fflush
    ___P((___FILE *stream),
         ());
 
-#ifdef ___DEBUG
+extern int ___ferror
+   ___P((___FILE *stream),
+        ());
+
+extern int ___feof
+   ___P((___FILE *stream),
+        ());
+
+extern void ___clearerr
+   ___P((___FILE *stream),
+        ());
+
+extern void ___setbuf
+   ___P((___FILE *stream,
+         char *buf),
+        ());
+
+#ifdef ___DEBUG_LOG
 
 extern int ___printf
    ___P((const char *format,
@@ -65,9 +82,13 @@ typedef struct ___base_module_struct
   {
     int refcount;
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
     ___FILE *debug;
+
+#endif
+
+#ifdef ___DEBUG_ALLOC_MEM
 
     ___SIZE_TS alloc_mem_calls;
     ___SIZE_TS free_mem_calls;
@@ -109,37 +130,6 @@ extern ___base_module ___base_mod;
  */
 
 #define ___ALLOC_MEM_UP
-
-
-extern void *___alloc_mem
-   ___P((___SIZE_T bytes),
-        ());
-
-extern void ___free_mem
-   ___P((void *ptr),
-        ());
-
-
-#ifdef ___DEBUG
-#ifdef ___DEBUG_ALLOC_MEM_TRACE
-
-extern void * ___alloc_mem_debug
-   ___P((___SIZE_T bytes,
-         int lineno,
-         char *file),
-        ());
-
-#endif
-#endif
-
-
-extern void *___alloc_mem_code
-   ___P((___SIZE_T bytes),
-        ());
-
-extern void ___free_mem_code
-   ___P((void *ptr),
-        ());
 
 
 /*---------------------------------------------------------------------------*/
@@ -242,7 +232,7 @@ extern ___SIZE_T ___write_console_fallback
 
 #ifdef USE_errno
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
 extern ___SCMOBJ ___err_code_from_errno_debug
    ___P((int lineno,
@@ -261,15 +251,17 @@ extern ___SCMOBJ ___err_code_from_errno ___PVOID;
 #define ___fnf_or_err_code_from_errno() \
 ___err_code_from_errno()
 
-#define ___ERR_CODE_EAGAIN ___FIX(___ERRNO_ERR(EAGAIN))
 #define ___ERR_CODE_ENOENT ___FIX(___ERRNO_ERR(ENOENT))
+#define ___ERR_CODE_EACCES ___FIX(___ERRNO_ERR(EACCES))
+#define ___ERR_CODE_EEXIST ___FIX(___ERRNO_ERR(EEXIST))
+#define ___ERR_CODE_EAGAIN ___FIX(___ERRNO_ERR(EAGAIN))
 
 #endif
 
 
 #ifdef USE_h_errno
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
 extern ___SCMOBJ ___err_code_from_h_errno_debug
    ___P((int lineno,
@@ -290,7 +282,7 @@ extern ___SCMOBJ ___err_code_from_h_errno ___PVOID;
 
 #ifdef USE_getaddrinfo
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
 extern ___SCMOBJ ___err_code_from_gai_code_debug
    ___P((int code,
@@ -314,7 +306,7 @@ extern ___SCMOBJ ___err_code_from_gai_code
 
 #ifdef USE_GetLastError
 
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
 extern ___SCMOBJ ___err_code_from_GetLastError_debug
    ___P((int lineno,
@@ -336,11 +328,14 @@ ___err_code_from_GetLastError()
 #define ___ERR_CODE_ERROR_FILE_NOT_FOUND \
 ___FIX(___WIN32_ERR(ERROR_FILE_NOT_FOUND))
 
+#define ___ERR_CODE_ERROR_ALREADY_EXISTS \
+___FIX(___WIN32_ERR(ERROR_ALREADY_EXISTS))
+
 #endif
 
 
 #ifdef USE_WSAGetLastError
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
 extern ___SCMOBJ ___err_code_from_WSAGetLastError_debug
    ___P((int lineno,
@@ -359,7 +354,7 @@ extern ___SCMOBJ ___err_code_from_WSAGetLastError ___PVOID;
 
 
 #ifdef USE_OSErr
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
 
 extern ___SCMOBJ ___err_code_from_OSErr_debug
    ___P((OSErr e,

@@ -1,6 +1,6 @@
 /* File: "os_time.c" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 /*
  * This module implements the operating system specific routines
@@ -8,9 +8,10 @@
  */
 
 #define ___INCLUDED_FROM_OS_TIME
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
+#include "os_thread.h"
 #include "os_base.h"
 #include "os_time.h"
 
@@ -24,7 +25,7 @@ ___time_module ___time_mod =
   TIME_POS_INFINITY,
   TIME_NEG_INFINITY,
   0.0,
-  -1.0,
+  -999.0, /* indicates that heartbeat interval has never been set */
   NULL
 
 #ifdef ___TIME_MODULE_INIT
@@ -168,7 +169,8 @@ void ___time_get_current_time
         (tim)
 ___time *tim;)
 {
-#ifndef USE_clock_gettime
+#ifndef USE_emscripten_get_now
+#ifndef USE_clock_gettime_realtime
 #ifndef USE_getclock
 #ifndef USE_GetSystemTimeAsFileTime
 #ifndef USE_gettimeofday
@@ -185,8 +187,17 @@ ___time *tim;)
 #endif
 #endif
 #endif
+#endif
 
-#ifdef USE_clock_gettime
+#ifdef USE_emscripten_get_now
+
+  /* The emscripten_get_now function is higher resolution than gettimeofday */
+
+  *tim = emscripten_get_now () / 1000.0; /* convert to seconds */
+
+#endif
+
+#ifdef USE_clock_gettime_realtime
 
   /* The clock_gettime function is in POSIX.1b (realtime programming). */
 
@@ -282,6 +293,114 @@ ___time *tim;)
     }
   else
     *tim = ___time_mod.time_neg_infinity;
+
+#endif
+}
+
+
+___U64 ___time_get_monotonic_time ___PVOID
+{
+#ifndef USE_mach_absolute_time
+#ifndef USE_QueryPerformanceCounter
+#ifndef USE_clock_gettime_monotonic
+
+  ___time tim;
+
+  ___time_get_current_time (&tim);
+
+#ifdef ___FLOAT_TIME_REPRESENTATION
+
+  return ___U64_from_ULONGLONG(tim*1e9);
+
+#endif
+
+#ifdef ___INT_TIME_REPRESENTATION
+
+  return ___U64_add_U64_U64(___U64_mul_UM32_UM32(tim.secs, 1000000000),
+                            ___U64_from_UM32(tim.nsecs));
+
+#endif
+
+#endif
+#endif
+#endif
+
+#ifdef USE_mach_absolute_time
+
+  return mach_absolute_time ();
+
+#endif
+
+#ifdef USE_QueryPerformanceCounter
+
+  LARGE_INTEGER count;
+
+  if (QueryPerformanceCounter (&count))
+    return ___U64_from_ULONGLONG(count.QuadPart);
+  else
+    return ___U64_from_UM32(0);
+
+#endif
+
+#ifdef USE_clock_gettime_monotonic
+
+  /* The clock_gettime function is in POSIX.1b (realtime programming). */
+
+  struct timespec ts;
+
+  if (clock_gettime (CLOCK_MONOTONIC, &ts) == 0)
+    return ___U64_add_U64_U64(___U64_mul_UM32_UM32(ts.tv_sec, 1000000000),
+                              ___U64_from_UM32(ts.tv_nsec));
+  else
+    return ___U64_from_UM32(0);
+
+#endif
+}
+
+
+___U64 ___time_get_monotonic_time_frequency ___PVOID
+{
+#ifndef USE_mach_absolute_time
+#ifndef USE_QueryPerformanceCounter
+#ifndef USE_clock_gettime_monotonic
+
+  return ___U64_from_UM32(1000000000);
+
+#endif
+#endif
+#endif
+
+#ifdef USE_mach_absolute_time
+
+  mach_timebase_info_data_t info;
+
+  mach_timebase_info (&info);
+
+  return ___U64_from_ULONGLONG(1000000000ULL * info.denom / info.numer);
+
+#endif
+
+#ifdef USE_QueryPerformanceCounter
+
+  LARGE_INTEGER freq;
+
+  if (QueryPerformanceFrequency (&freq))
+    return ___U64_from_ULONGLONG(freq.QuadPart);
+  else
+    return ___U64_from_UM32(1);
+
+#endif
+
+#ifdef USE_clock_gettime_monotonic
+
+  /* The clock_getres function is in POSIX.1b (realtime programming). */
+
+  struct timespec ts;
+
+  if (clock_getres (CLOCK_MONOTONIC, &ts) == 0)
+    return ___U64_from_ULONGLONG(1000000000ULL / (1000000000ULL * ts.tv_sec + ts.tv_nsec));
+  else
+    return ___U64_from_UM32(1);
 
 #endif
 }
@@ -810,22 +929,36 @@ ___HIDDEN void cleanup_process_times ___PVOID
 #ifndef USE_CreateThread
 
 
-___F64 ___set_heartbeat_interval
+___F64 ___get_heartbeat_interval ___PVOID
+{
+  return ___time_mod.current_heartbeat_interval;
+}
+
+
+void ___set_heartbeat_interval
    ___P((___F64 seconds),
         (seconds)
 ___F64 seconds;)
 {
-  ___time_mod.current_heartbeat_interval = seconds;
-  return 0.0;
+  if (seconds < 0.0) /* turn heartbeat off */
+    ___time_mod.current_heartbeat_interval = 0.0;
+  else
+    ___time_mod.current_heartbeat_interval = seconds;
 }
 
 
-void ___disable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_begin)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
 }
 
 
-void ___enable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_end)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
 }
 
@@ -864,14 +997,18 @@ int sig;)
 }
 
 
-___F64 ___set_heartbeat_interval
+___F64 ___get_heartbeat_interval ___PVOID
+{
+  return ___time_mod.current_heartbeat_interval;
+}
+
+
+void ___set_heartbeat_interval
    ___P((___F64 seconds),
         (seconds)
 ___F64 seconds;)
 {
   struct itimerval tv;
-
-  ___time_mod.current_heartbeat_interval = seconds;
 
   if (seconds < 0.0) /* turn heartbeat off */
     {
@@ -880,7 +1017,7 @@ ___F64 seconds;)
       tv.it_value.tv_sec     = 0;
       tv.it_value.tv_usec    = 0;
       setitimer (HEARTBEAT_ITIMER, &tv, 0);
-      return 0.0;
+      ___time_mod.current_heartbeat_interval = 0.0;
     }
   else
     {
@@ -909,41 +1046,64 @@ ___F64 seconds;)
       tv.it_value.tv_usec    = usecs;
       setitimer (HEARTBEAT_ITIMER, &tv, 0);
       getitimer (HEARTBEAT_ITIMER, &tv);
-      return tv.it_interval.tv_sec + tv.it_interval.tv_usec / 1000000.0;
+      ___time_mod.current_heartbeat_interval =
+        tv.it_interval.tv_sec + tv.it_interval.tv_usec / 1000000.0;
     }
 }
 
 
-void ___disable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_begin)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
-  ___F64 save_heartbeat_interval = ___time_mod.current_heartbeat_interval;
-  ___set_heartbeat_interval (-1.0);
-  ___time_mod.current_heartbeat_interval = save_heartbeat_interval;
-#ifdef USE_POSIX
-  ___set_signal_handler (HEARTBEAT_SIG, SIG_IGN);
+#ifdef USE_SIGNALS
+
+  ___thread_sigmask1 (SIG_BLOCK, HEARTBEAT_SIG, state->sigset+0);
+
 #endif
 }
 
 
-void ___enable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_end)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
-  ___set_heartbeat_interval (___time_mod.current_heartbeat_interval);
-#ifdef USE_POSIX
-  ___set_signal_handler (HEARTBEAT_SIG, heartbeat_interrupt_handler);
+#ifdef USE_SIGNALS
+
+  ___thread_sigmask (SIG_SETMASK, state->sigset+0, NULL);
+
 #endif
 }
 
 
 ___SCMOBJ ___setup_heartbeat_interrupt_handling ___PVOID
 {
-  ___enable_heartbeat_interrupts ();
+#ifdef USE_SIGNALS
+
+  ___set_signal_handler (HEARTBEAT_SIG, heartbeat_interrupt_handler);
+
+  ___thread_sigmask1 (SIG_UNBLOCK, HEARTBEAT_SIG, NULL);
+
+#endif
+
   return ___FIX(___NO_ERR);
 }
 
 
 void ___cleanup_heartbeat_interrupt_handling ___PVOID
 {
-  ___disable_heartbeat_interrupts ();
+  ___set_heartbeat_interval (-1.0);
+
+#ifdef USE_SIGNALS
+
+  ___set_signal_handler (HEARTBEAT_SIG, SIG_IGN);
+
+  ___thread_sigmask1 (SIG_UNBLOCK, HEARTBEAT_SIG, NULL);
+
+#endif
+
 }
 
 
@@ -970,7 +1130,13 @@ ___HIDDEN void __interrupt __far heartbeat_interrupt_handler ___PVOID
 }
 
 
-___F64 ___set_heartbeat_interval
+___F64 ___get_heartbeat_interval ___PVOID
+{
+  return ___time_mod.current_heartbeat_interval;
+}
+
+
+void ___set_heartbeat_interval
    ___P((___F64 seconds),
         (seconds)
 ___F64 seconds;)
@@ -980,7 +1146,7 @@ ___F64 seconds;)
   if (seconds < 0.0) /* turn heartbeat off */
     {
       _dos_setvect (0x1C, prev_vector_1Ch);
-      return 0.0;
+      ___time_mod.current_heartbeat_interval = 0.0;
     }
   else
     {
@@ -999,20 +1165,27 @@ ___F64 seconds;)
       ___time_mod.heartbeat_interval = t;
       ___time_mod.heartbeat_countdown = ___time_mod.heartbeat_interval;
       _dos_setvect (0x1C, ___time_mod.heartbeat_interrupt_handler);
-      return t / 18.2;
+      ___time_mod.current_heartbeat_interval = t / 18.2;
     }
 }
 
 
-void ___disable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_begin)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
+  *___CAST(int*,state) = ___time_mod.heartbeat_enabled;
   ___time_mod.heartbeat_enabled = 0;
 }
 
 
-void ___enable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_end)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
-  ___time_mod.heartbeat_enabled = 1;
+  ___time_mod.heartbeat_enabled = *___CAST(int*,state);
 }
 
 
@@ -1058,7 +1231,13 @@ ULONG param;)
 }
 
 
-___F64 ___set_heartbeat_interval
+___F64 ___get_heartbeat_interval ___PVOID
+{
+  return ___time_mod.current_heartbeat_interval;
+}
+
+
+void ___set_heartbeat_interval
    ___P((___F64 seconds),
         (seconds)
 ___F64 seconds;)
@@ -1066,14 +1245,17 @@ ___F64 seconds;)
   ___time_mod.current_heartbeat_interval = seconds;
 
   if (!___time_mod.heartbeat_hev || !___time_mod.heartbeat_tid)
-    return 0.0;
+    {
+      ___time_mod.current_heartbeat_interval = 0.0;
+      return;
+    }
   if (___time_mod.heartbeat_htimer)
     {
       DosStopTimer (___time_mod.htimer);
       ___time_mod.heartbeat_htimer = 0;
     }
   if (seconds < 0.0) /* turn heartbeat off */
-    return 0.0;
+    ___time_mod.current_heartbeat_interval = 0.0;
   else
     {
       ___F64 msecs = seconds * 1000.0;
@@ -1092,23 +1274,30 @@ ___F64 seconds;)
           == NO_ERROR)
         {
           ___time_mod.heartbeat_htimer = 1;
-          return m / 1000.0;
+          ___time_mod.current_heartbeat_interval = m / 1000.0;
         }
       else
-        return 0.0;
+        ___time_mod.current_heartbeat_interval = 0.0;
     }
 }
 
 
-void ___disable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_begin)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
+  *___CAST(int*,state) = ___time_mod.heartbeat_enabled;
   ___time_mod.heartbeat_enabled = 0;
 }
 
 
-void ___enable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_end)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
-  ___time_mod.heartbeat_enabled = 1;
+  ___time_mod.heartbeat_enabled = *___CAST(int*,state);
 }
 
 
@@ -1163,12 +1352,6 @@ void ___cleanup_heartbeat_interrupt_handling ___PVOID
 #ifdef USE_VInstall
 
 
-___HIDDEN ___BOOL heartbeat_task_installed;
-___HIDDEN short heartbeat_task_ticks;
-___HIDDEN VBLTask heartbeat_task;
-___HIDDEN ___BOOL heartbeat_enabled;
-
-
 ___HIDDEN void heartbeat_task_code ___PVOID
 {
   if (___time_mod.heartbeat_enabled)
@@ -1195,7 +1378,13 @@ ___HIDDEN asm void heartbeat_task_proc ___PVOID
 #endif
 
 
-___F64 ___set_heartbeat_interval
+___F64 ___get_heartbeat_interval ___PVOID
+{
+  return ___time_mod.current_heartbeat_interval;
+}
+
+
+void ___set_heartbeat_interval
    ___P((___F64 seconds),
         (seconds)
 ___F64 seconds;)
@@ -1206,11 +1395,12 @@ ___F64 seconds;)
     if (VRemove (___CAST(QElemPtr,&___time_mod.heartbeat_task)) != noErr)
       {
         ___time_mod.heartbeat_task_installed = 0;
-        return 0.0;
+        ___time_mod.current_heartbeat_interval = 0.0;
+        return;
       }
 
   if (seconds < 0.0) /* turn heartbeat off */
-    return 0.0;
+    ___time_mod.current_heartbeat_interval = 0.0;
   else
     {
       ___F64 ticks = seconds * 60.0; /* 60 ticks/sec */
@@ -1233,23 +1423,30 @@ ___F64 seconds;)
       if (VInstall (___CAST(QElemPtr,&___time_mod.heartbeat_task)) == noErr)
         {
           ___time_mod.heartbeat_task_installed = 1;
-          return t / 60.0;
+          ___time_mod.current_heartbeat_interval = t / 60.0;
         }
       else
-        return 0.0;
+        ___time_mod.current_heartbeat_interval = 0.0;
     }
 }
 
 
-void ___disable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_begin)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
+  *___CAST(int*,state) = ___time_mod.heartbeat_enabled;
   ___time_mod.heartbeat_enabled = 0;
 }
 
 
-void ___enable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_end)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
-  ___time_mod.heartbeat_enabled = 1;
+  ___time_mod.heartbeat_enabled = *___CAST(int*,state);
 }
 
 
@@ -1318,18 +1515,30 @@ LPVOID param;)
 }
 
 
-___F64 ___set_heartbeat_interval
+___F64 ___get_heartbeat_interval ___PVOID
+{
+  return ___time_mod.current_heartbeat_interval;
+}
+
+
+void ___set_heartbeat_interval
    ___P((___F64 seconds),
         (seconds)
 ___F64 seconds;)
 {
-  ___time_mod.current_heartbeat_interval = seconds;
+  /*
+   * By default Windows will use a 64 Hz timer to implement thread
+   * scheduling and this limits the resolution of the heartbeat.  For
+   * higher resolution heartbeats, USE_HIGH_RES_TIMING must be defined
+   * so that timeBeginPeriod(1) is called in the setup_time_management
+   * function above.
+   */
 
   if (seconds < 0.0) /* turn heartbeat off */
     {
       ___time_mod.heartbeat_interval = INFINITE;
       SetEvent (___time_mod.heartbeat_update); /* ignore error */
-      return 0.0;
+      ___time_mod.current_heartbeat_interval = 0.0;
     }
   else
     {
@@ -1347,20 +1556,27 @@ ___F64 seconds;)
 
       ___time_mod.heartbeat_interval = m;
       SetEvent (___time_mod.heartbeat_update); /* ignore error */
-      return m / 1000.0;
+      ___time_mod.current_heartbeat_interval = m / 1000.0;
     }
 }
 
 
-void ___disable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_begin)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
+  *___CAST(int*,state) = ___time_mod.heartbeat_enabled;
   ___time_mod.heartbeat_enabled = 0;
 }
 
 
-void ___enable_heartbeat_interrupts ___PVOID
+___EXP_FUNC(void,___mask_heartbeat_interrupts_end)
+   ___P((___mask_heartbeat_interrupts_state *state),
+        (state)
+___mask_heartbeat_interrupts_state *state;)
 {
-  ___time_mod.heartbeat_enabled = 1;
+  ___time_mod.heartbeat_enabled = *___CAST(int*,state);
 }
 
 

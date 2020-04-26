@@ -1,8 +1,8 @@
 ;;;============================================================================
 
-;;; File: "syntax-case.scm", Time-stamp: <2013-09-17 09:08:23 feeley>
+;;; File: "syntax-case.scm"
 
-;;; Copyright (c) 1998-2008 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1998-2019 by Marc Feeley, All Rights Reserved.
 
 ;;; This is version 3.2 .
 
@@ -35,7 +35,7 @@
 ;;   (load "syntax-case")
 ;;
 ;; For faster macro processing it is worthwhile to compile the file
-;; with the compiler.  You can also rename this file to "gambcext.scm"
+;; with the compiler.  You can also rename this file to "gambext.scm"
 ;; and put it in the Gambit "lib" installation directory so that it is
 ;; loaded every time the interpreter and compiler are started.
 ;;
@@ -75,7 +75,6 @@ interaction-environment
 literal-identifier=?
 sc-expand
 sc-compile-expand
-syntax-error
 syntax-object->datum
 syntax->list
 syntax->vector
@@ -87,6 +86,7 @@ syntax->vector
 interaction-environment
 eval
 gensym
+syntax-error
 
 ))
 
@@ -154,7 +154,7 @@ gensym
 (and (> (string-length str) 2)
 (string=? (substring str 0 2) "%%"))))))
 
-(define prop-table (##make-table))
+(define prop-table (##make-table-aux))
 
 (define remprop
 (lambda (sym key)

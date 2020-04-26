@@ -1,8 +1,8 @@
 ;;;============================================================================
 
-;;; File: "_repl#.scm", Time-stamp: <2009-02-11 21:28:56 feeley>
+;;; File: "_repl#.scm"
 
-;;; Copyright (c) 1994-2009 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -25,7 +25,7 @@
 )
 
 (define-type repl-channel
-  id: 6bf088a7-814f-4139-860a-69a757570569
+  id: F351CF0B-9C1B-4352-8CA2-032C14F7DE99
   extender: define-type-of-repl-channel
   constructor: macro-make-repl-channel
   implementer: implement-type-repl-channel
@@ -38,6 +38,7 @@
   last-owner   ;; thread that last owned this repl-channel
   input-port
   output-port
+  error-port
   result-history
 
   read-command
@@ -48,10 +49,12 @@
   pinpoint-continuation
   really-exit?
   newline
+  ask
+  confirm
 )
 
 (define-type-of-repl-channel repl-channel-ports
-  id: 4e2301a4-27c7-4eef-b8fd-e046e192500c
+  id: D7D5784C-16DC-4453-8832-CC05A6FE9353
   extender: define-type-of-repl-channel-ports
   constructor: macro-make-repl-channel-ports
   implementer: implement-type-repl-channel-ports

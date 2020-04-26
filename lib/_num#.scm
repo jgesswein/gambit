@@ -2,7 +2,7 @@
 
 ;;; File: "_num#.scm"
 
-;;; Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -13,9 +13,9 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
-  (arg-num   unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+  (arg-num   unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception divide-by-zero-exception
@@ -23,8 +23,8 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception fixnum-overflow-exception
@@ -32,8 +32,8 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 ;;;----------------------------------------------------------------------------
@@ -241,12 +241,10 @@
 (##define-macro (macro-cpxnum-are-possibly-real?) #f)
 
 (##define-macro (macro-exact-int? obj) ;; obj can be any object
-  `(or (##fixnum? ,obj)
-       (##bignum? ,obj)))
+  `(macro-exact-int-dispatch ,obj #f #t #t))
 
 (##define-macro (macro-exact-real? obj) ;; obj can be any object
-  `(or (macro-exact-int? ,obj)
-       (##ratnum? ,obj)))
+  `(macro-exact-real-dispatch ,obj #f #t #t #t))
 
 (##define-macro (macro-flonum-int? obj) ;; obj must be a flonum
   `(##flinteger? ,obj))
@@ -283,23 +281,186 @@
           (and (##flonum? imag)
                (##flzero? imag)))))
 
+(macro-define-syntax macro-if-bignum
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ yes)
+       #'(macro-if-bignum yes (begin)))
+      ((_ yes no)
+       #'(cond-expand
+          (enable-bignum
+           yes)
+          (else
+           no))))))
+
+(macro-define-syntax macro-if-ratnum
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ yes)
+       #'(macro-if-ratnum yes (begin)))
+      ((_ yes no)
+       #'(cond-expand
+          (enable-ratnum
+           yes)
+          (else
+           no))))))
+
+(macro-define-syntax macro-if-cpxnum
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ yes)
+       #'(macro-if-cpxnum yes (begin)))
+      ((_ yes no)
+       #'(cond-expand
+          (enable-cpxnum
+           yes)
+          (else
+           no))))))
+
 ;; Dispatch for number representation
 
 (macro-define-syntax macro-number-dispatch
   (lambda (stx)
     (syntax-case stx ()
       ((_ num err fix big rat flo cpx)
-       #'(cond ((##fixnum? num) fix)
-               ((##flonum? num) flo)
-               ((##bignum? num) big)
-               ((##ratnum? num) rat)
-               ((##cpxnum? num) cpx)
-               (else            err))))))
+       #'(macro-if-bignum
+          (macro-if-ratnum
+           (macro-if-cpxnum
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ((##bignum? num) big)
+                  ((##ratnum? num) rat)
+                  ((##cpxnum? num) cpx)
+                  (else            err))
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ((##bignum? num) big)
+                  ((##ratnum? num) rat)
+                  ;;((##cpxnum? num) cpx)
+                  (else            err)))
+           (macro-if-cpxnum
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ((##bignum? num) big)
+                  ;;((##ratnum? num) rat)
+                  ((##cpxnum? num) cpx)
+                  (else            err))
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ((##bignum? num) big)
+                  ;;((##ratnum? num) rat)
+                  ;;((##cpxnum? num) cpx)
+                  (else            err))))
+          (macro-if-ratnum
+           (macro-if-cpxnum
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ;;((##bignum? num) big)
+                  ((##ratnum? num) rat)
+                  ((##cpxnum? num) cpx)
+                  (else            err))
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ;;((##bignum? num) big)
+                  ((##ratnum? num) rat)
+                  ;;((##cpxnum? num) cpx)
+                  (else            err)))
+           (macro-if-cpxnum
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ;;((##bignum? num) big)
+                  ;;((##ratnum? num) rat)
+                  ((##cpxnum? num) cpx)
+                  (else            err))
+            (cond ((##fixnum? num) fix)
+                  ((##flonum? num) flo)
+                  ;;((##bignum? num) big)
+                  ;;((##ratnum? num) rat)
+                  ;;((##cpxnum? num) cpx)
+                  (else            err)))))))))
+
+(macro-define-syntax macro-exact-real-dispatch
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ num err fix big rat)
+       #'(macro-if-bignum
+          (macro-if-ratnum
+           (cond ((##fixnum? num) fix)
+                 ((##bignum? num) big)
+                 ((##ratnum? num) rat)
+                 (else            err))
+           (cond ((##fixnum? num) fix)
+                 ((##bignum? num) big)
+                 ;;((##ratnum? num) rat)
+                 (else            err)))
+          (macro-if-ratnum
+           (cond ((##fixnum? num) fix)
+                 ;;((##bignum? num) big)
+                 ((##ratnum? num) rat)
+                 (else            err))
+           (cond ((##fixnum? num) fix)
+                 ;;((##bignum? num) big)
+                 ;;((##ratnum? num) rat)
+                 (else            err))))))))
+
+(macro-define-syntax macro-exact-int-dispatch
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ num err fix big)
+       #'(macro-if-bignum
+          (cond ((##fixnum? num) fix)
+                ((##bignum? num) big)
+                (else            err))
+          (cond ((##fixnum? num) fix)
+                ;;((##bignum? num) big)
+                (else            err)))))))
+
+(macro-define-syntax macro-exact-int-dispatch-no-error
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ num fix big)
+       #'(macro-if-bignum
+          (if (##fixnum? num)
+              fix
+              big)
+          fix)))))
+
+(macro-define-syntax macro-if-enable-assert-normalized-exact-int
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ yes)
+       #'(macro-if-enable-assert-normalized-exact-int yes (##begin)))
+      ((_ yes no)
+       #'no))))
+
+(macro-define-syntax macro-assert-normalized-exact-int
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ expr)
+       #'(macro-if-enable-assert-normalized-exact-int
+          (##let (($val expr))
+            (##if (##not (##or (##fixnum? $val)
+                               (##bignum.normalized? $val)))
+                  (##error "normalized exact integer expected:" $val))
+            $val)
+          (##begin))))))
+
+(macro-define-syntax define-prim-normalized-exact-int
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ pattern . body)
+       #'(define-prim pattern
+           (macro-if-enable-assert-normalized-exact-int
+            (##let (($result (##let () . body)))
+              (macro-assert-normalized-exact-int $result)
+              $result)
+            (##let () . body)))))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 ;;; Miscellaneous constants.
 
+(##define-macro (macro-inexact-+4)     4.0)
 (##define-macro (macro-inexact-+2)     2.0)
 (##define-macro (macro-inexact--2)    -2.0)
 (##define-macro (macro-inexact-+1)     1.0)
@@ -315,7 +476,7 @@
 (##define-macro (macro-inexact-+3pi/4) 2.356194490192345)
 (##define-macro (macro-inexact-+inf)  (/ +1. 0.))
 (##define-macro (macro-inexact--inf)  (/ -1. 0.))
-(##define-macro (macro-inexact-+nan)  (/ 0. 0.))
+(##define-macro (macro-inexact-+nan)  (##flcopysign (/ 0. 0.) +1.))
 (##define-macro (macro-cpxnum-+2i)    +2i)
 (##define-macro (macro-cpxnum--i)     -i)
 (##define-macro (macro-cpxnum-+i)     +i)
@@ -444,15 +605,12 @@
 ;; slot 0 = numerator
 ;; slot 1 = denominator
 
-;;TODO: replace with ##ratnum-make
+(##define-macro (macro-ratnum-make num den) `(##ratnum-make ,num ,den))
+(##define-macro (macro-ratnum-numerator r) `(##ratnum-numerator ,r))
+(##define-macro (macro-ratnum-denominator r) `(##ratnum-denominator ,r))
 
-(##define-macro (macro-ratnum-make num den)
-  `(##subtype-set!
-    (##vector ,num ,den)
-    (macro-subtype-ratnum)))
-
-(##define-macro (macro-ratnum-numerator r)          `(macro-slot 0 ,r))
-(##define-macro (macro-ratnum-denominator r)        `(macro-slot 1 ,r))
+(define-macro (macro-exact-int->ratnum x)
+  `(macro-ratnum-make ,x 1))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -462,15 +620,12 @@
 ;; slot 0 = real
 ;; slot 1 = imag
 
-;;TODO: replace with ##cpxnum-make
+(##define-macro (macro-cpxnum-make r i) `(##cpxnum-make ,r ,i))
+(##define-macro (macro-cpxnum-real c) `(##cpxnum-real ,c))
+(##define-macro (macro-cpxnum-imag c) `(##cpxnum-imag ,c))
 
-(##define-macro (macro-cpxnum-make r i)
-  `(##subtype-set!
-    (##vector ,r ,i)
-    (macro-subtype-cpxnum)))
-
-(##define-macro (macro-cpxnum-real c)        `(macro-slot 0 ,c))
-(##define-macro (macro-cpxnum-imag c)        `(macro-slot 1 ,c))
+(define-macro (macro-noncpxnum->cpxnum x)
+  `(macro-cpxnum-make ,x 0))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 

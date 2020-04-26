@@ -1,6 +1,6 @@
-# makefile for Gambit-C system.
+# makefile for Gambit system.
 
-# Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+# Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 PACKAGE_SHORTNAME = @PACKAGE_SHORTNAME@
 PACKAGE_NAME = @PACKAGE_NAME@
@@ -15,24 +15,28 @@ srcdir = @srcdir@
 VPATH = @srcdir@
 srcdirpfx = @srcdirpfx@
 
+CONFIGURE_COMMAND = @CONFIGURE_COMMAND@
+
 C_COMPILER = @C_COMPILER_MF@
 C_PREPROC = @C_PREPROC_MF@
 FLAGS_OBJ = @FLAGS_OBJ_MF@
 FLAGS_DYN = @FLAGS_DYN_MF@
 FLAGS_LIB = @FLAGS_LIB_MF@
 FLAGS_EXE = @FLAGS_EXE_MF@
+FLAGS_OPT = @FLAGS_OPT_MF@
+FLAGS_OPT_RTS = @FLAGS_OPT_RTS_MF@
 DEFS = @DEFS@
 LIBS = @LIBS@
 
-GAMBCLIB_DEFS = @GAMBCLIB_DEFS_MF@
+GAMBITLIB_DEFS = @GAMBITLIB_DEFS_MF@
 LIB_PREFIX = @LIB_PREFIX@
 LIB_VERSION_SUFFIX = @LIB_VERSION_SUFFIX@
 LIB_MAJOR_VERSION_SUFFIX = @LIB_MAJOR_VERSION_SUFFIX@
 
 LIB_EXTENSION = @LIB_EXTENSION@
-GAMBCLIB = @GAMBCLIB@
-GAMBCGSCLIB = @GAMBCGSCLIB@
-GAMBCGSILIB = @GAMBCGSILIB@
+GAMBITLIB = @GAMBITLIB@
+GAMBITGSCLIB = @GAMBITGSCLIB@
+GAMBITGSILIB = @GAMBITGSILIB@
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL_DATA@
 INSTALL_LIB = @INSTALL_LIB@
@@ -43,6 +47,8 @@ AR = @AR@
 RC = @RC@
 GIT = @GIT@
 HG = @HG@
+
+BOOTSTRAP_CONFIGURE_FLAGS = @BOOTSTRAP_CONFIGURE_FLAGS@
 
 prefix = @prefix@
 exec_prefix = @exec_prefix@
@@ -69,16 +75,16 @@ mandir = @mandir@
 #     (which will cause the makefiles to be regenerated when you run `make');
 # (2) otherwise, pass the desired values on the `make' command line.
 
-MDEFINES = prefix=$(prefix) exec_prefix=$(exec_prefix) \
-includedir=$(includedir) libdir=$(libdir) \
-bindir=$(bindir) docdir=$(docdir) \
-infodir=$(infodir) emacsdir=$(emacsdir)
+MDEFINES = prefix="$(prefix)" exec_prefix="$(exec_prefix)" \
+includedir="$(includedir)" libdir="$(libdir)" \
+bindir="$(bindir)" docdir="$(docdir)" \
+infodir="$(infodir)" emacsdir="$(emacsdir)"
 
-SUBDIRS = include lib gsi gsc bin misc doc tests examples contrib prebuilt
+SUBDIRS = include bin lib gsi gsc misc doc tests examples contrib prebuilt bench githooks
 
-RCFILES = README INSTALL.txt LICENSE-2.0.txt LGPL.txt \
+RCFILES = README README.md INSTALL.txt LICENSE-2.0.txt LGPL.txt \
 makefile.in configure configure.ac config.guess config.sub install-sh mkidirs \
-relpath gsc-boot.unix gsc-boot.bat.windows
+relpath gsc-boot.unix gsc-boot.bat.windows .travis.yml appveyor.yml
 
 GITRCFILES = .gitignore .gitattributes
 HGRCFILES = .hgignore .hgtags
@@ -102,34 +108,91 @@ all:
 all-pre: gsc-boot@exe@
 
 all-post:
+	@echo "**** to compile the builtin modules you should: make modules"
 
 from-scratch: fake_target
-	$(MAKE) bootstrap # make gsc compiler of latest *release*
 	$(MAKE) bootclean
 	$(MAKE) bootstrap # make gsc compiler corresponding to repo HEAD
 	$(MAKE) bootclean
 	$(MAKE) all       # make everything with repo HEAD gsc compiler
 
-gsc-boot@exe@:
-	rm -f gsc-boot@bat@ gsc-boot
+boot-most-recent-release: fake_target
+	@if test -x "boot/gsc-boot@exe@" && \
+	    test "`boot/gsc-boot@exe@ -v | sed -e 's/ .*//'`" = "$(PACKAGE_VERSION)"; then \
+	  echo "**** boot/gsc-boot@exe@ doesn't need to be rebuilt"; \
+	else \
+	  $(MAKE) boot-most-recent-release-gsc-boot; \
+	fi
+
+boot-most-recent-release-gsc-boot: fake_target
+	@echo "**** building boot/gsc-boot@exe@"
+	rm -rf boot
+	mkdir -p boot
+	$(GIT) archive tags/$(PACKAGE_VERSION) | (cd boot && tar xf -)
+	cd boot && \
+	./configure $(BOOTSTRAP_CONFIGURE_FLAGS) CC='$(C_COMPILER)' && \
+	$(MAKE) bootstrap
+
+boot-wip-compiler: fake_target
+	@if test -x "boot/gsc/gsc@exe@" && \
+	    test "`boot/gsc/gsc@exe@ -v | sed -e 's/ .*//'`" = "$(PACKAGE_VERSION)" && \
+	    test "`find gsc/makefile.in gsc/*.scm -exec diff -q \{\} boot/\{\} \; 2>&1`" = ""; then \
+	  echo "**** boot/gsc/gsc@exe@ doesn't need to be rebuilt"; \
+	else \
+	  $(MAKE) boot-wip-compiler-gsc-gsc && $(MAKE) bootclean; \
+	fi
+
+boot-wip-compiler-gsc-gsc: boot-most-recent-release
+	@echo "**** building boot/gsc/gsc@exe@ using boot/gsc-boot@exe@"
+	cd boot && \
+	rm -f gsc/makefile && \
+	cp ../gsc/makefile.in ../gsc/*.scm gsc && \
+	./configure $(BOOTSTRAP_CONFIGURE_FLAGS) CC='$(C_COMPILER)' && \
+	for i in lib gsi gsc ; do (cd $$i ; $(MAKE) all) ; done
+
+wip-gsc-boot: boot-wip-compiler
+	cp boot/gsc/gsc@exe@ gsc-boot@exe@
+
+current-gsc-boot: wip-gsc-boot
+
+dummy-gsc-boot:
+	rm -f gsc-boot@bat@ gsc-boot@exe@
 	cp gsc-boot.bat.windows gsc-boot@bat@
-	cp gsc-boot.unix gsc-boot
-	chmod +x gsc-boot
+	cp gsc-boot.unix gsc-boot@exe@
+	chmod +x gsc-boot@exe@
+
+gsc-boot@exe@:
+	@if [ -e .git ] && \
+	    $(GIT) --version > /dev/null 2> /dev/null && \
+	    $(GIT) describe --tags > /dev/null 2> /dev/null && \
+	    test "`$(GIT) describe --tags`" != "$(PACKAGE_VERSION)"; then \
+	  echo "**** checking if current gsc-boot must be built"; \
+	  $(MAKE) current-gsc-boot; \
+	else \
+	  echo "**** using a dummy gsc-boot"; \
+	  $(MAKE) dummy-gsc-boot; \
+	fi
 
 fake_target:
 
 doc info pdf html txt: fake_target
 	@cd doc && $(MAKE) $(MDEFINES) $@
 
-check ut: fake_target all
+check ut ut-C ut-js ut-python ut-ruby ut-php ut-java st st-C st-js st-python st-ruby st-php st-java: fake_target all
 	@cd tests && $(MAKE) $(MDEFINES) $@
+
+bench: fake_target all
+	@cd bench && $(MAKE) $(MDEFINES) $@
 
 examples: fake_target all
 	@cd examples && $(MAKE) $(MDEFINES) $@
 
-prebuilt:  dist dist-devel
-	PATH="gsi:$$PATH" prebuilt/remote-connect $(BUILD_FARM) "" "(define tmpdir \"gambtmp0\")(define gambc-dist \"$(PACKAGE_TARNAME)\")(define timeout 3000)(ssh timeout (string-append \"rm -rf \" tmpdir \";mkdir \" tmpdir \";echo \\\"logged in on:\\\";hostname\"))(scp-to timeout (string-append gambc-dist \".tgz\") (string-append tmpdir \"/.\"))(ssh timeout (string-append \"ssh $(BUILD_HOST) \\\"cd \" tmpdir \";tar zxf \" gambc-dist \".tgz;cd \" gambc-dist \";./configure;make -j 4;mv ../\" gambc-dist \".tgz .;cd prebuilt;make prebuilt\\\"\"))(scp-from timeout (string-append tmpdir \"/\" gambc-dist \"/$(PACKAGE_TARNAME)-*\") \".\")"
+prebuilt: dist dist-devel
+	PATH="gsi:$$PATH" prebuilt/remote-connect $(BUILD_FARM) "" "(define tmpdir \"gambtmp0\")(define gambit-dist \"$(PACKAGE_TARNAME)\")(define timeout 3000)(ssh timeout (string-append \"rm -rf \" tmpdir \";mkdir \" tmpdir \";echo \\\"logged in on:\\\";hostname\"))(scp-to timeout (string-append gambit-dist \".tgz\") (string-append tmpdir \"/.\"))(ssh timeout (string-append \"ssh $(BUILD_HOST) \\\"cd \" tmpdir \";tar zxf \" gambit-dist \".tgz;cd \" gambit-dist \";./configure CC=gcc-9;make -j;mv ../\" gambit-dist \".tgz .;cd prebuilt;make prebuilt\\\"\"))(scp-from timeout (string-append tmpdir \"/\" gambit-dist \"/$(PACKAGE_TARNAME)-*\") \".\")"
 	@# cd prebuilt && $(MAKE) $(MDEFINES) $@
+
+xactlog@exe@: fake_target
+	@cd contrib/xactlog && $(MAKE) $(MDEFINES) $@
 
 stamp: fake_target
 	@cd include && $(MAKE) $(MDEFINES) $@
@@ -148,8 +211,8 @@ status: fake_target
 
 push: fake_target
 	@if test "$(RC)" = "$(GIT)"; then \
-	  $(GIT) push git@github.com:feeley/gambit.git; \
-	  $(GIT) push --tags git@github.com:feeley/gambit.git; \
+	  $(GIT) push git@github.com:gambit/gambit.git; \
+	  $(GIT) push --tags git@github.com:gambit/gambit.git; \
 	else \
 	  $(HG) push; \
 	fi
@@ -225,9 +288,9 @@ change-version: deselect-gen-for-commit
 	  $(RC) tag $(NEW_VERSION)-bootstrap; \
 	  if $(MAKE) bootstrap; then \
 	    misc/changev $$version_num $$new_version_num; \
-	    touch doc/gambit-c.txi; \
-	    cd tests; @SETDLPATH@ ../gsc/gsc -:~~bin=../bin,~~lib=../lib,~~include=../include -f -c mix.scm; mv mix.c test5.ok; cd ..; \
-	    if $(MAKE) bootclean && $(MAKE) -j 2 && $(MAKE) check && $(MAKE) doc && $(MAKE) select-gen-for-commit; then \
+	    touch doc/gambit.txi; \
+	    cd tests; @SETDLPATH@ ../gsc/gsc@exe@ -:~~bin=../bin,~~lib=../lib,~~include=../include -f -warnings -c -nb-gvm-regs 5 -nb-arg-regs 3 mix.scm; mv mix.c test5.ok; cd ..; \
+	    if $(MAKE) bootclean && $(MAKE) -j && $(MAKE) check && $(MAKE) doc && $(MAKE) select-gen-for-commit; then \
 	      if test "$(RC)" = "$(GIT)"; then \
 	        $(GIT) commit -a -m "[RUNTIME CHANGES NEEDED FOR $(NEW_VERSION)] Changed version of runtime using misc/changev"; \
 	      else \
@@ -252,6 +315,12 @@ release: fake_target
 publish-release: fake_target
 	misc/publish-release $(PACKAGE_VERSION) $(PACKAGE_TARNAME).tgz $(PACKAGE_TARNAME)-*.*
 
+modules _gambit.java _gambit.js _gambit.php _gambit.py _gambit.rb _gambit.go:
+	@cd lib && $(MAKE) $(MDEFINES) $@
+
+update-unicode:
+	@cd lib && $(MAKE) $(MDEFINES) $@
+
 bootstrap-pre: all
 
 bootstrap-post:
@@ -267,10 +336,10 @@ install-pre:
 install-post: all
 	if test "@ENABLE_MULTIPLE_VERSIONS@" = "yes"; then \
 	  if test "@bat@" = ""; then \
-	    $(srcdirpfx)./mkidirs $(DESTDIR)$(prefix); \
-	    rm -f $(DESTDIR)$(prefix)/../current \
-	      $(DESTDIR)$(prefix)/../current.lnk; \
-	    (cd $(DESTDIR)$(prefix)/.. && $(LN_S) $(PACKAGE_VERSION) current); \
+	    $(srcdirpfx)./mkidirs "$(DESTDIR)$(prefix)"; \
+	    rm -f "$(DESTDIR)$(prefix)/../current" \
+	      "$(DESTDIR)$(prefix)/../current.lnk"; \
+	    (cd "$(DESTDIR)$(prefix)/.." && $(LN_S) $(PACKAGE_VERSION) current); \
 	  fi; \
 	fi
 
@@ -279,7 +348,7 @@ uninstall-pre:
 uninstall-post:
 	if test "@ENABLE_MULTIPLE_VERSIONS@" = "yes"; then \
 	  if test "@bat@" = ""; then \
-	    (cd $(DESTDIR)$(prefix)/.. && \
+	    (cd "$(DESTDIR)$(prefix)/.." && \
 	     rm -f current && \
 	     rmdir $(PACKAGE_VERSION)); \
 	  fi; \
@@ -287,31 +356,31 @@ uninstall-post:
 
 select-gen-for-commit-pre:
 
-select-gen-for-commit-post:
+select-gen-for-commit-post select-gen-for-commit-post-nonrec:
 
 deselect-gen-for-commit-pre:
 
-deselect-gen-for-commit-post:
+deselect-gen-for-commit-post deselect-gen-for-commit-post-nonrec:
 
 mostlyclean-pre:
 
-mostlyclean-post:
+mostlyclean-post mostlyclean-post-nonrec:
 
 clean-pre: mostlyclean-pre
 
-clean-post: mostlyclean-post
+clean-post clean-post-nonrec: mostlyclean-post-nonrec
 
 distclean-pre: clean-pre
 
-distclean-post: clean-post
+distclean-post distclean-post-nonrec: clean-post-nonrec
 
 bootclean-pre: distclean-pre
 
-bootclean-post: distclean-post
+bootclean-post bootclean-post-nonrec: distclean-post-nonrec
 
 realclean-pre: bootclean-pre
 
-realclean-post: bootclean-post
+realclean-post realclean-post-nonrec: bootclean-post-nonrec
 	rm -f config.log config.status makefile
 
 rc-setup-pre:
@@ -327,7 +396,7 @@ rc-setup-pre:
 	  echo '	ignorecase = true' >> .git/config; \
 	  echo '	autocrlf = false' >> .git/config; \
 	  echo '[remote "origin"]' >> .git/config; \
-	  echo '	url = git@github.com:feeley/gambit.git' >> .git/config; \
+	  echo '	url = git@github.com:gambit/gambit.git' >> .git/config; \
 	  echo '	fetch = +refs/heads/*:refs/remotes/origin/*' >> .git/config; \
 	  echo '[branch "master"]' >> .git/config; \
 	  echo '	remote = origin' >> .git/config; \
@@ -437,43 +506,43 @@ select-gen-for-commit: select-gen-for-commit-post
 
 select-gen-for-commit-post: select-gen-for-commit-recursive
 
-select-gen-for-commit-recursive: select-gen-for-commit-pre
+select-gen-for-commit-post-nonrec select-gen-for-commit-recursive: select-gen-for-commit-pre
 
 deselect-gen-for-commit: deselect-gen-for-commit-post
 
 deselect-gen-for-commit-post: deselect-gen-for-commit-recursive
 
-deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
+deselect-gen-for-commit-post-nonrec deselect-gen-for-commit-recursive: deselect-gen-for-commit-pre
 
 mostlyclean: mostlyclean-post
 
 mostlyclean-post: mostlyclean-recursive
 
-mostlyclean-recursive: mostlyclean-pre
+mostlyclean-post-nonrec mostlyclean-recursive: mostlyclean-pre
 
 clean: clean-post
 
 clean-post: clean-recursive
 
-clean-recursive: clean-pre
+clean-post-nonrec clean-recursive: clean-pre
 
 distclean: distclean-post
 
 distclean-post: distclean-recursive
 
-distclean-recursive: distclean-pre
+distclean-post-nonrec distclean-recursive: distclean-pre
 
 bootclean: bootclean-post
 
 bootclean-post: bootclean-recursive
 
-bootclean-recursive: bootclean-pre
+bootclean-post-nonrec bootclean-recursive: bootclean-pre
 
 realclean: realclean-post
 
 realclean-post: realclean-recursive
 
-realclean-recursive: realclean-pre
+realclean-post-nonrec realclean-recursive: realclean-pre
 
 rc-setup: rc-setup-post
 

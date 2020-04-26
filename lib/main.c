@@ -1,31 +1,28 @@
 /* File: "main.c" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
-/* This is the driver of the Gambit-C system */
+/* This is the driver of the Gambit system */
 
 #define ___INCLUDED_FROM_MAIN
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
+#include "os_setup.h"
 #include "os_base.h"
 #include "os_shell.h"
 #include "setup.h"
 
 
-/**********************************/
-#ifdef ___DEBUG
-#ifdef ___DEBUG_ALLOC_MEM_TRACE
-#define ___alloc_mem(bytes) ___alloc_mem_debug(bytes,__LINE__,__FILE__)
-#endif
-#endif
-
-
 /*---------------------------------------------------------------------------*/
 
 
-___HIDDEN ___UCS_2 gambcopt_env_name[] =
-{ 'G', 'A', 'M', 'B', 'C', 'O', 'P', 'T', '\0' };
+___HIDDEN ___UCS_2 gambopt_env_name[] =
+{'G', 'A', 'M', 'B', 'O', 'P', 'T', '\0'};
+
+#ifdef ___DEFAULT_RUNTIME_OPTIONS
+___HIDDEN ___UCS_2 default_runtime_options[] = ___DEFAULT_RUNTIME_OPTIONS;
+#endif
 
 
 ___HIDDEN ___SCMOBJ usage_err
@@ -40,33 +37,53 @@ int debug_settings;)
       char *msgs[2];
       msgs[0] =
         "Usage: program [-:OPTION,OPTION...] ...\n"
-        "where OPTION is one of:\n"
-        "  mHEAPSIZE       set minimum heap size in kilobytes\n"
-        "  hHEAPSIZE       set maximum heap size in kilobytes\n"
-        "  lLIVEPERCENT    set heap live ratio after GC in percent\n"
-        "  s|S             set standard Scheme mode (on|off)\n"
-        "  d[OPT...]       set debugging options; OPT is one of:\n"
-        "                    p|a       treat uncaught exceptions as errors\n"
-        "                              (primordial-thread only|all threads)\n"
-        "                    r|s|q     error handling (create a new REPL|start in\n"
-        "                              single-step mode|quit with error status)\n"
-        "                    R|D|Q     user interrupt handling (create a new REPL|\n"
-        "                              defer handling|quit with error status)\n"
-        "                    i|c|-|@[HOST][:PORT]\n"
-        "                              select REPL interaction channel (ide|console|\n"
-        "                              standard input and output|remote debugger\n"
-        "                              (defaults: HOST=127.0.0.1, PORT=44555))\n"
-        "                    0..9      verbosity level\n"
-        "  @[INTF][:PORT]  set main RPC server configuration; defaults: INTF=127.0.0.1,\n"
-        "                  PORT=44556; when INTF=* all interfaces accept connections\n"
-        "  =DIRECTORY      override central Gambit installation directory\n"
-        "  ~~DIR=DIRECTORY override Gambit installation directory ~~DIR (where DIR can\n"
-        "                  be the special \"bin\" and \"lib\", or empty, or any identifier)\n"
-        "  +ARGUMENT       add ARGUMENT to the command line before other arguments\n"
-        "  f[OPT...]       set file options; see below for OPT\n"
-        "  t[OPT...]       set terminal options; see below for OPT\n"
-        "  -[OPT...]       set standard input and output options; see below for OPT\n"
-        "where OPT is one of:\n"
+        "The -: flag sets options for the Gambit runtime system. OPTION is one of:\n"
+        "  min-heap=SIZE      set minimum heap size, shorthand: mSIZE\n"
+        "  max-heap=SIZE      set maximum heap size, shorthand: hSIZE\n"
+        "                     the heap SIZE may end with G, M or K (default)\n"
+        "  live-ratio=RATIO   set heap live ratio after GC in percent, shorthand: lRATIO\n"
+#ifndef ___SINGLE_THREADED_VMS
+        "  parallelism=LEVEL  set parallelism level, shorthand: pLEVEL, where LEVEL can\n"
+        "                     be positive (nb of processors), negative (nb of unused\n"
+        "                     processors), or end with % (ratio of available processors)\n"
+#endif
+        "  gambit             set Gambit mode, shorthand: S (default mode)\n"
+        "  r5rs               set R5RS mode, shorthand: s\n"
+        "  r7rs               set R7RS mode\n"
+        "  debug[=[OPT...]]   set debugging options, shorthand: d[OPT...], OPT is one of\n"
+        "                      p|a       treat uncaught exceptions as errors\n"
+        "                                (primordial-thread only|all threads)\n"
+        "                      r|s|q     error handling (create a new REPL|start in\n"
+        "                                single-step mode|quit with error status)\n"
+        "                      R|D|Q     user interrupt handling (create a new REPL|\n"
+        "                                defer handling|quit with error status)\n"
+        "                      0..9      verbosity level\n"
+        "                      c         use console as REPL interaction channel\n"
+        "                      -         use stdin/out as REPL interaction channel\n"
+        "                      +         use stdin/out/err as REPL interaction channel\n"
+        "                      @[HOST][:PORT]\n"
+        "                                open connection to HOST:PORT for each thread\n"
+        "                                needing a REPL interaction channel\n"
+        "                                (defaults to 127.0.0.1:44556)\n"
+        "                      $[INTF][:PORT]\n"
+        "                                start a REPL server accepting incoming\n"
+        "                                connections on INTF:PORT\n"
+        "                                (defaults to 127.0.0.1:44555)\n"
+        "  ~~NAME=DIR         override Gambit installation directory ~~NAME where NAME\n"
+        "                     can be the special \"bin\" and \"lib\", or empty, or any id\n"
+        "  search=[DIR]       add directory to module search order (or reset it)\n"
+        "  whitelist=[SOURCE] add source to module auto-install whitelist (or reset it)\n"
+        "  ask-install=WHEN   when an uninstalled module is not on the whitelist, ask\n"
+        "                     user if it should be installed, where WHEN is one of\n"
+        "                      always    always ask\n"
+        "                      never     never ask\n"
+        "                      repl      only if a REPL is running (default)\n"
+        "  add-arg=ARGUMENT   add ARGUMENT to the command line before other arguments,\n"
+        "                     shorthand: +ARGUMENT\n"
+        "  file-settings=[IO...]      set file IO settings, shorthand: f[IO...]\n"
+        "  terminal-settings=[IO...]  set terminal IO settings, shorthand: t[IO...]\n"
+        "  stdio-settings=[IO...]     set stdin/out/err IO settings, shorthand: -[IO...]\n"
+        "where IO is one of\n"
         "  A|1|2|4|6|8|U   character encoding (ASCII|ISO-8859-1|UCS-2/4|UTF-16/8|UTF)\n"
         "  l|c|cl          end-of-line encoding (LF|CR|CR-LF)\n"
         "  u|n|f           buffering (unbuffered|newline buffered|fully buffered)\n"
@@ -86,36 +103,107 @@ ___HIDDEN ___UCS_2STRING extract_string
 ___UCS_2STRING *start;)
 {
   ___UCS_2 c;
-  ___UCS_2STRING p1 = *start;
-  ___UCS_2STRING p2;
+  ___UCS_2STRING end = *start;
+  ___UCS_2STRING p1 = end;
   int n = 0;
   ___UCS_2STRING result;
 
-  while ((c = *p1) != '\0' && (c != ',' || p1[1] == ','))
+  while ((c = *end) != '\0' && (c != ',' || end[1] == ','))
     {
-      p1++;
+      end++;
       if (c == ',')
-        p1++;
+        end++;
       n++;
     }
 
-  p2 = *start;
-  *start = p1;
+  *start = end;
 
   result = ___CAST(___UCS_2STRING,
-                   ___alloc_mem ((n+1) * sizeof (___UCS_2)));
+                   ___ALLOC_MEM((n+1) * sizeof (___UCS_2)));
 
   if (result != 0)
     {
-      p1 = result;
-      while ((c = *p2) != '\0' && (c != ',' || p2[1] == ','))
+      ___UCS_2STRING p2 = result;
+      while (p1 < end)
         {
-          p2++;
+          c = *p1++;
           if (c == ',')
-            p2++;
-          *p1++ = c;
+            p1++;
+          *p2++ = c;
         }
-      *p1++ = '\0';
+      *p2++ = '\0';
+    }
+
+  return result;
+}
+
+
+___HIDDEN int is_alpha
+   ___P((___UCS_2 c),
+        (c)
+___UCS_2 c;)
+{
+  return ((c  >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+}
+
+
+___HIDDEN int is_digit
+   ___P((___UCS_2 c),
+        (c)
+___UCS_2 c;)
+{
+  return (c >= '0' && c <= '9');
+}
+
+
+___HIDDEN int is_alpha_or_digit
+   ___P((___UCS_2 c),
+        (c)
+___UCS_2 c;)
+{
+  return is_alpha (c) ||  is_digit (c);
+}
+
+
+___HIDDEN ___UCS_2STRING extract_addr
+   ___P((___UCS_2STRING *start),
+        (start)
+___UCS_2STRING *start;)
+{
+  ___UCS_2 c;
+  ___UCS_2STRING end = *start;
+  ___UCS_2STRING p1 = end;
+  int n = 0;
+  ___UCS_2STRING result;
+
+  while (is_alpha_or_digit (c = *end) || c == '.' || c == '-')
+    {
+      end++;
+      n++;
+    }
+
+  if (*end == ':' && is_digit (end[1]))
+    {
+      end += 2;
+      n += 2;
+      while (is_digit (*end))
+        {
+          end++;
+          n++;
+        }
+    }
+
+  *start = end;
+
+  result = ___CAST(___UCS_2STRING,
+                   ___ALLOC_MEM((n+1) * sizeof (___UCS_2)));
+
+  if (result != 0)
+    {
+      ___UCS_2STRING p2 = result;
+      while (p1 < end)
+        *p2++ = *p1++;
+      *p2++ = '\0';
     }
 
   return result;
@@ -145,7 +233,7 @@ ___BOOL free_old;)
     while (old_strvec[n] != 0) n++;
 
   new_strvec = ___CAST(___UCS_2STRING*,
-                       ___alloc_mem ((n+nb_to_add+1) * sizeof (___UCS_2STRING)));
+                       ___ALLOC_MEM((n+nb_to_add+1) * sizeof (___UCS_2STRING)));
 
   if (new_strvec == 0)
     return 0;
@@ -161,9 +249,62 @@ ___BOOL free_old;)
   *strvec = new_strvec;
 
   if (free_old)
-    ___free_mem (old_strvec);
+    ___FREE_MEM(old_strvec);
 
   return 1;
+}
+
+
+___HIDDEN void free_strvec
+   ___P((___UCS_2STRING **strvec,
+         int *len),
+        (strvec,
+         len)
+___UCS_2STRING **strvec;
+int *len;)
+{
+  while (*len > 0)
+    ___free_UCS_2STRING ((*strvec)[--*len]);
+
+  if (*strvec != 0)
+    {
+      ___FREE_MEM(*strvec);
+      *strvec = 0;
+    }
+}
+
+
+___HIDDEN int starts_with
+   ___P((___UCS_2STRING start,
+         char *prefix),
+        (start,
+         prefix)
+___UCS_2STRING start;
+char *prefix;)
+{
+  while (*prefix != '\0')
+    {
+      if (*start++ != *prefix++) return 0;
+    }
+
+  return 1;
+}
+
+
+___HIDDEN int option_equal
+   ___P((___UCS_2STRING start,
+         char *option),
+        (start,
+         option)
+___UCS_2STRING start;
+char *option;)
+{
+  while (*option != '\0')
+    {
+      if (*start++ != *option++) return 0;
+    }
+
+  return (*option == '\0' || *option == ' ' || *option == ',');
 }
 
 
@@ -176,22 +317,28 @@ ___mod_or_lnk (*linker)();)
 
   ___UCS_2STRING *argv;
   ___UCS_2STRING *current_argv;
-  ___UCS_2STRING runtime_options;
+  ___UCS_2STRING cmd_line_runtime_options;
   ___UCS_2STRING script_line;
   int extra_arg_pos;
   int contract_argv;
   int options_source;
   int options_source_min;
   int options_source_max;
-  ___UCS_2STRING gambcdir;
-  ___UCS_2STRING *gambcdir_map;
-  int gambcdir_map_len;
-  ___UCS_2STRING gambcopt;
-  ___UCS_2STRING remote_dbg_addr;
-  ___UCS_2STRING rpc_server_addr;
+  ___UCS_2STRING gambitdir;
+  ___UCS_2STRING *gambitdir_map;
+  int gambitdir_map_len;
+  ___UCS_2STRING *module_search_order;
+  int module_search_order_len;
+  ___UCS_2STRING *module_whitelist;
+  int module_whitelist_len;
+  int module_install_mode;
+  ___UCS_2STRING gambopt;
+  ___UCS_2STRING repl_client_addr;
+  ___UCS_2STRING repl_server_addr;
   unsigned long min_heap_len;
   unsigned long max_heap_len;
   int live_percent;
+  int parallelism_level;
   int standard_level;
   int debug_settings;
   int file_settings;
@@ -203,78 +350,124 @@ ___mod_or_lnk (*linker)();)
   /* handle arguments to runtime */
 
   argv = ___program_startup_info.argv;
-  gambcdir = 0;
-  gambcdir_map = 0;
-  gambcdir_map_len = 0;
-  gambcopt = 0;
-  remote_dbg_addr = 0;
-  rpc_server_addr = 0;
+  contract_argv = 0;
+  gambitdir = 0;
+  gambitdir_map = 0;
+  gambitdir_map_len = 0;
+  module_search_order = 0;
+  module_search_order_len = 0;
+  module_whitelist = 0;
+  module_whitelist_len = 0;
+  module_install_mode = ___MODULE_INSTALL_MODE_INITIAL;
+  gambopt = 0;
+  cmd_line_runtime_options = 0;
+  repl_client_addr = 0;
+  repl_server_addr = 0;
   min_heap_len = 0;
   max_heap_len = 0;
   live_percent = 0;
+#ifdef ___SINGLE_THREADED_VMS
+  parallelism_level = 1;
+#else
+  {
+    int count = ___cpu_count ();
+    if (count < 1) count = 1;
+    parallelism_level = ___CEILING_DIV(count*50,100); /* default = 50% */
+  }
+#endif
   standard_level = 0;
   debug_settings = ___DEBUG_SETTINGS_INITIAL;
   file_settings = ___FILE_SETTINGS_INITIAL;
   terminal_settings = ___TERMINAL_SETTINGS_INITIAL;
   stdio_settings = ___STDIO_SETTINGS_INITIAL;
 
-  if (argv != 0
-      && (runtime_options = argv[1]) != 0
-      && runtime_options[0] == '-'
-      && runtime_options[1] == ':')
-    {
-      runtime_options += 2;
-      if (runtime_options[0] == ':')
-        runtime_options++;
-    }
-  else
-    runtime_options = 0;
+  /*
+   * Runtime options can come from several sources:
+   *
+   * - the default runtime options (as specified to the configure script)
+   * - the environment variable GAMBOPT
+   * - the script line
+   * - the first command line argument if it is of the form -:XXX
+   *
+   * When a source of runtime options starts with a comma it is the
+   * sole source of runtime options and the first command line
+   * argument will not be processed specially, even if it is of the
+   * form -:XXX).  Otherwise the runtime options are accumulated from
+   * all the sources of runtime options.
+   */
 
-  if ((script_line = ___program_startup_info.script_line) != 0)
-    {
-      for (;;)
-        {
-          if (*script_line == '\0')
-            {
-              script_line = 0;
-              break;
-            }
-          if (script_line[0] == ' '
-              && script_line[1] == '-'
-              && script_line[2] == ':')
-            {
-              script_line += 3;
-              break;
-            }
-          script_line++;
-        }
-    }
-
-  if (script_line != 0 &&
-      script_line[0] == ':')
-    {
-      /*
-       * When the script line runtime options is of the form -::XXX
-       * (i.e. the colon is followed by a colon) it is the sole source
-       * of runtime options (i.e. the command line and environment
-       * variable GAMBCOPT are not used as a source of other runtime
-       * options).
-       */
-      
-      script_line++;
-      runtime_options = 0;
-      options_source_min = 1;
-      options_source_max = 1;
-    }
-  else
+#ifdef ___DEFAULT_RUNTIME_OPTIONS
+  if (default_runtime_options[0] == ',')
     {
       options_source_min = 0;
-      options_source_max = 2;
+      options_source_max = 0;
+    }
+  else
+#endif
+    {
+      if ((e = ___getenv_UCS_2 (gambopt_env_name, &gambopt))
+          != ___FIX(___NO_ERR))
+        goto after_setup;
+
+      if (gambopt != 0 &&
+          gambopt[0] == ',')
+        {
+          options_source_min = 1;
+          options_source_max = 1;
+        }
+      else
+        {
+          if ((script_line = ___program_startup_info.script_line) != 0)
+            {
+              for (;;)
+                {
+                  if (*script_line == '\0')
+                    {
+                      script_line = 0;
+                      break;
+                    }
+                  if (script_line[0] == ' '
+                      && script_line[1] == '-'
+                      && script_line[2] == ':')
+                    {
+                      script_line += 3;
+                      break;
+                    }
+                  script_line++;
+                }
+            }
+
+          if (script_line != 0 &&
+              script_line[0] == ',')
+            {
+              options_source_min = 2;
+              options_source_max = 2;
+            }
+          else
+            {
+              options_source_min = 0;
+
+              if (argv != 0
+                  && (cmd_line_runtime_options = argv[1]) != 0
+                  && cmd_line_runtime_options[0] == '-'
+                  && cmd_line_runtime_options[1] == ':')
+                {
+                  cmd_line_runtime_options += 2;
+                  contract_argv = 1;
+
+                  if (cmd_line_runtime_options[0] == ',')
+                    options_source_min = 3;
+
+                  options_source_max = 3;
+                }
+              else
+                options_source_max = 2;
+            }
+        }
     }
 
   current_argv = argv;
   extra_arg_pos = 1;
-  contract_argv = (runtime_options != 0);
 
   for (options_source = options_source_min;
        options_source <= options_source_max;
@@ -283,36 +476,184 @@ ___mod_or_lnk (*linker)();)
       ___UCS_2STRING arg;
 
       if (options_source == 0)
+#ifdef ___DEFAULT_RUNTIME_OPTIONS
+        arg = default_runtime_options;
+#else
+        continue;
+#endif
+      else if (options_source == 1)
         {
-          if ((e = ___getenv_UCS_2 (gambcopt_env_name, &gambcopt))
+          if ((e = ___getenv_UCS_2 (gambopt_env_name, &gambopt))
               != ___FIX(___NO_ERR))
             goto after_setup;
-          arg = gambcopt;
+          arg = gambopt;
         }
-      else if (options_source == 1)
+      else if (options_source == 2)
         arg = script_line;
       else
-        arg = runtime_options;
+        arg = cmd_line_runtime_options;
 
       if (arg == 0)
         continue;
 
+      if (arg[0] == ',')
+        arg++;
+
       do
         {
-          ___UCS_2STRING s = arg++;
+          ___UCS_2STRING s = arg;
+
+          while (is_alpha_or_digit (*arg) || *arg == '-')
+            arg++;
+
+          if (arg - s >= 2) /* at least 2 char keyword */
+            {
+              if (*arg == '=') /* followed by '=' */
+                {
+                  arg++;
+                  if (starts_with (s, "min-heap"))
+                    goto mhlp_options;
+                  else if (starts_with (s, "max-heap"))
+                    {
+                      s += 4; /* point to the 'h' */
+                      goto mhlp_options;
+                    }
+                  else if (starts_with (s, "live-ratio"))
+                    goto mhlp_options;
+                  else if (starts_with (s, "parallelism"))
+                    goto mhlp_options;
+                  else if (starts_with (s, "debug"))
+                    goto debug_option;
+                  else if (starts_with (s, "file-settings"))
+                    goto io_settings_options;
+                  else if (starts_with (s, "terminal-settings"))
+                    goto io_settings_options;
+                  else if (starts_with (s, "stdio-settings"))
+                    {
+                      s += 5; /* point to the '-' */
+                      goto io_settings_options;
+                    }
+                  else if (starts_with (s, "add-arg"))
+                    goto add_arg_option;
+                  else if (starts_with (s, "search"))
+                    {
+                      ___UCS_2STRING dir;
+
+                      if (*arg == '\0' || (*arg == ',' && arg[1] != ','))
+                        {
+                          free_strvec (&module_search_order,
+                                       &module_search_order_len);
+                        }
+                      else
+                        {
+                          int pos = 0;
+
+                          if (!extend_strvec (&module_search_order, pos, 1, module_search_order != 0))
+                            {
+                              e = ___FIX(___HEAP_OVERFLOW_ERR);
+                              goto after_setup;
+                            }
+
+                          if ((dir = extract_string (&arg)) == 0)
+                            {
+                              e = ___FIX(___HEAP_OVERFLOW_ERR);
+                              goto after_setup;
+                            }
+
+                          module_search_order[pos] = dir;
+
+                          module_search_order_len++;
+                        }
+
+                      continue;
+                    }
+                  else if (starts_with (s, "whitelist"))
+                    {
+                      ___UCS_2STRING src;
+
+                      if (*arg == '\0' || (*arg == ',' && arg[1] != ','))
+                        {
+                          free_strvec (&module_whitelist,
+                                       &module_whitelist_len);
+                        }
+                      else
+                        {
+                          int pos = module_whitelist_len;
+
+                          if (!extend_strvec (&module_whitelist, pos, 1, module_whitelist != 0))
+                            {
+                              e = ___FIX(___HEAP_OVERFLOW_ERR);
+                              goto after_setup;
+                            }
+
+                          if ((src = extract_string (&arg)) == 0)
+                            {
+                              e = ___FIX(___HEAP_OVERFLOW_ERR);
+                              goto after_setup;
+                            }
+
+                          module_whitelist[pos] = src;
+
+                          module_whitelist_len++;
+                        }
+
+                      continue;
+                    }
+                  else if (starts_with (s, "ask-install"))
+                    {
+                      if (option_equal (arg, "always"))
+                        {
+                          arg += 6;
+                          module_install_mode = ___MODULE_INSTALL_MODE_ASK_ALWAYS;
+                        }
+                      else if (option_equal (arg, "never"))
+                        {
+                          arg += 5;
+                          module_install_mode = ___MODULE_INSTALL_MODE_ASK_NEVER;
+                        }
+                      else if (option_equal (arg, "repl"))
+                        {
+                          arg += 4;
+                          module_install_mode = ___MODULE_INSTALL_MODE_ASK_WHEN_REPL;
+                        }
+                      else
+                        {
+                          e = usage_err (debug_settings);
+                          goto after_setup;
+                        }
+                      continue;
+                    }
+                }
+              else if (option_equal (s, "debug"))
+                goto debug_option;
+              else if (option_equal (s, "r5rs"))
+                goto r5rs_option;
+              else if (option_equal (s, "r7rs"))
+                goto r7rs_option;
+              else if (option_equal (s, "gambit"))
+                goto gambit_option;
+            }
+
+          arg = s+1;
+
           switch (*s)
             {
             case 'm':
             case 'h':
             case 'l':
+            case 'p':
+            mhlp_options:
               {
                 unsigned long argval = 0;
-                while (*arg >= '0' && *arg <= '9')
+                int neg = *arg == '-';
+                if (neg && *s == 'p' && is_digit (arg[1]))
+                  arg++;
+                while (is_digit (*arg))
                   {
                     unsigned int n = *arg - '0';
-                    if (argval > (LARGEST_ULONG>>10)/10 ||
-                        (argval == (LARGEST_ULONG>>10)/10 &&
-                         n > ((LARGEST_ULONG>>10)-argval*10)))
+                    if (argval > LARGEST_ULONG/10 ||
+                        (argval == LARGEST_ULONG/10 &&
+                         n > (LARGEST_ULONG-argval*10)))
                       {
                         e = usage_err (debug_settings);
                         goto after_setup;
@@ -327,34 +668,88 @@ ___mod_or_lnk (*linker)();)
                   }
                 switch (*s)
                   {
-                  case 'm': min_heap_len = argval<<10;
-                            break;
-                  case 'h': max_heap_len = argval<<10;
-                            break;
-                  case 'l': if (argval > 100)
-                              argval = 100;
-                            live_percent = argval;
-                            break;
+                  case 'm':
+                  case 'h':
+                    {
+                      int shift = 10;
+                      unsigned long orig = argval;
+                      if (*arg == 'G')
+                        {
+                          shift = 30;
+                          arg++;
+                        }
+                      else if (*arg == 'M')
+                        {
+                          shift = 20;
+                          arg++;
+                        }
+                      else if (*arg == 'K')
+                        {
+                          arg++;
+                        }
+                      argval = argval << shift;
+                      if ((argval >> shift) != orig)
+                        {
+                          e = usage_err (debug_settings);
+                          goto after_setup;
+                        }
+                      if (*s == 'm')
+                        min_heap_len = argval;
+                      else
+                        max_heap_len = argval;
+                      break;
+                    }
+                  case 'l':
+                    if (argval > 100)
+                      argval = 100;
+                    live_percent = argval;
+                    break;
+                  case 'p':
+                    if (*arg == '%')
+                      {
+#ifndef ___SINGLE_THREADED_VMS
+                        int count = ___cpu_count ();
+                        if (argval > 100)
+                          argval = 100;
+                        parallelism_level = ___CEILING_DIV(count*argval,100);
+                        if (neg)
+                          parallelism_level = count - parallelism_level;
+                        if (parallelism_level < 1)
+                          parallelism_level = 1;
+#endif
+                        arg++;
+                      }
+#ifndef ___SINGLE_THREADED_VMS
+                    else
+                      parallelism_level = neg ? -argval : argval;
+#endif
                   }
                 break;
               }
 
-            case 's':
-              standard_level = 5;
-              break;
-
             case 'S':
+            gambit_option:
               standard_level = 1;
               break;
 
+            case 's':
+            r5rs_option:
+              standard_level = 5;
+              break;
+
+            r7rs_option:
+              standard_level = 7;
+              break;
+
             case 'd':
+            debug_option:
               {
                 if (*arg == '\0' || *arg == ' ' || *arg == ',')
                   debug_settings = ___DEBUG_SETTINGS_DEFAULT;
                 else
                   while (*arg != '\0' && *arg != ' ' && *arg != ',')
                     {
-                      if (*arg >= '0' && *arg <= '9')
+                      if (is_digit (*arg))
                         {
                           debug_settings =
                             (debug_settings & ~___DEBUG_SETTINGS_LEVEL_MASK)
@@ -412,12 +807,6 @@ ___mod_or_lnk (*linker)();)
                                       | (___DEBUG_SETTINGS_USER_INTR_QUIT
                                          << ___DEBUG_SETTINGS_USER_INTR_SHIFT);
                                     break;
-                          case 'i': debug_settings =
-                                      (debug_settings
-                                       & ~___DEBUG_SETTINGS_REPL_MASK)
-                                      | (___DEBUG_SETTINGS_REPL_IDE
-                                         << ___DEBUG_SETTINGS_REPL_SHIFT);
-                                    break;
                           case 'c': debug_settings =
                                       (debug_settings
                                        & ~___DEBUG_SETTINGS_REPL_MASK)
@@ -430,22 +819,33 @@ ___mod_or_lnk (*linker)();)
                                       | (___DEBUG_SETTINGS_REPL_STDIO
                                          << ___DEBUG_SETTINGS_REPL_SHIFT);
                                     break;
-
-                          case '@':
-                            debug_settings =
-                              (debug_settings
-                               & ~___DEBUG_SETTINGS_REPL_MASK)
-                              | (___DEBUG_SETTINGS_REPL_REMOTE
-                                 << ___DEBUG_SETTINGS_REPL_SHIFT);
-                            ___free_UCS_2STRING (remote_dbg_addr);
-                            remote_dbg_addr = extract_string (&arg);
-                            if (remote_dbg_addr == 0)
-                              {
-                                e = ___FIX(___HEAP_OVERFLOW_ERR);
-                                goto after_setup;
-                              }
-                            break;
-
+                          case '+': debug_settings =
+                                      (debug_settings
+                                       & ~___DEBUG_SETTINGS_REPL_MASK)
+                                      | (___DEBUG_SETTINGS_REPL_STDIO_AND_ERR
+                                         << ___DEBUG_SETTINGS_REPL_SHIFT);
+                                    break;
+                          case '@': debug_settings =
+                                      (debug_settings
+                                       & ~___DEBUG_SETTINGS_REPL_MASK)
+                                      | (___DEBUG_SETTINGS_REPL_CLIENT
+                                         << ___DEBUG_SETTINGS_REPL_SHIFT);
+                                    ___free_UCS_2STRING (repl_client_addr);
+                                    repl_client_addr = extract_addr (&arg);
+                                    if (repl_client_addr == 0)
+                                      {
+                                        e = ___FIX(___HEAP_OVERFLOW_ERR);
+                                        goto after_setup;
+                                      }
+                                    break;
+                          case '$': ___free_UCS_2STRING (repl_server_addr);
+                                    repl_server_addr = extract_addr (&arg);
+                                    if (repl_server_addr == 0)
+                                      {
+                                        e = ___FIX(___HEAP_OVERFLOW_ERR);
+                                        goto after_setup;
+                                      }
+                                    break;
                           default:
                             e = usage_err (debug_settings);
                             goto after_setup;
@@ -454,33 +854,10 @@ ___mod_or_lnk (*linker)();)
                 break;
               }
 
-            case '@':
-              {
-                ___free_UCS_2STRING (rpc_server_addr);
-                rpc_server_addr = extract_string (&arg);
-                if (rpc_server_addr == 0)
-                  {
-                    e = ___FIX(___HEAP_OVERFLOW_ERR);
-                    goto after_setup;
-                  }
-                break;
-              }
-
-            case '=':
-              {
-                ___free_UCS_2STRING (gambcdir);
-                gambcdir = extract_string (&arg);
-                if (gambcdir == 0)
-                  {
-                    e = ___FIX(___HEAP_OVERFLOW_ERR);
-                    goto after_setup;
-                  }
-                break;
-              }
-
             case '~':
               {
                 ___UCS_2STRING dir;
+                ___UCS_2STRING after_tilde;
                 ___UCS_2 c;
 
                 if (*arg++ != '~')
@@ -489,17 +866,17 @@ ___mod_or_lnk (*linker)();)
                     goto after_setup;
                   }
 
-                s = arg;
+                after_tilde = arg;
+                s = after_tilde;
 
                 while ((c = *s++) != '=')
-                  if (!(((c >= 'a') && (c <= 'z')) ||
-                        ((c >= 'A') && (c <= 'Z'))))
+                  if (!is_alpha_or_digit (c))
                     {
                       e = usage_err (debug_settings);
                       goto after_setup;
                     }
 
-                if (!extend_strvec (&gambcdir_map, 0, 1, gambcdir_map != 0))
+                if (!extend_strvec (&gambitdir_map, 0, 1, gambitdir_map != 0))
                   {
                     e = ___FIX(___HEAP_OVERFLOW_ERR);
                     goto after_setup;
@@ -511,14 +888,31 @@ ___mod_or_lnk (*linker)();)
                     goto after_setup;
                   }
 
-                gambcdir_map[0] = dir;
+                gambitdir_map[0] = dir;
 
-                gambcdir_map_len++;
+                gambitdir_map_len++;
 
-                break;
+                if (after_tilde[0] != '=')
+                  break;
+
+                arg = after_tilde+1; /* also set gambitdir on ~~=... */
+
+                /* fall through to next case */
               }
 
+            case '=': /* Note: the -:=... pattern is deprecated */
+              {
+                ___free_UCS_2STRING (gambitdir);
+                gambitdir = extract_string (&arg);
+                if (gambitdir == 0)
+                  {
+                    e = ___FIX(___HEAP_OVERFLOW_ERR);
+                    goto after_setup;
+                  }
+                break;
+              }
             case '+':
+            add_arg_option:
               {
                 ___UCS_2STRING extra_arg;
 
@@ -547,6 +941,7 @@ ___mod_or_lnk (*linker)();)
             case 't':
             case 'f':
             case '-':
+            io_settings_options:
               {
                 int settings = 0;
 
@@ -674,6 +1069,7 @@ ___mod_or_lnk (*linker)();)
                 break;
               }
             }
+
         } while (*arg++ == ',');
 
       if (arg[-1] != '\0' && arg[-1] != ' ')
@@ -704,21 +1100,25 @@ ___mod_or_lnk (*linker)();)
 
   ___setup_params_reset (&setup_params);
 
-  setup_params.version           = ___VERSION;
-  setup_params.argv              = current_argv;
-  setup_params.min_heap          = min_heap_len;
-  setup_params.max_heap          = max_heap_len;
-  setup_params.live_percent      = live_percent;
-  setup_params.standard_level    = standard_level;
-  setup_params.debug_settings    = debug_settings;
-  setup_params.file_settings     = file_settings;
-  setup_params.terminal_settings = terminal_settings;
-  setup_params.stdio_settings    = stdio_settings;
-  setup_params.gambcdir          = gambcdir;
-  setup_params.gambcdir_map      = gambcdir_map;
-  setup_params.remote_dbg_addr   = remote_dbg_addr;
-  setup_params.rpc_server_addr   = rpc_server_addr;
-  setup_params.linker            = linker;
+  setup_params.version             = ___VERSION;
+  setup_params.argv                = current_argv;
+  setup_params.min_heap            = min_heap_len;
+  setup_params.max_heap            = max_heap_len;
+  setup_params.live_percent        = live_percent;
+  setup_params.parallelism_level   = parallelism_level;
+  setup_params.standard_level      = standard_level;
+  setup_params.debug_settings      = debug_settings;
+  setup_params.file_settings       = file_settings;
+  setup_params.terminal_settings   = terminal_settings;
+  setup_params.stdio_settings      = stdio_settings;
+  setup_params.gambitdir           = gambitdir;
+  setup_params.gambitdir_map       = gambitdir_map;
+  setup_params.module_search_order = module_search_order;
+  setup_params.module_whitelist    = module_whitelist;
+  setup_params.module_install_mode = module_install_mode;
+  setup_params.repl_client_addr    = repl_client_addr;
+  setup_params.repl_server_addr    = repl_server_addr;
+  setup_params.linker              = linker;
 
   e = ___setup (&setup_params);
 
@@ -728,18 +1128,19 @@ ___mod_or_lnk (*linker)();)
     ___free_UCS_2STRING (current_argv[--extra_arg_pos]);
 
   if (current_argv != argv)
-    ___free_mem (current_argv);
+    ___FREE_MEM(current_argv);
 
-  while (gambcdir_map_len > 0)
-    ___free_UCS_2STRING (gambcdir_map[--gambcdir_map_len]);
+  free_strvec (&gambitdir_map,
+               &gambitdir_map_len);
+  free_strvec (&module_search_order,
+               &module_search_order_len);
+  free_strvec (&module_whitelist,
+               &module_whitelist_len);
 
-  if (gambcdir_map != 0)
-    ___free_mem (gambcdir_map);
-
-  ___free_UCS_2STRING (gambcdir);
-  ___free_UCS_2STRING (gambcopt);
-  ___free_UCS_2STRING (remote_dbg_addr);
-  ___free_UCS_2STRING (rpc_server_addr);
+  ___free_UCS_2STRING (gambitdir);
+  ___free_UCS_2STRING (gambopt);
+  ___free_UCS_2STRING (repl_client_addr);
+  ___free_UCS_2STRING (repl_server_addr);
 
   if (e == ___FIX(___NO_ERR))
     {
@@ -750,7 +1151,7 @@ ___mod_or_lnk (*linker)();)
     e = ___FIXSUB(e,___FIX(1));
   else
     {
-#ifdef ___DEBUG
+#ifdef ___DEBUG_LOG
       ___printf ("___setup returned error code %d\n", ___INT(e));
 #endif
       e = ___FIX(___EXIT_CODE_OSERR);

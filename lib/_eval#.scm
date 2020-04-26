@@ -2,7 +2,7 @@
 
 ;;; File: "_eval#.scm"
 
-;;; Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -13,9 +13,9 @@
   constructor: #f
   opaque:
 
-  (kind       unprintable: read-only:)
-  (source     unprintable: read-only:)
-  (parameters unprintable: read-only:)
+  (kind       unprintable: read-only: no-functional-setter:)
+  (source     unprintable: read-only: no-functional-setter:)
+  (parameters unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception unbound-global-exception
@@ -23,9 +23,9 @@
   constructor: #f
   opaque:
 
-  (code     unprintable: read-only:)
-  (rte      unprintable: read-only:)
-  (variable unprintable: read-only:)
+  (code     unprintable: read-only: no-functional-setter:)
+  (rte      unprintable: read-only: no-functional-setter:)
+  (variable unprintable: read-only: no-functional-setter:)
 )
 
 ;;;----------------------------------------------------------------------------
@@ -35,9 +35,10 @@
 (##define-macro (macro-true? x) x)
 (##define-macro (macro-unbound? x) `(##unbound? ,x))
 
-(##define-macro (macro-self-var)     ''##self)
-(##define-macro (macro-selector-var) ''##selector)
-(##define-macro (macro-do-loop-var)  ''##do-loop)
+(##define-macro (macro-self-var)     ''##self##)
+(##define-macro (macro-selector-var) ''##selector##)
+(##define-macro (macro-do-loop-var)  ''##do-loop##)
+(##define-macro (macro-guard-var)    ''##guard##)
 
 ;;;----------------------------------------------------------------------------
 
@@ -49,12 +50,16 @@
          (if (pair? l)
            (loop (cdr l)
                  (+ i 1)
-                 (cons `(##vector-set! (##vector-ref $code ,i) 0 $code) r))
+                 (cons `(macro-code-parent-set! (##vector-ref $code ,i) $code)
+                       r))
            (reverse r)))
      $code))
 
-(##define-macro (macro-code-link c)
+(##define-macro (macro-code-parent c)
   `(##vector-ref ,c 0))
+
+(##define-macro (macro-code-parent-set! c l)
+  `(##vector-set! ,c 0 ,l))
 
 (##define-macro (macro-code-cprc c)
   `(##vector-ref ,c 1))
@@ -88,7 +93,10 @@
          (parent ,parent))
      (and (##vector? child)
           (##fx< 3 (##vector-length child))
-          (##eq? (macro-code-link child) parent))))
+          (##eq? (macro-code-parent child) parent))))
+
+(##define-macro (macro-code-root-parent? parent)
+  `(##not (##vector? ,parent)))
 
 (##define-macro (macro-code-run c)
   `(let (($$code ,c))
@@ -180,6 +188,73 @@
                     ($$execute-body $code rte ,@vars))
                   ,@vars)
        ($$execute-body $code rte ,@vars))))
+
+;;;----------------------------------------------------------------------------
+
+;;; Macros to attach attributes to the code.
+
+(##define-macro (macro-make-code-attributes
+                 supply-modules
+                 demand-modules
+                 meta-info
+                 code)
+  `(##values ,supply-modules
+             ,demand-modules
+             ,meta-info
+             ,code))
+
+(##define-macro (macro-code-attributes-supply-modules attr)
+  `(##values-ref ,attr 0))
+
+(##define-macro (macro-code-attributes-demand-modules attr)
+  `(##values-ref ,attr 1))
+
+(##define-macro (macro-code-attributes-meta-info attr)
+  `(##values-ref ,attr 2))
+
+(##define-macro (macro-code-attributes-code attr)
+  `(##values-ref ,attr 3))
+
+;;;----------------------------------------------------------------------------
+
+;;; Macros to manipulate the compilation context.
+
+(##define-macro (macro-make-compilation-ctx)
+  `(##vector '() ;; supply-modules
+             '() ;; demand-modules
+             (##make-meta-info) ;; meta-info
+             #f ;; module-ref
+             '())) ;; module-aliases
+
+(##define-macro (macro-compilation-ctx-supply-modules ctx)
+  `(##vector-ref ,ctx 0))
+
+(##define-macro (macro-compilation-ctx-supply-modules-set! ctx supply-modules)
+  `(##vector-set! ,ctx 0 ,supply-modules))
+
+(##define-macro (macro-compilation-ctx-demand-modules ctx)
+  `(##vector-ref ,ctx 1))
+
+(##define-macro (macro-compilation-ctx-demand-modules-set! ctx demand-modules)
+  `(##vector-set! ,ctx 1 ,demand-modules))
+
+(##define-macro (macro-compilation-ctx-meta-info ctx)
+  `(##vector-ref ,ctx 2))
+
+(##define-macro (macro-compilation-ctx-meta-info-set! ctx meta-info)
+  `(##vector-set! ,ctx 2 ,meta-info))
+
+(##define-macro (macro-compilation-ctx-module-ref ctx)
+  `(##vector-ref ,ctx 3))
+
+(##define-macro (macro-compilation-ctx-module-ref-set! ctx module-ref)
+  `(##vector-set! ,ctx 3 ,module-ref))
+
+(##define-macro (macro-compilation-ctx-module-aliases ctx)
+   `(##vector-ref ,ctx 4))
+
+(##define-macro (macro-compilation-ctx-module-aliases-set! ctx module-aliases)
+   `(##vector-set! ,ctx 4 ,module-aliases))
 
 ;;;----------------------------------------------------------------------------
 

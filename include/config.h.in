@@ -1,7 +1,7 @@
 /* File: "config.h.in" */
 
 /*
- * Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved.
+ * Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
  */
 
 #ifndef CONFIG_H
@@ -16,17 +16,44 @@
 /* Define as 1 if you want to compile for debugging.  */
 #undef ___DEBUG
 
+/* Define as 1 if you want to generate a debugging log file.  */
+#undef ___DEBUG_LOG
+
+/* Define as 1 if you want to generate a C backtrace when a program crashes.  */
+#undef ___DEBUG_C_BACKTRACE
+
+/* Define as 1 if you want to compile for debugging the control flow history.  */
+#undef ___DEBUG_CTRL_FLOW_HISTORY
+
+/* Define as 1 if you want to compile for debugging the host changes.  */
+#undef ___DEBUG_HOST_CHANGES
+
+/* Define as 1 if you want to generate a log of the memory allocations. */
+#undef ___DEBUG_ALLOC_MEM
+
+/* Define as 1 if you want to compile for debugging the garbage collector.  */
+#undef ___DEBUG_GARBAGE_COLLECT
+
 /* Define as 1 if you want to compile with profiling.  */
 #undef ___PROFILE
 
 /* Define as 1 if you want to compile each Scheme file into one C function.  */
 #undef ___SINGLE_HOST
 
+/* Define as 1 if you want to mix the execution of C and machine code.  */
+#undef ___SUPPORT_LOWLEVEL_EXEC
+
+/* Define as 1 if you want trampoline jumps to be inlined.  */
+#undef ___INLINE_JUMPS
+
 /* Define as 1 if you want to compile as a shared library.  */
 #undef ___SHARED
 
 /* Define as 1 if dynamically loaded code should not be unloaded.  */
 #undef ___DONT_UNLOAD_DYN_CODE
+
+/* Define as 1 if thread local storage variables can be referenced from dynamically loaded code */
+#undef ___DYNAMIC_TLS
 
 /*---------------------------------------------------------------------------*/
 
@@ -40,6 +67,7 @@
 #undef HAVE_DL_H
 #undef HAVE_SYS_DXE_H
 #undef HAVE_MACH_O_DYLD_H
+#undef HAVE_MACH_MACH_TIME_H
 #undef HAVE_SYS_TYPES_H
 #undef HAVE_SYS_TIME_H
 #undef HAVE_SYS_TIMES_H
@@ -51,10 +79,12 @@
 #undef HAVE_SYS_WAIT_H
 #undef HAVE_SYS_MMAN_H
 #undef HAVE_SYSLOG_H
+#undef HAVE_EXECINFO_H
 #undef HAVE_STAT_H
 #undef HAVE_SIGNAL_H
 #undef HAVE_NETDB_H
 #undef HAVE_GRP_H
+#undef HAVE_EMSCRIPTEN_H
 #undef HAVE_WINDOWS_H
 #undef HAVE_IO_H
 #undef HAVE_TCHAR_H
@@ -97,15 +127,20 @@
 #undef HAVE_STRINGS_H
 #undef HAVE_MEMORY_H
 #undef HAVE_SYS_SYSCTL_H
+#undef HAVE_SYS_SYSCALL_H
+#undef HAVE_LINUX_FS_H
 #undef HAVE_CRT_EXTERNS_H
 #undef HAVE_WS2TCPIP_H
 #undef HAVE_TARGETCONDITIONALS_H
+#undef HAVE_AVAILABILITYMACROS_H
 #undef HAVE_POLL_H
 
 /*---------------------------------------------------------------------------*/
 
 /* Determine which library functions are available. */
 
+#undef HAVE_OPEN
+#undef HAVE_OPENAT
 #undef HAVE_PIPE
 #undef HAVE_SOCKETPAIR
 #undef HAVE_CHDIR
@@ -116,35 +151,49 @@
 #undef HAVE_GETPPID
 #undef HAVE_GETPWNAM
 #undef HAVE_IOCTL
+#undef HAVE_READLINK
+#undef HAVE_READLINKAT
 #undef HAVE_LINK
+#undef HAVE_LINKAT
 #undef HAVE_MKDIR
+#undef HAVE_MKDIRAT
 #undef HAVE_MKFIFO
+#undef HAVE_MKFIFOAT
 #undef HAVE_OPENDIR
-#undef HAVE_RENAME
+#undef HAVE_FDOPENDIR
 #undef HAVE_RMDIR
 #undef HAVE_SOCKET
 #undef HAVE_UTIMES
 #undef HAVE_STAT
 #undef HAVE_STAT64
+#undef HAVE_FSTATAT
 #undef HAVE_STRERROR
 #undef HAVE_SYMLINK
+#undef HAVE_SYMLINKAT
 #undef HAVE_SYSCONF
 #undef HAVE_SYSCTL
+#undef HAVE_SYSCTLBYNAME
 #undef HAVE_SYSLOG
+#undef HAVE_BACKTRACE_SYMBOLS_FD
 #undef HAVE_UNLINK
+#undef HAVE_UNLINKAT
 #undef HAVE_WAITPID
 #undef HAVE_MMAP
 #undef HAVE_FCNTL
+#undef HAVE_GETCWD
 
 #undef HAVE_TCGETSETATTR
 
 #undef HAVE_SIGACTION
+#undef HAVE_SIGNAL
 #undef HAVE_SIGEMPTYSET
 #undef HAVE_SIGADDSET
 #undef HAVE_SIGPROCMASK
-#undef HAVE_SIGNAL
 
+/* Define one of these to support timekeeping (timeouts, current-time, etc): */
+#undef HAVE_EMSCRIPTEN_GET_NOW
 #undef HAVE_CLOCK_GETTIME
+#undef HAVE_MACH_ABSOLUTE_TIME
 #undef HAVE_GETCLOCK
 #undef HAVE_GETSYSTEMTIMEASFILETIME
 #undef HAVE_TIMEBEGINPERIOD
@@ -162,18 +211,21 @@
 #undef HAVE_CLOCK
 #undef HAVE_DOSQUERYSYSINFO
 
+/* Define one of these to support preemptive Scheme thread scheduling: */
 #undef HAVE_SETITIMER
 #undef HAVE_DOS_SETVECT
 #undef HAVE_DOSSTARTTIMER
 #undef HAVE_VINSTALL
 #undef HAVE_CREATETHREAD
 
+/* Define one of these to support dynamically loadable object files: */
 #undef HAVE_SHL_LOAD
 #undef HAVE_LOADLIBRARY
 #undef HAVE_DOSLOADMODULE
 #undef HAVE_DXE_LOAD
 #undef HAVE_GETDISKFRAGMENT
 #undef HAVE_NSLINKMODULE
+#undef HAVE__NSGETEXECUTABLEPATH
 #undef HAVE_DLOPEN
 
 #undef HAVE_GETHOSTNAME
@@ -187,6 +239,7 @@
 #undef HAVE_GETPROTOBYNUMBER
 #undef HAVE_GETNETBYNAME
 
+/* Define one of these to support nonblocking I/O: */
 #undef HAVE_SELECT
 #undef HAVE_POLL
 #undef HAVE_PPOLL
@@ -203,10 +256,19 @@
 
 #undef HAVE_HSTRERROR
 
+#undef HAVE_SNPRINTF
+
 #undef HAVE_GET_FPC_CSR
 
 #undef HAVE_ENVIRON
 #undef HAVE__NSGETENVIRON
+#undef HAVE_REMOVE
+#undef HAVE_RENAME
+#undef HAVE_RENAMEAT
+#undef HAVE_RENAMEAT2
+#undef HAVE_RENAMEATX_NP
+
+#undef HAVE_PTHREAD_SETAFFINITY_NP
 
 /* Determine which types are available */
 
@@ -222,11 +284,28 @@
 #undef ___IMPORTED_ID_PREFIX
 #undef ___IMPORTED_ID_SUFFIX
 
+/* Define as 1 if you want to enable OpenSSL support */
+#undef USE_OPENSSL
+
 /* Define as 1 if you want to enable poll support */
 #undef USE_POLL_FOR_SELECT
 
 /* Define as 1 if you want to enable high-resolution timing */
 #undef USE_HIGH_RES_TIMING
+
+/* Define as 1 to select a filesystem path encoding */
+#undef ___PATH_ENCODING_UTF8
+#undef ___PATH_ENCODING_LATIN1
+#undef ___PATH_ENCODING_UCS2
+#undef ___PATH_ENCODING_UCS4
+#undef ___PATH_ENCODING_WCHAR
+#undef ___PATH_ENCODING_NATIVE
+
+/*
+ * Define as a UCS_2 array initialization containing the default
+ * runtime options, e.g. #define ___DEFAULT_RUNTIME_OPTIONS {'d','2','\0'}
+ */
+#undef ___DEFAULT_RUNTIME_OPTIONS
 
 /*---------------------------------------------------------------------------*/
 

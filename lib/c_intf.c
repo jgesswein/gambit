@@ -1,6 +1,6 @@
 /* File: "c_intf.c" */
 
-/* Copyright (c) 1994-2013 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved. */
 
 /*
  * This module implements the conversion functions for the C
@@ -8,7 +8,7 @@
  */
 
 #define ___INCLUDED_FROM_C_INTF
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
 #include "os_base.h"
@@ -16,13 +16,6 @@
 #include "setup.h"
 #include "mem.h"
 #include "c_intf.h"
-
-/**********************************/
-#ifdef ___DEBUG
-#ifdef ___DEBUG_ALLOC_MEM_TRACE
-#define ___alloc_mem(bytes) ___alloc_mem_debug(bytes,__LINE__,__FILE__)
-#endif
-#endif
 
 
 /*---------------------------------------------------------------------------*/
@@ -1082,13 +1075,13 @@ int *decoding_state;)
                             if (b0 == 0xfe)
                               {
                                 state += ___CHAR_ENCODING_UTF_16BE -
-                                         ___CHAR_ENCODING_UTF;
+                                         ___CHAR_ENCODING(state);
                                 goto decode_next_UTF_16BE;
                               }
                             else
                               {
                                 state += ___CHAR_ENCODING_UTF_16LE -
-                                         ___CHAR_ENCODING_UTF;
+                                         ___CHAR_ENCODING(state);
                                 goto decode_next_UTF_16LE;
                               }
                           }
@@ -1118,7 +1111,7 @@ int *decoding_state;)
                         /* complete UTF-8 BOM */
                         blo += 3; /* skip BOM */
                         state += ___CHAR_ENCODING_UTF_8 -
-                                 ___CHAR_ENCODING_UTF;
+                                 ___CHAR_ENCODING(state);
                         goto decode_next_UTF_8;
                       }
                   }
@@ -2911,8 +2904,7 @@ int arg_num;)
     return ___FIX(___STOC_FUNCTION_ERR+arg_num);
   else
     {
-      ___label_struct *lbl =
-        ___CAST(___label_struct*,___UNTAG_AS(obj,___tSUBTYPED));
+      ___WORD *body = ___SUBTYPED_TO_BODY(obj);
 
       /*
        * Check if the Scheme procedure was defined with a c-define
@@ -2920,9 +2912,9 @@ int arg_num;)
        * used).
        */
 
-      if (lbl[0].entry_or_descr != obj /* closure? */
-          || !___TESTHEADERTAG(lbl[-1].header,___sVECTOR)/* not INTRO label? */
-          || (*x = ___CAST(void*,___CAST_FAKEHOST_TO_HOST(lbl[-1].host)))
+      if (body[___LABEL_ENTRY_OR_DESCR] != obj /* closure? */
+          || !___TESTHEADERTAG(body[-___LABEL_SIZE-1],___sVECTOR)/* not INTRO label? */
+          || (*x = ___CAST(void*,body[-___LABEL_SIZE+___LABEL_HOST]))
              == 0) /* not "c-define"d? */
         {
           /*
@@ -3553,6 +3545,12 @@ int char_encoding;)
   ___SCMOBJ list2;
   int len;
   int i;
+
+  if (___FALSEP(obj)) /* #f counts as NULL */
+    {
+      *x = 0;
+      return ___FIX(___NO_ERR);
+    }
 
   list1 = obj;
   list2 = obj;
@@ -5723,7 +5721,10 @@ int char_encoding;)
   int i;
 
   if (string_list == 0)
-    return err_code_from_char_encoding (char_encoding, 1, 2, arg_num);
+    {
+      *obj = ___FAL;
+      return ___FIX(___NO_ERR);
+    }
 
   i = 0;
 
@@ -6328,17 +6329,20 @@ ___EXP_FUNC(void,___free_UCS_2STRING)
 ___UCS_2STRING str_UCS_2;)
 {
   if (str_UCS_2 != 0)
-    ___free_mem (str_UCS_2);
+    ___FREE_MEM(str_UCS_2);
 }
 
 
-___EXP_FUNC(___SCMOBJ,___CHARSTRING_to_UCS_2STRING)
+___EXP_FUNC(___SCMOBJ,___STRING_to_UCS_2STRING)
    ___P((char *str_char,
-         ___UCS_2STRING *str_UCS_2),
+         ___UCS_2STRING *str_UCS_2,
+         int char_encoding),
         (str_char,
-         str_UCS_2)
+         str_UCS_2,
+         char_encoding)
 char *str_char;
-___UCS_2STRING *str_UCS_2;)
+___UCS_2STRING *str_UCS_2;
+int char_encoding;)
 {
   ___UCS_2STRING s;
 
@@ -6346,25 +6350,49 @@ ___UCS_2STRING *str_UCS_2;)
     s = 0;
   else
     {
-      char *p;
+      char *p = str_char;
       int len = 0;
+      int i;
+      ___UCS_2 c;
 
-      while (str_char[len] != '\0')
-        len++;
+      switch (char_encoding)
+        {
+        case ___CHAR_ENCODING_UTF_8:
+          while (___UTF_8_get (&p) != 0) /* advance until end or error */
+            len++;
+          break;
+
+        case ___CHAR_ENCODING_ISO_8859_1:
+        default:
+          while (*p++ != '\0')
+            len++;
+          break;
+        }
 
       s = ___CAST(___UCS_2STRING,
-                  ___alloc_mem ((len + 1) * sizeof (___UCS_2)));
+                  ___ALLOC_MEM((len + 1) * sizeof (___UCS_2)));
 
       if (s == 0)
         return ___FIX(___HEAP_OVERFLOW_ERR);
 
-      s[len] = '\0';
+      p = str_char;
+      i = 0;
 
-      while (len > 0)
+      switch (char_encoding)
         {
-          len--;
-          s[len] = ___CAST(___UCS_2,___CAST(unsigned char,str_char[len]));
+        case ___CHAR_ENCODING_UTF_8:
+          while ((c = ___UTF_8_get (&p)) != 0 && i<len) /* advance until end or error */
+            s[i++] = c;
+          break;
+
+        case ___CHAR_ENCODING_ISO_8859_1:
+        default:
+          while ((c = ___CAST(___UCS_2,___CAST(unsigned char,*p++))) != '\0' && i<len)
+            s[i++] = c;
+          break;
         }
+
+      s[i] = '\0';
     }
 
   *str_UCS_2 = s;
@@ -6386,27 +6414,39 @@ ___UCS_2STRING *str_list_UCS_2;)
   while ((str = *probe++) != 0)
     ___free_UCS_2STRING (str);
 
-  ___free_mem (str_list_UCS_2);
+  ___FREE_MEM(str_list_UCS_2);
 }
 
 
-___EXP_FUNC(___SCMOBJ,___NONNULLCHARSTRINGLIST_to_NONNULLUCS_2STRINGLIST)
+___EXP_FUNC(___SCMOBJ,___NONNULLSTRINGLIST_to_NONNULLUCS_2STRINGLIST)
    ___P((char **str_list_char,
-         ___UCS_2STRING **str_list_UCS_2),
+         ___UCS_2STRING **str_list_UCS_2,
+         int char_encoding),
         (str_list_char,
-         str_list_UCS_2)
+         str_list_UCS_2,
+         char_encoding)
 char **str_list_char;
-___UCS_2STRING **str_list_UCS_2;)
+___UCS_2STRING **str_list_UCS_2;
+int char_encoding;)
 {
-  ___SCMOBJ e = ___FIX(___HEAP_OVERFLOW_ERR);
+  ___SCMOBJ e;
   ___UCS_2STRING *lst;
-  int len = 0;
+  int len;
+
+  if (str_list_char == 0)
+    {
+      *str_list_UCS_2 = 0;
+      return ___FIX(___NO_ERR);
+    }
+
+  e = ___FIX(___HEAP_OVERFLOW_ERR);
+  len = 0;
 
   while (str_list_char[len] != 0)
     len++;
 
   lst = ___CAST(___UCS_2STRING*,
-                ___alloc_mem ((len + 1) * sizeof (___UCS_2STRING)));
+                ___ALLOC_MEM((len + 1) * sizeof (___UCS_2STRING)));
 
   if (lst != 0)
     {
@@ -6416,7 +6456,7 @@ ___UCS_2STRING **str_list_UCS_2;)
 
       while ((str = *probe++) != 0 && i < len)
         {
-          if ((e = ___CHARSTRING_to_UCS_2STRING (str, &lst[i]))
+          if ((e = ___STRING_to_UCS_2STRING (str, &lst[i], char_encoding))
               != ___FIX(___NO_ERR))
             {
               lst[i] = 0;
@@ -6450,17 +6490,25 @@ ___SCMOBJ proc_or_false;)
 {
   ___SCMOBJ stack_marker;
 
+#ifdef ___SINGLE_THREADED_VMS
   stack_marker = ___make_vector (___ps, 1, ___FAL);
+#else
+  stack_marker = ___make_vector (___ps, 2, ___FAL);
+#endif
 
-  /************************ beware!  proc_or_false may have been GC'd at this point! */
+  /*TODO: proc_or_false may have been GC'd at this point! protect it some way*/
+
+  if (___FIXNUMP(stack_marker))
+    return ___FIX(___SFUN_HEAP_OVERFLOW_ERR);
 
   if (proc_or_false == ___FAL)
     ___FIELD(stack_marker,0) = ___data_rc (___c_closure_self ());
   else
     ___FIELD(stack_marker,0) = proc_or_false;
 
-  if (___FIXNUMP(stack_marker))
-    return ___FIX(___SFUN_HEAP_OVERFLOW_ERR);
+#ifndef ___SINGLE_THREADED_VMS
+  ___FIELD(stack_marker,1) = ___FIX(___PROCESSOR_ID(___ps,___VMSTATE_FROM_PSTATE(___ps)));
+#endif
 
   *marker = stack_marker;
 

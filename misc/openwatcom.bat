@@ -99,7 +99,10 @@ cd gsc
 %COMP_LIB% _asm.c
 %COMP_LIB% _x86.c
 %COMP_LIB% _codegen.c
-%COMP_LIB% _t-univ.c
+%COMP_LIB% _t-univ-1.c
+%COMP_LIB% _t-univ-2.c
+%COMP_LIB% _t-univ-3.c
+%COMP_LIB% _t-univ-4.c
 %COMP_LIB% _t-c-1.c
 %COMP_LIB% _t-c-2.c
 %COMP_LIB% _t-c-3.c
@@ -108,7 +111,7 @@ cd gsc
 %COMP_APP% _gsc.c
 %COMP_APP% _gsc_.c
 
-wlink option quiet option stack=16384 system nt file ..\lib\main.obj,..\lib\setup.obj,..\lib\mem.obj,..\lib\c_intf.obj,..\lib\os.obj,..\lib\os_base.obj,..\lib\os_time.obj,..\lib\os_shell.obj,..\lib\os_files.obj,..\lib\os_dyn.obj,..\lib\os_tty.obj,..\lib\os_io.obj,..\lib\_kernel.obj,..\lib\_system.obj,..\lib\_num.obj,..\lib\_std.obj,..\lib\_eval.obj,..\lib\_io.obj,..\lib\_nonstd.obj,..\lib\_thread.obj,..\lib\_repl.obj,..\lib\_gambc.obj,_host.obj,_utils.obj,_source.obj,_parms.obj,_env.obj,_ptree1.obj,_ptree2.obj,_gvm.obj,_back.obj,_front.obj,_prims.obj,_assert.obj,_asm.obj,_x86.obj,_codegen.obj,_t-univ.obj,_t-c-1.obj,_t-c-2.obj,_t-c-3.obj,_gsclib.obj,_gambcgsc.obj,_gsclib.obj,_gsc.obj,_gsc_.obj library kernel32,user32,gdi32,ws2_32 name gsc.exe
+wlink option quiet option stack=16384 system nt file ..\lib\main.obj,..\lib\setup.obj,..\lib\mem.obj,..\lib\c_intf.obj,..\lib\os.obj,..\lib\os_base.obj,..\lib\os_time.obj,..\lib\os_shell.obj,..\lib\os_files.obj,..\lib\os_dyn.obj,..\lib\os_tty.obj,..\lib\os_io.obj,..\lib\_kernel.obj,..\lib\_system.obj,..\lib\_num.obj,..\lib\_std.obj,..\lib\_eval.obj,..\lib\_io.obj,..\lib\_nonstd.obj,..\lib\_thread.obj,..\lib\_repl.obj,..\lib\_gambc.obj,_host.obj,_utils.obj,_source.obj,_parms.obj,_env.obj,_ptree1.obj,_ptree2.obj,_gvm.obj,_back.obj,_front.obj,_prims.obj,_assert.obj,_asm.obj,_x86.obj,_codegen.obj,_t-univ-1.obj,_t-univ-2.obj,_t-univ-3.obj,_t-univ-4.obj,_t-c-1.obj,_t-c-2.obj,_t-c-3.obj,_gsclib.obj,_gambcgsc.obj,_gsclib.obj,_gsc.obj,_gsc_.obj library kernel32,user32,gdi32,ws2_32 name gsc.exe
 
 cd ..
 
@@ -144,7 +147,7 @@ echo exit 1 >> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_gcc.exe>> gsc-cc-o.bat
 echo cd "%GSC_CC_O_C_FILENAME_DIR%">> gsc-cc-o.bat
-echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -mieee-fp -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
+echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
 echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_wcl386.exe>> gsc-cc-o.bat
@@ -159,7 +162,7 @@ echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_build_time_c_compiler>> gsc-cc-o.bat
 echo cd "%GSC_CC_O_C_FILENAME_DIR%">> gsc-cc-o.bat
-echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -mieee-fp -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
+echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
 echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :end>> gsc-cc-o.bat

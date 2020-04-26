@@ -2,11 +2,7 @@
 
 ;;; File: "_nonstd.scm"
 
-;;; Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved.
-
-;;;============================================================================
-
-(##include "header.scm")
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
 
@@ -107,47 +103,101 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+(define-prim (##error message . parameters)
+  (##raise-error-exception message parameters))
+
 (define-prim (error message . parameters)
   (##raise-error-exception message parameters))
 
-;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+(define-prim (error-object? obj)
+  (macro-error-exception? obj))
 
-(define-runtime-syntax ##require-module
+(define-prim (error-object-message err-obj)
+  (macro-check-error-exception
+    err-obj
+    1
+    (error-object-message err-obj)
+    (macro-error-exception-message err-obj)))
+
+(define-prim (error-object-irritants err-obj)
+  (macro-check-error-exception
+    err-obj
+    1
+    (error-object-irritants err-obj)
+    (macro-error-exception-parameters err-obj)))
+
+(define-runtime-syntax ##syntax-error
   (lambda (src)
     (##deconstruct-call
      src
-     2
-     (lambda (module-ref-src)
-       (let ((module-ref (##desourcify module-ref-src)))
-
-         (if (##not (##symbol? module-ref))
+     -2
+     (lambda (message . args)
+       (let ((m (##desourcify message)))
+         (if (##string? m)
+             (##apply ##raise-expression-parsing-exception
+                      (##cons m (##cons src (##map ##desourcify args))))
              (##raise-expression-parsing-exception
               'ill-formed-special-form
               src
-              (##source-strip (##car (##source-strip src)))))
-
-         (let* ((comp-scope
-                 (##compilation-scope))
-                (required-modules
-                 (##table-ref comp-scope 'required-modules '())))
-           (if (##pair? required-modules)
-               (let loop ((lst required-modules))
-                 (if (##not (##eq? (##car lst) module-ref))
-                     (let ((rest (##cdr lst)))
-                       (if (##pair? rest)
-                           (loop rest)
-                           (##set-cdr! lst (##list module-ref))))))
-               (##table-set! comp-scope
-                             'required-modules
-                             (##list module-ref))))
-
-         (##expand-source-template
-          src
-          `(##begin)))))))
+              'syntax-error)))))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define-runtime-syntax parameterize
+(define (##expand-supply-or-demand-module supply? src)
+  (##deconstruct-call
+   src
+   2
+   (lambda (sym-src)
+     (let ((sym (##desourcify sym-src)))
+
+       (if (##not (##symbol? sym))
+           (##raise-expression-parsing-exception
+            'ill-formed-special-form
+            src
+            (##source-strip (##car (##source-strip src)))))
+
+       (if supply?
+           (##compilation-ctx-supply-modules-add! sym)
+           (##compilation-ctx-demand-modules-add! sym)))
+
+     (##expand-source-template
+      src
+      `(##begin)))))
+
+(define-runtime-syntax ##supply-module
+  (lambda (src)
+    (##expand-supply-or-demand-module #t src)))
+
+(define-runtime-syntax ##demand-module
+  (lambda (src)
+    (##expand-supply-or-demand-module #f src)))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+(define (##expand-meta-info src)
+  (##deconstruct-call
+   src
+   -2
+   (lambda (key-src . rest)
+     (let ((key (##source-strip key-src)))
+       (if (##not (##symbol? key))
+           (##deconstruct-call src 1 ##list) ;; signal a syntax error
+           (let ((attribs (##map ##desourcify rest)))
+             (##for-each
+              (lambda (attrib)
+                (##compilation-ctx-meta-info-add! key attrib))
+              attribs)
+             (##expand-source-template
+              src
+              `(##begin))))))))
+
+(define-runtime-syntax ##meta-info
+  (lambda (src)
+    (##expand-meta-info src)))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+(define-runtime-syntax ##parameterize
   (lambda (src)
     (##deconstruct-call
      src
@@ -183,7 +233,7 @@
                        (let* ((param-val (##car params-vals))
                               (param (##car param-val))
                               (val (##cdr param-val)))
-                         (##list '##parameterize
+                         (##list '##parameterize1
                                  (##car param)
                                  (##car val)
                                  (##list 'lambda
@@ -214,22 +264,18 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define-runtime-syntax this-source-file
+(define-runtime-syntax ##this-source-file
   (lambda (src)
-    (let* ((locat
-            (##source-locat src))
-           (path
-            (and locat
-                 (##container->path (##locat-container locat)))))
+    (let ((path (##source-path src)))
       (if path
-          (##make-source path locat)
+          (##make-source path (##source-locat src))
           (##raise-expression-parsing-exception
            'unknown-location
            src)))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define-runtime-syntax cond-expand
+(define-runtime-syntax ##cond-expand
   (lambda (src)
     (##deconstruct-call
      src
@@ -262,6 +308,26 @@
                                 (loop (##cdr lst))
                                 (##not (##eq? first 'and))))
                           (##eq? first 'and))))
+                   ((##eq? first 'library)
+                    (##shape src (##sourcify feature-requirement src) 2)
+                    (let* ((lib-src (##cadr feature-requirement))
+                           (modref (##parse-module-ref lib-src)))
+                      (if (##not modref)
+                          (##raise-expression-parsing-exception
+                           'ill-formed-special-form
+                           src
+                           'cond-expand)
+                          (##call-with-values
+                           (lambda ()
+                             (##find-mod-info src lib-src))
+                           (lambda (mod-info module-ref)
+                             (if (##not mod-info)
+                                 #f
+                                 (let ((port
+                                        (##vector-ref mod-info 4)))
+                                   (if port
+                                       (##close-port port))
+                                   #t)))))))
                    (else
                     (macro-raise
                      (macro-make-expression-parsing-exception
@@ -295,14 +361,37 @@
 
 (##define-macro (generate-cond-expand-features)
 
-  (define gambits '(gambit GAMBIT Gambit gambit-c GAMBIT-C Gambit-C))
+  (define gambits '(gambit GAMBIT Gambit))
 
-  `'(,@gambits
+  (define (split sym)
+    (let* ((str (symbol->string sym))
+           (len (string-length str))
+           (x (memv #\- (string->list str)))
+           (i (if x (- len (length x)) len)))
+      (cons (substring str 0 i)
+            (substring str i len))))
+
+  (define (keep-disable/enable syms) ;; extract enable/disable features
+    (let loop ((seen '()) (lst syms))
+      (if (pair? lst)
+          (loop (let* ((sym (car lst))
+                       (x (split sym)))
+                  (if (and (member (car x) '("enable" "disable"))
+                           (not (assoc (cdr x) seen))) ;; keep most recent
+                      (cons (cons (cdr x) sym) seen)
+                      seen))
+                (cdr lst))
+          (reverse (map cdr seen)))))
+
+  `'(;; propagate disable/enable features that are used for compilation
+     ,@(keep-disable/enable (##cond-expand-features))
+     ,@gambits
      srfi-0 SRFI-0
      srfi-4 SRFI-4
      srfi-6 SRFI-6
      srfi-8 SRFI-8
      srfi-9 SRFI-9
+     srfi-16 SRFI-16
      srfi-18 SRFI-18
      srfi-21 SRFI-21
      srfi-22 SRFI-22
@@ -315,18 +404,279 @@
 ;;;     srfi-89 SRFI-89
 ;;;     srfi-90 SRFI-90
 ;;;     srfi-91 SRFI-91
+
+     exact-closed
+     exact-complex
+     ieee-float
+     full-unicode
+     ratios
      ))
 
 (define ##cond-expand-features
   (##make-parameter (generate-cond-expand-features)))
 
-(define-runtime-macro (define-cond-expand-feature feature)
-  (##cond-expand-features (##cons feature (##cond-expand-features)))
-  `(begin))
+(define (##add-cond-expand-features lst features)
+  (let loop ((lst lst)
+             (features features))
+    (if (##pair? lst)
+        (loop (##cdr lst)
+              (let ((f (##car lst)))
+                (if (##not (##symbol? f))
+                    features
+                    (##cons
+                     f
+                     (let ((s (##symbol->string f)))
+                       (let ((e (##string-prefix=? s "enable-")))
+                         (if e
+                             (##remq (##string->symbol
+                                      (##string-append "disable-" e))
+                                     features)
+                             (let ((d (##string-prefix=? s "disable-")))
+                               (if d
+                                   (##remq (##string->symbol
+                                            (##string-append "enable-" d))
+                                           features)
+                                   features)))))))))
+        features)))
+
+(define-runtime-macro (define-cond-expand-feature . features)
+  (##cond-expand-features
+   (##add-cond-expand-features features
+                               (##cond-expand-features)))
+  `(##begin))
+
+(define features
+  ##cond-expand-features)
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define-runtime-syntax receive
+(define-runtime-syntax ##case-lambda
+  (lambda (src)
+
+    (define (formals-count formals)
+      (let loop ((lst formals) (n 0))
+        (cond ((##pair? lst) (loop (##cdr lst) (##fx+ n 1)))
+              ((##null? lst) n)
+              (else          (##fx- -1 n)))))
+
+    (define (gen-var)
+      (##gensym))
+
+    (define (gen-vars n)
+      (if (##fx> n 0)
+          (##cons (gen-var) (gen-vars (##fx- n 1)))
+          '()))
+
+    (define (gen-absent-obj)
+      (##cons '##quote (##cons (macro-absent-obj) '())))
+
+    (##shape src src -2)
+
+    (let loop ((clauses (##cdr (##source-code src)))
+               (rev-cases '()) ;; reverse list of cases
+               (covered 0) ;; set of cases covered by clauses
+               (req-param-count #f)
+               (req-and-opt-param-count #f)
+               (need-rest-param? #f))
+      (if (##pair? clauses)
+          (let* ((clause-src
+                  (##sourcify (##car clauses) src))
+                 (clause
+                  (##source-code clause-src)))
+
+            (##shape src clause-src -2)
+
+            (let* ((formals
+                    (##source-code (##sourcify (##car clause) src)))
+                   (body
+                    (##cdr clause))
+                   (nparams
+                    (formals-count formals))
+                   (nparams*
+                    (if (##fx< nparams 0)
+                        (##fx- -1 nparams)
+                        nparams))
+                   (params-covered
+                    (if (##fx< nparams 0)
+                        (##arithmetic-shift -1 nparams*)
+                        (##arithmetic-shift 1 nparams)))
+                   (trigger
+                    (##bitwise-and params-covered
+                                   (##bitwise-not covered))))
+              (if (##equal? trigger 0)
+                  (begin
+                    ;; this case already covered by previous clauses
+                    (loop (##cdr clauses)
+                          rev-cases
+                          covered
+                          req-param-count
+                          req-and-opt-param-count
+                          need-rest-param?))
+                  (begin
+                    ;; this case not covered by previous clauses
+                    (loop (##cdr clauses)
+                          (##cons (##vector nparams '() formals body)
+                                  rev-cases)
+                          (##bitwise-ior trigger covered)
+                          (if req-param-count
+                              (##fxmin req-param-count nparams*)
+                              nparams*)
+                          (if req-and-opt-param-count
+                              (##fxmax req-and-opt-param-count nparams*)
+                              nparams*)
+                          (or need-rest-param?
+                              (##fx< nparams 0)))))))
+
+          (let* ((cases
+                  (##reverse rev-cases))
+                 (req-params
+                  (gen-vars req-param-count))
+                 (opt-params
+                  (gen-vars (##fx- req-and-opt-param-count
+                                   req-param-count)))
+                 (rest-param
+                  (if need-rest-param?
+                      (gen-var)
+                      '()))
+                 (params
+                  (##list->vector
+                   (##append req-params opt-params)))
+                 (proc-var
+                  (##gensym))
+                 (need-proc-var?
+                  #f))
+
+            (define (find-case i)
+              (let loop ((lst cases))
+                (if (##pair? lst)
+                    (let* ((c (##car lst))
+                           (nparams (##vector-ref c 0)))
+                      (if (if (##fx< nparams 0)
+                              (##fx>= i (##fx- -1 nparams))
+                              (##fx= i nparams))
+                          c
+                          (loop (##cdr lst))))
+                    #f)))
+
+            (define (flatten-formals formals)
+              (cond ((##pair? formals)
+                     (let* ((rest (##cdr formals))
+                            (flat-rest (flatten-formals rest)))
+                       (if (##eq? rest flat-rest)
+                           formals
+                           (##cons (##car formals)
+                                   flat-rest))))
+                    ((##null? formals)
+                     formals)
+                    (else
+                     (##cons formals
+                             '()))))
+
+            (define (gen-branch i case-i)
+              (let ((branch
+                     `(#f ;; placeholder for lambda expression or variable
+                       ,@(gen-arguments i case-i))))
+                (##vector-set! case-i
+                               1
+                               (##cons branch (##vector-ref case-i 1)))
+                branch))
+
+            (define (gen-params i)
+              (##vector->list
+               (##subvector params 0 i)))
+
+            (define (gen-arguments i case-i)
+              (let ((nparams (##vector-ref case-i 0)))
+                (if (##fx< nparams 0) ;; has rest parameter?
+                    (let ((nreq (##fx- -1 nparams)))
+                      (let loop ((j (##fx- (##fxmin req-and-opt-param-count i) 1))
+                                 (rest-arg rest-param))
+                        (if (##fx< j nreq)
+                            (##append (##vector->list
+                                       (##subvector params 0 nreq))
+                                      (##list rest-arg))
+                            (loop (##fx- j 1)
+                                  `(##cons ,(##vector-ref params j)
+                                           ,rest-arg)))))
+                    (gen-params i))))
+
+            (define (gen-dispatch i)
+              (let* ((case-i (find-case i))
+                     (nparams (if case-i (##vector-ref case-i 0) i)))
+                (cond ((and (##fx< nparams 0) ;; case with rest parameter
+                            (##fx>= i req-and-opt-param-count))
+                       (gen-branch i case-i))
+                      ((and (##not need-rest-param?)
+                            (##fx= i req-and-opt-param-count))
+                       (gen-branch i case-i))
+                      (else
+                       `(##if ,(if (##fx= i req-and-opt-param-count)
+                                   `(##null? ,rest-param)
+                                   `(##eq? ,(##vector-ref params i)
+                                           ,(gen-absent-obj)))
+                              ,(if case-i
+                                   (gen-branch i case-i)
+                                   (begin
+                                     (set! need-proc-var? #t)
+                                     `(##raise-wrong-number-of-arguments-exception-nary
+                                       ,proc-var
+                                       ,@(gen-params i))))
+                              ,(gen-dispatch (##fx+ i 1)))))))
+
+            (let ((dispatch (gen-dispatch req-param-count)))
+              (let loop ((lst cases) (rev-defs '()))
+                (if (##pair? lst)
+                    (let* ((c (##car lst))
+                           (calls (##vector-ref c 1)))
+                      (if (##pair? calls)
+                          (let* ((formals (##vector-ref c 2))
+                                 (body (##vector-ref c 3))
+                                 (branch
+                                  `(##lambda ,(flatten-formals formals)
+                                             ,@body)))
+                            (if (##null? (##cdr calls))
+                                (begin
+                                  (##set-car! (##car calls) branch)
+                                  (loop (##cdr lst)
+                                        rev-defs))
+                                (let ((var (gen-var)))
+                                  (##for-each (lambda (x)
+                                                (##set-car! x var))
+                                              calls)
+                                  (loop (##cdr lst)
+                                        (##cons (##list var branch)
+                                                rev-defs)))))
+                          (loop (##cdr lst)
+                                rev-defs)))
+                    (let ((lambda-expr
+                           `(##lambda
+                             ,(##append
+                               req-params
+                               (if (##pair? opt-params)
+                                   (##cons '#!optional
+                                           (##append
+                                            (##map (lambda (p)
+                                                     (##cons
+                                                      p
+                                                      (##cons
+                                                       (gen-absent-obj)
+                                                       '())))
+                                                   opt-params)
+                                            rest-param))
+                                   '()))
+                             ,(if (##pair? rev-defs)
+                                  `(##let ,(##reverse rev-defs)
+                                          ,dispatch)
+                                  dispatch))))
+                      (##expand-source-template
+                       src
+                       (if need-proc-var?
+                           `(##letrec ((,proc-var ,lambda-expr)) ,proc-var)
+                           lambda-expr)))))))))))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+(define-runtime-syntax ##receive
   (lambda (src)
     (##deconstruct-call
      src
@@ -335,8 +685,30 @@
        (##expand-source-template
         src
         `(##call-with-values
-          (lambda () ,expression)
-          (lambda ,formals ,@body)))))))
+          (##lambda () ,expression)
+          (##lambda ,formals ,@body)))))))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+(define-runtime-syntax ##when
+  (lambda (src)
+    (##deconstruct-call
+     src
+     -3
+     (lambda (test . expressions)
+       (##expand-source-template
+        src
+        `(##if ,test (##begin ,@expressions)))))))
+
+(define-runtime-syntax ##unless
+  (lambda (src)
+    (##deconstruct-call
+     src
+     -3
+     (lambda (test . expressions)
+       (##expand-source-template
+        src
+        `(##if (##not ,test) (##begin ,@expressions)))))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -367,6 +739,7 @@
            extender
            constructor
            constant-constructor
+           copier
            predicate
            implementer
            type-exhibitor
@@ -385,9 +758,9 @@
                    (field-name
                     (##vector-ref descr 0))
                    (options
-                    (##vector-ref descr 4))
-                   (attributes
                     (##vector-ref descr 5))
+                   (attributes
+                    (##vector-ref descr 6))
                    (init
                     (cond ((##assq 'init: attributes)
                            =>
@@ -524,6 +897,8 @@
                 (##vector-ref descr 2))
                (setter
                 (##vector-ref descr 3))
+               (fsetter
+                (##vector-ref descr 4))
                (getter-def
                 (if getter
                     (let ((getter-name
@@ -588,8 +963,45 @@
                                ,field-index
                                ,type-expression
                                ,setter-name)))))
+                    `()))
+               (fsetter-def
+                (if fsetter
+                    (let ((fsetter-name
+                           (if (##eq? fsetter #t)
+                               (##symbol-append prefix
+                                                name
+                                                '-
+                                                field-name
+                                                '-set)
+                               fsetter))
+                          (fsetter-method
+                           (if extender
+                               '##structure-set
+                               '##direct-structure-set)))
+                      (if macros?
+                          `((##define-macro (,fsetter-name obj val)
+                              (##list '(let ()
+                                         (##declare (extended-bindings))
+                                         ,fsetter-method)
+                                      obj
+                                      val
+                                      ,field-index
+                                      ',type-expression
+                                      #f)))
+                          `((define (,fsetter-name obj val)
+                              ((let ()
+                                 (##declare (extended-bindings))
+                                 ,fsetter-method)
+                               obj
+                               val
+                               ,field-index
+                               ,type-expression
+                               ,fsetter-name)))))
                     `())))
-          (##append getter-def (##append setter-def tail))))
+          (##append getter-def
+                    (##append setter-def
+                              (##append fsetter-def
+                                        tail)))))
 
       (define (generate-structure-type-definition)
         `(define ,type-expression
@@ -606,7 +1018,7 @@
             ,super-type-dynamic-expr
             ',(##type-fields type-static))))
 
-      (define (generate-constructor-predicate-getters-setters)
+      (define (generate-constructor-copier-predicate-getters-setters)
         `(,@(if type-exhibitor
                 (if macros?
                     `((##define-macro (,type-exhibitor)
@@ -651,6 +1063,18 @@
                          #t))))
                 '())
 
+          ,@(if copier
+                (if macros?
+                    `((##define-macro (,copier obj)
+                        (##list '(let ()
+                                   (##declare (extended-bindings))
+                                   ##structure-copy)
+                                obj)))
+                    `((define (,copier obj)
+                        (##declare (extended-bindings))
+                        (##structure-copy obj))))
+                '())
+
           ,@(if predicate
                 (if macros?
                     `((##define-macro (,predicate obj)
@@ -691,8 +1115,8 @@
       (define (generate-definitions)
         (if generative?
             (##cons (generate-structure-type-definition)
-                    (generate-constructor-predicate-getters-setters))
-            (generate-constructor-predicate-getters-setters)))
+                    (generate-constructor-copier-predicate-getters-setters))
+            (generate-constructor-copier-predicate-getters-setters)))
 
       `(begin
 
@@ -711,7 +1135,7 @@
                               ',(if generative?
                                     (generate-structure-type-definition)
                                     '(begin)))
-                           (generate-constructor-predicate-getters-setters))
+                           (generate-constructor-copier-predicate-getters-setters))
                    (##list `(##define-macro (,implementer)
                               ',(##cons 'begin
                                         (generate-definitions)))))
@@ -728,7 +1152,9 @@
     expansion))
 
 (define ##define-type-expansion-show? #f)
-(set! ##define-type-expansion-show? #f)
+
+(define-prim (##define-type-expansion-show?-set! x)
+  (set! ##define-type-expansion-show? x))
 
 (define-prim (##define-type-parser
                form-name
@@ -752,7 +1178,9 @@
           (read-write:    . (-3 . 0))
           (read-only:     . (-3 . 2))
           (equality-test: . (-5 . 0))
-          (equality-skip: . (-5 . 4))))
+          (equality-skip: . (-5 . 4))
+          (functional-setter:    . (-17 . 0))
+          (no-functional-setter: . (-17 . 16))))
 
       (define (update-options options opt)
         (let* ((x (##cdr opt))
@@ -764,6 +1192,7 @@
                field-name
                getter
                setter
+               fsetter
                local-options
                rest)
         (let loop2 ((lst2 rest)
@@ -799,9 +1228,14 @@
                  (let ((read-only?
                         (##not
                          (##fx= (##fxand local-options 2)
-                                0))))
-                   (if (and (##symbol? setter)
-                            read-only?)
+                                0)))
+                       (functional-setter?
+                        (##fx= (##fxand local-options 16)
+                               0)))
+                   (if (or (and (##symbol? setter)
+                                read-only?)
+                           (and (##symbol? fsetter)
+                                (##not functional-setter?)))
                        (err)
                        (loop1 (##cdr lst)
                               (##fx+ field-index 1)
@@ -813,6 +1247,7 @@
                                                (##fx+ field-index 1)
                                                getter
                                                (if read-only? #f setter)
+                                               (if functional-setter? fsetter #f)
                                                local-options
                                                attributes))
                                       rev-fields)))))
@@ -827,6 +1262,7 @@
                            next
                            #t
                            #t
+                           #t
                            options
                            '())
                           (err)))
@@ -838,36 +1274,67 @@
                             (if (##pair? rest)
                                 (let ((getter (##car rest)))
                                   (if (##symbol? getter)
-                                      (let ((rest (##cdr rest)))
+                                      (let ((rest (##cdr rest))
+                                            (opts (##fxior options 18)))
                                         (if (##pair? rest)
                                             (let ((setter (##car rest)))
-                                              (if (##symbol? setter)
-                                                  (parse-field-attributes
-                                                   field-name
-                                                   getter
-                                                   setter
-                                                   (##fxand options -3)
-                                                   (##cdr rest))
+                                              (if (or (##symbol? setter)
+                                                      (##not setter))
+                                                  (let ((rest (##cdr rest))
+                                                        (opts (if setter
+                                                                  (##fxand opts -3)
+                                                                  opts)))
+                                                    (if (##pair? rest)
+                                                        (let ((fsetter (##car rest)))
+                                                          (if (or (##symbol? fsetter)
+                                                                  (##not fsetter))
+                                                              (parse-field-attributes
+                                                               field-name
+                                                               getter
+                                                               setter
+                                                               fsetter
+                                                               (if fsetter
+                                                                   (##fxand opts -17)
+                                                                   opts)
+                                                               (##cdr rest))
+                                                              (parse-field-attributes
+                                                               field-name
+                                                               getter
+                                                               setter
+                                                               #f
+                                                               opts
+                                                               rest)))
+                                                        (parse-field-attributes
+                                                         field-name
+                                                         getter
+                                                         setter
+                                                         #f
+                                                         opts
+                                                         rest)))
                                                   (parse-field-attributes
                                                    field-name
                                                    getter
                                                    #f
-                                                   (##fxior options 2)
+                                                   #f
+                                                   opts
                                                    rest)))
                                             (parse-field-attributes
                                              field-name
                                              getter
                                              #f
-                                             (##fxior options 2)
+                                             #f
+                                             opts
                                              rest)))
                                       (parse-field-attributes
                                        field-name
+                                       #t
                                        #t
                                        #t
                                        options
                                        rest)))
                                 (parse-field-attributes
                                  field-name
+                                 #t
                                  #t
                                  #t
                                  options
@@ -877,6 +1344,7 @@
                                 '(id:
                                   constructor:
                                   constant-constructor:
+                                  copier:
                                   predicate:
                                   extender:
                                   implementer:
@@ -908,7 +1376,8 @@
                                          (or (##symbol? val)
                                              (and (##memq
                                                    next
-                                                   '(predicate:
+                                                   '(copier:
+                                                     predicate:
                                                      constant-constructor:))
                                                   (##not val)))))
                                   (loop1 (##cdr rest)
@@ -986,6 +1455,16 @@
                             (##symbol-append prefix
                                              'make-constant-
                                              name))))
+                    (copier
+                     (cond ((##assq 'copier: flags)
+                            =>
+                            ##cdr)
+                           ((##not constructor)
+                            #f)
+                           (else
+                            (##symbol-append prefix
+                                             name
+                                             '-copy)))) ;; should be a prefix
                     (predicate
                      (cond ((##assq 'predicate: flags)
                             =>
@@ -1037,6 +1516,7 @@
                     extender
                     constructor
                     constant-constructor
+                    copier
                     predicate
                     implementer
                     type-exhibitor
@@ -1093,21 +1573,23 @@
    (##apply ##string-append
             (##map ##symbol->string symbols))))
 
-(define-runtime-macro (define-type . args)
+(define-runtime-macro (##define-type . args)
   (##define-type-expand 'define-type #f #f args))
 
-(define-runtime-macro (define-structure . args)
+(define-runtime-macro (##define-structure . args)
   (##define-type-expand 'define-structure #f #f args))
 
-(define-runtime-macro (define-record-type name constructor predicate . fields)
-  `(define-type ,name
+(define-runtime-macro (##define-record-type name constructor predicate . fields)
+  `(##define-type ,name
      constructor: ,constructor
+     copier: #f
      predicate: ,predicate
+     no-functional-setter:
      ,@fields))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-(define-runtime-macro (define-type-of-thread . args)
+(define-runtime-macro (##define-type-of-thread . args)
   (##define-type-expand
     'define-type-of-thread
     (macro-type-thread)
@@ -1152,37 +1634,44 @@
         (define (scale x m)
           (##flonum->exact-int (##flround (##fl* x m))))
 
+        (define (show x*1000 unit)
+
+          (define (decimals d)
+            (let* ((n (##round (##/ x*1000 (##expt 10 (##fx- 3 d)))))
+                   (n-str (##number->string n 10))
+                   (n-str-len (##string-length n-str))
+                   (str (if (##fx< n-str-len d)
+                            (##string-append
+                             (##make-string (##fx- d n-str-len) #\0)
+                             n-str)
+                            n-str))
+                   (len (##string-length str))
+                   (split (##fx- len d)))
+              (##write-string
+               (if (##fx= d 0)
+                   str
+                   (##string-append (##substring str 0 split)
+                                    "."
+                                    (##substring str split len)))
+               output-port)
+              (##write-string unit output-port)))
+
+          (cond ((##< x*1000 10000)
+                 (decimals 1))
+                (else
+                 (decimals 0))))
+
+        (define (tim secs)
+          (let ((us (scale secs 1.0e9)))
+            (if (##< us 1000000)
+                (show us "us")
+                (let ((ms (scale secs 1.0e6)))
+                  (if (##< ms 1000000)
+                      (show ms "ms")
+                      (let ((s (scale secs 1.0e3)))
+                        (show s "s")))))))
+
         (define (mem bytes suffix)
-
-          (define (show x*1000 unit)
-
-            (define (decimals d)
-              (let* ((n (##round (##/ x*1000 (##expt 10 (##fx- 3 d)))))
-                     (n-str (##number->string n 10))
-                     (n-str-len (##string-length n-str))
-                     (str (if (##fx< n-str-len d)
-                              (##string-append
-                               (##make-string (##fx- d n-str-len) #\0)
-                               n-str)
-                              n-str))
-                     (len (##string-length str))
-                     (split (##fx- len d)))
-                (##write-string
-                 (if (##fx= d 0)
-                     str
-                     (##string-append (##substring str 0 split)
-                                      "."
-                                      (##substring str split len)))
-                 output-port)
-                (##write-string unit output-port)))
-
-            (cond ((##< x*1000 10000)
-                   (decimals 2))
-                  ((##< x*1000 100000)
-                   (decimals 1))
-                  (else
-                   (decimals 0))))
-
           (let ((k (scale bytes 9.765625e-1)))
             (if (##< k 1024000)
                 (show k "K")
@@ -1194,8 +1683,8 @@
           (##write-string suffix output-port))
 
         (##write-string "*** GC: " output-port)
-        (##write (scale last-gc-real-time 1000.0) output-port)
-        (##write-string " ms, " output-port)
+        (tim last-gc-real-time)
+        (##write-string ", " output-port)
         (mem last-gc-alloc " alloc, ")
         (mem last-gc-heap-size " heap, ")
         (mem last-gc-live " live (")
@@ -1212,10 +1701,23 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+(define-prim (##identity x)
+  x)
+
+(define-prim (identity x)
+  x)
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 (define-prim (##void))
 
 (define-prim (void)
   (##void))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+(define-prim (##absent-object)
+  (macro-absent-obj))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -1343,15 +1845,65 @@
 
 (define-prim (exit #!optional (status (macro-absent-obj)))
   (if (##eq? status (macro-absent-obj))
-      (##exit)
+      (##exit (macro-EXIT-CODE-OK))
       (macro-force-vars (status)
-        (macro-check-exact-unsigned-int8 status 1 (exit status)
-          (##exit status)))))
+        (if (##eq? status #f)
+            (##exit (macro-EXIT-CODE-SOFTWARE))
+            (macro-check-exact-unsigned-int8 status 1 (exit status)
+              (##exit status))))))
 
-(define-prim (##getenv name #!optional (default-value (macro-absent-obj)))
+(define-prim (emergency-exit #!optional (status (macro-absent-obj)))
+  (if (##eq? status (macro-absent-obj))
+      (##exit-abruptly (macro-EXIT-CODE-OK))
+      (macro-force-vars (status)
+        (if (##eq? status #f)
+            (##exit-abruptly (macro-EXIT-CODE-SOFTWARE))
+            (macro-check-exact-unsigned-int8 status 1 (emergency-exit status)
+              (##exit-abruptly status))))))
+
+(define-prim (##get-environment-variables)
+  (let ((result (##os-environ)))
+    (if (##fixnum? result)
+        (##raise-os-exception #f result get-environment-variables)
+        (begin
+          (let loop1 ((lst result))
+            (if (##pair? lst)
+                (let ((s (##car lst)))
+                  (let loop2 ((i 0))
+                    (if (##fx< i (##string-length s))
+                        (let ((c (##string-ref s i)))
+                          (if (##char=? c #\=)
+                              (##set-car!
+                               lst
+                               (##cons (##substring s
+                                                    0
+                                                    i)
+                                       (##substring s
+                                                    (##fx+ i 1)
+                                                    (##string-length s))))
+                              (loop2 (##fx+ i 1))))
+                        (##set-car!
+                         lst
+                         (##cons s
+                                 ""))))
+                  (loop1 (##cdr lst)))))
+          result))))
+
+(define-prim (get-environment-variables)
+  (##get-environment-variables))
+
+(define-prim (##getenv
+              name
+              #!optional
+              (default-value (macro-absent-obj)))
   (let ((result (##os-getenv name)))
     (cond ((##fixnum? result)
-           (##raise-os-exception #f result getenv name default-value))
+           (##raise-os-exception
+            #f
+            result
+            getenv
+            name
+            default-value))
           ((##not result)
            (if (##eq? default-value (macro-absent-obj))
                (##raise-unbound-os-environment-variable-exception
@@ -1365,6 +1917,21 @@
   (macro-force-vars (name)
     (macro-check-string name 1 (getenv name default-value)
       (##getenv name default-value))))
+
+(define-prim (##get-environment-variable name)
+  (let ((result (##os-getenv name)))
+    (if (##fixnum? result)
+        (##raise-os-exception
+         #f
+         result
+         get-environment-variable
+         name)
+        result)))
+
+(define-prim (get-environment-variable name)
+  (macro-force-vars (name)
+    (macro-check-string name 1 (get-environment-variable name)
+      (##get-environment-variable name))))
 
 (define-prim (##setenv name #!optional (value (macro-absent-obj)))
   (let ((code (##os-setenv name value)))
@@ -1380,17 +1947,136 @@
           (macro-check-string value 2 (setenv name value)
             (##setenv name value))))))
 
-(define-prim (command-line)
+(define-prim (##command-line)
   ##processed-command-line)
 
+(define-prim (command-line)
+  (##command-line))
+
 (define-prim (##shell-command-blocking cmd)
-  ;; DEPRECATED
-  (let ((code (##os-shell-command cmd (##current-directory))))
+  (let ((code (##os-shell-command cmd)))
     (if (##fx< code 0)
         (##raise-os-exception #f code ##shell-command-blocking cmd)
         code)))
 
+(define-prim (##run-subprocess
+              path
+              #!optional
+              (arguments (macro-absent-obj))
+              (capture? (macro-absent-obj))
+              (null-stdin? (macro-absent-obj))
+              (directory (macro-absent-obj))
+              (add-vars (macro-absent-obj))
+              (raise-os-exception? (macro-absent-obj))
+              (cont (macro-absent-obj)))
+
+  ;;                subprocess stdout/stderr
+  ;; capture? = #f  not redirected (so will appear on current stdout/stderr)
+  ;; capture? = #t  captured to a string and returned in cdr of result
+  ;; capture? = ()  captured but discarded
+
+  ;; null-stdin? = #f  subprocess stdin will be the same as current stdin
+  ;; null-stdin? = #t  subprocess stdin will be empty
+
+  (##open-process-generic
+   (if (##eq? null-stdin? #t)
+       (macro-direction-in)
+       (macro-direction-inout))
+   #f
+   (lambda (port)
+     (let ((cont2 (if (##eq? cont (macro-absent-obj)) ##identity cont)))
+       (if (##fixnum? port)
+           (if (##eq? raise-os-exception? #f)
+               (cont2 port)
+               (##raise-os-exception
+                #f
+                (if (##fx= port 1) ;; couldn't set current directory?
+                    ##err-code-ENOENT ;; pretend directory does not exist
+                    port)
+                ##run-subprocess
+                path
+                arguments
+                capture?
+                null-stdin?
+                directory
+                add-vars
+                raise-os-exception?
+                cont))
+           (begin
+             (if (##not (##eq? null-stdin? #t))
+                 (##close-output-port port))
+             (if (##eq? capture? #t)
+                 (let* ((out (##read-line port #f #f ##max-fixnum))
+                        (output (if (##string? out) out "")))
+                   (##close-input-port port)
+                   (let ((status (##process-status port)))
+                     (cont2 (##cons status output))))
+                 (let loop ()
+                   (if (##char? (##read-char port))
+                       (loop)
+                       (begin
+                         (##close-input-port port)
+                         (cont2 (##process-status port))))))))))
+   open-process
+   (let ((cap (##not (or (##eq? capture? (macro-absent-obj))
+                         (##not capture?)))))
+     (##list path: path
+             arguments: (if (##eq? arguments (macro-absent-obj)) '() arguments)
+             directory: (if (##eq? directory (macro-absent-obj)) #f directory)
+             environment:
+             (##append (if (##eq? add-vars (macro-absent-obj)) '() add-vars)
+                       (let ((env (##os-environ)))
+                         (if (##fixnum? env) '() env)))
+             stdin-redirection: (##eq? null-stdin? #t)
+             stdout-redirection: cap
+             stderr-redirection: cap))))
+
+(define-prim (##shell-var-binding
+              var
+              val
+              #!optional
+              (var-prefix (macro-absent-obj))
+              (var-suffix (macro-absent-obj)))
+  (##string-append
+   (if (##eq? var-prefix (macro-absent-obj)) "" var-prefix)
+   var
+   (if (##eq? var-suffix (macro-absent-obj)) "_PARAM" var-suffix)
+   "="
+   val))
+
+(define-prim (##shell-var-bindings
+              alist
+              #!optional
+              (var-prefix (macro-absent-obj))
+              (var-suffix (macro-absent-obj)))
+  (##map (lambda (var-val)
+           (##shell-var-binding (##car var-val)
+                                (##cdr var-val)
+                                var-prefix
+                                var-suffix))
+         alist))
+
+(define-prim (##shell-args-numbered lst)
+
+  (define (gen lst i)
+    (if (##pair? lst)
+        (##cons (##cons (##string-append "ARG" (##number->string i 10))
+                        (##car lst))
+                (gen (##cdr lst) (##fx+ i 1)))
+        '()))
+
+  (gen lst 1))
+
+(define-prim (##shell-install-dirs lst)
+  (##map (lambda (str)
+           (##cons (##string-append "GAMBITDIR_" (##string-upcase str))
+                   (##path-strip-trailing-directory-separator
+                    (##path-normalize-directory-existing
+                     (##string-append "~~" str)))))
+         lst))
+
 (define ##shell-program #f)
+(define ##shell-command-fallback #t)
 
 (define-prim (##get-shell-program)
 
@@ -1399,38 +2085,45 @@
   (define default-shell-program '("sh"      . "-c"))
 
   (or ##shell-program
-      (let ((sp
-             (if (##file-exists? (##car unix-shell-program))
-                 unix-shell-program
-                 (if (##getenv "HOME" #f)
-                     default-shell-program
-                     (let ((comspec (##getenv "COMSPEC" #f)))
-                       (if comspec
-                           (##cons comspec "/C")
-                           windows-shell-program))))))
+      (let* ((cd
+              (##current-directory))
+             (directory-separator
+              (##string-ref cd (##fx- (##string-length cd) 1)))
+             (sp
+              (if (##char=? #\\ directory-separator)
+                  (let ((comspec (##getenv "COMSPEC" #f)))
+                    (if comspec
+                        (##cons comspec "/C")
+                        windows-shell-program))
+                  (if (##file-exists? (##car unix-shell-program))
+                      unix-shell-program
+                      default-shell-program))))
         (set! ##shell-program sp)
         sp)))
 
-(define-prim (##shell-command cmd)
-  (let* ((shell-prog
-          (##get-shell-program))
-         (path-or-settings
-          (##list path: (##car shell-prog)
-                  arguments:
-                  (##list
-                   (##cdr shell-prog)
-                   cmd)
-                  stdin-redirection: #f
-                  stdout-redirection: #f
-                  stderr-redirection: #f)))
-    (##open-process-generic
-     (macro-direction-inout)
-     #t
-     (lambda (port)
-       (##close-port port)
-       (##process-status port))
-     open-process
-     path-or-settings)))
+(define-prim (##shell-command cmd #!optional (capture? (macro-absent-obj)))
+  (let ((shell-prog (##get-shell-program)))
+    (##run-subprocess
+     (##car shell-prog)
+     (##list (##cdr shell-prog) cmd)
+     capture?
+     #f  ;; subprocess will receive same stdin as current stdin
+     #f  ;; use current directory
+     '() ;; no additional environment variables
+     #f  ;; don't raise OS exceptions
+     (lambda (result)
+       (if (and (##fixnum? result)
+                (##fx< result 0))
+           (if (and ##shell-command-fallback
+                    (##fx= result ##err-code-unimplemented))
+               (let ((code (##os-shell-command cmd)))
+                 (if (##fx< code 0)
+                     (##raise-os-exception #f code shell-command cmd capture?)
+                     (if (##eq? capture? #t)
+                         (##cons code "")
+                         code)))
+               (##raise-os-exception #f result shell-command cmd capture?))
+           result)))))
 
 #;
 (define-prim (##escape-string str escape-char to-escape)
@@ -1466,10 +2159,12 @@
                        (##fx- j 1))))
           escaped-str))))
 
-(define-prim (shell-command cmd)
-  (macro-force-vars (cmd)
-    (macro-check-string cmd 1 (shell-command cmd)
-      (##shell-command cmd))))
+(define-prim (shell-command cmd #!optional (capture? (macro-absent-obj)))
+  (macro-force-vars (cmd capture?)
+    (macro-check-string cmd 1 (shell-command cmd capture?)
+      (if (##eq? capture? (macro-absent-obj))
+          (##shell-command cmd)
+          (##shell-command cmd capture?)))))
 
 ;;;----------------------------------------------------------------------------
 
@@ -1477,22 +2172,84 @@
 
 (implement-library-type-file-info)
 
-(define-prim (##file-info
+(define-prim (##file-info? obj)
+  (macro-file-info? obj))
+
+(define-prim (##file-info-type info)
+  (macro-file-info-type info))
+
+(define-prim (##file-info-device info)
+  (macro-file-info-device info))
+
+(define-prim (##file-info-inode info)
+  (macro-file-info-inode info))
+
+(define-prim (##file-info-mode info)
+  (macro-file-info-mode info))
+
+(define-prim (##file-info-number-of-links info)
+  (macro-file-info-number-of-links info))
+
+(define-prim (##file-info-owner info)
+  (macro-file-info-owner info))
+
+(define-prim (##file-info-group info)
+  (macro-file-info-group info))
+
+(define-prim (##file-info-size info)
+  (macro-file-info-size info))
+
+(define-prim (##file-info-last-access-time info)
+  (macro-file-info-last-access-time info))
+
+(define-prim (##file-info-last-modification-time info)
+  (macro-file-info-last-modification-time info))
+
+(define-prim (##file-info-last-change-time info)
+  (macro-file-info-last-change-time info))
+
+(define-prim (##file-info-attributes info)
+  (macro-file-info-attributes info))
+
+(define-prim (##file-info-creation-time info)
+  (macro-file-info-creation-time info))
+
+(define-prim (##file-info-aux
               path
               #!optional
               (chase? (macro-absent-obj)))
   (let* ((resolved-path
           (##path-resolve path))
+         (fi
+          (macro-make-file-info ;; will be initialized by ##os-file-info
+           0  ;; type
+           0  ;; device
+           0  ;; inode
+           0  ;; mode
+           0  ;; number-of-links
+           0  ;; owner
+           0  ;; group
+           0  ;; size
+           (macro-inexact--inf) ;; last-access-time
+           (macro-inexact--inf) ;; last-modification-time
+           (macro-inexact--inf) ;; last-change-time
+           0  ;; attributes
+           (macro-inexact--inf)));; creation-time
          (result
-          (##os-file-info resolved-path
+          (##os-file-info fi
+                          resolved-path
                           (if (##eq? chase? (macro-absent-obj))
                               #t
                               chase?))))
+
+    (define (convert-time t)
+      (macro-make-time t #f #f #f))
+
     (if (##fixnum? result)
         result
         (begin
           (let ((type
-                 (case (##vector-ref result 1)
+                 (case (macro-file-info-type result)
                    ((1)  'regular)
                    ((2)  'directory)
                    ((3)  'character-special)
@@ -1501,34 +2258,67 @@
                    ((6)  'symbolic-link)
                    ((7)  'socket)
                    (else 'unknown))))
-            (##vector-set! result 1 type))
-          (##vector-set! result 9
-                         (macro-make-time (##vector-ref result 9) #f #f #f))
-          (##vector-set! result 10
-                         (macro-make-time (##vector-ref result 10) #f #f #f))
-          (##vector-set! result 11
-                         (macro-make-time (##vector-ref result 11) #f #f #f))
-          (##vector-set! result 13
-                         (macro-make-time (##vector-ref result 13) #f #f #f))
-          (##structure-type-set! result (macro-type-file-info))
-          (##subtype-set! result (macro-subtype-structure))
+            (##unchecked-structure-set!
+             result
+             type
+             1
+             (macro-type-file-info)
+             #f))
+
+          (##unchecked-structure-set!
+           result
+           (convert-time (macro-file-info-last-access-time result))
+           9
+           (macro-type-file-info)
+           #f)
+
+          (##unchecked-structure-set!
+           result
+           (convert-time (macro-file-info-last-modification-time result))
+           10
+           (macro-type-file-info)
+           #f)
+
+          (##unchecked-structure-set!
+           result
+           (convert-time (macro-file-info-last-change-time result))
+           11
+           (macro-type-file-info)
+           #f)
+
+          (##unchecked-structure-set!
+           result
+           (convert-time (macro-file-info-creation-time result))
+           13
+           (macro-type-file-info)
+           #f)
+
           result))))
+
+(define-prim (##file-info
+              path
+              #!optional
+              (chase? #t)
+              (raise-os-exception? #t))
+  (let ((info (##file-info-aux path chase?)))
+    (if (##fixnum? info)
+        (and raise-os-exception?
+             (##raise-os-exception #f info file-info path chase? raise-os-exception?))
+        info)))
 
 (define-prim (file-info
               path
               #!optional
-              (chase? (macro-absent-obj)))
-  (macro-force-vars (path chase?)
-    (macro-check-string path 1 (file-info path chase?)
-      (let ((info (##file-info path chase?)))
-        (if (##fixnum? info)
-            (##raise-os-exception #f info file-info path chase?)
-            info)))))
+              (chase? (macro-absent-obj))
+              (raise-os-exception? (macro-absent-obj)))
+  (macro-force-vars (path chase? raise-os-exception?)
+    (macro-check-string path 1 (file-info path chase? raise-os-exception?)
+      (##file-info path chase? raise-os-exception?))))
 
 (define-prim (file-type path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-type path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-type path)
             (macro-file-info-type info))))))
@@ -1536,7 +2326,7 @@
 (define-prim (file-device path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-device path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-device path)
             (macro-file-info-device info))))))
@@ -1544,7 +2334,7 @@
 (define-prim (file-inode path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-inode path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-inode path)
             (macro-file-info-inode info))))))
@@ -1552,7 +2342,7 @@
 (define-prim (file-mode path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-mode path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-mode path)
             (macro-file-info-mode info))))))
@@ -1560,7 +2350,7 @@
 (define-prim (file-number-of-links path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-number-of-links path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-number-of-links path)
             (macro-file-info-number-of-links info))))))
@@ -1568,7 +2358,7 @@
 (define-prim (file-owner path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-owner path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-owner path)
             (macro-file-info-owner info))))))
@@ -1576,7 +2366,7 @@
 (define-prim (file-group path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-group path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-group path)
             (macro-file-info-group info))))))
@@ -1584,7 +2374,7 @@
 (define-prim (file-size path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-size path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-size path)
             (macro-file-info-size info))))))
@@ -1592,7 +2382,7 @@
 (define-prim (file-last-access-time path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-last-access-time path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-last-access-time path)
             (macro-file-info-last-access-time info))))))
@@ -1600,7 +2390,7 @@
 (define-prim (file-last-modification-time path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-last-modification-time path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-last-modification-time path)
             (macro-file-info-last-modification-time info))))))
@@ -1608,7 +2398,7 @@
 (define-prim (file-last-change-time path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-last-change-time path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-last-change-time path)
             (macro-file-info-last-change-time info))))))
@@ -1616,7 +2406,7 @@
 (define-prim (file-attributes path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-attributes path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-attributes path)
             (macro-file-info-attributes info))))))
@@ -1624,12 +2414,12 @@
 (define-prim (file-creation-time path)
   (macro-force-vars (path)
     (macro-check-string path 1 (file-creation-time path)
-      (let ((info (##file-info path)))
+      (let ((info (##file-info-aux path)))
         (if (##fixnum? info)
             (##raise-os-exception #f info file-creation-time path)
             (macro-file-info-creation-time info))))))
 
-(define-prim (file-last-access-and-modification-times-set!
+(define-prim (##file-last-access-and-modification-times-set!
               path
               #!optional
               (a-absrel-timeout (macro-absent-obj))
@@ -1648,26 +2438,36 @@
              (macro-time-point a-time)
              (macro-time-point m-time))))
       (if (##fx< code 0)
-          (##raise-os-exception #f code file-last-access-and-modification-times-set! a-absrel-timeout m-absrel-timeout)
+          (##raise-os-exception #f code file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
           (##void))))
 
+  (macro-check-string path
+    1
+    (file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
+    (if (##eq? a-absrel-timeout (macro-absent-obj))
+        (change 0 #f)
+        (macro-check-absrel-time
+          a-absrel-timeout
+          2
+          (file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
+          (if (##eq? m-absrel-timeout (macro-absent-obj))
+              (change a-absrel-timeout #f)
+              (macro-check-absrel-time
+                m-absrel-timeout
+                3
+                (file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
+                (change a-absrel-timeout m-absrel-timeout)))))))
+
+(define-prim (file-last-access-and-modification-times-set!
+              path
+              #!optional
+              (a-absrel-timeout (macro-absent-obj))
+              (m-absrel-timeout (macro-absent-obj)))
   (macro-force-vars (path a-absrel-timeout m-absrel-timeout)
-    (macro-check-string path
-      1
-      (file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
-      (if (##eq? a-absrel-timeout (macro-absent-obj))
-          (change 0 #f)
-          (macro-check-absrel-time
-            a-absrel-timeout
-            2
-            (file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
-            (if (##eq? m-absrel-timeout (macro-absent-obj))
-                (change a-absrel-timeout #f)
-                (macro-check-absrel-time
-                  m-absrel-timeout
-                  3
-                  (file-last-access-and-modification-times-set! path a-absrel-timeout m-absrel-timeout)
-                  (change a-absrel-timeout m-absrel-timeout))))))))
+    (##file-last-access-and-modification-times-set!
+     path
+     a-absrel-timeout
+     m-absrel-timeout)))
 
 ;;;----------------------------------------------------------------------------
 
@@ -1675,10 +2475,8 @@
               path
               #!optional
               (chase? (macro-absent-obj)))
-  (let* ((resolved-path
-          (##path-resolve path))
-         (result
-          (##os-file-info resolved-path
+  (let ((result
+         (##file-info-aux path
                           (if (##eq? chase? (macro-absent-obj))
                               #t
                               chase?))))
@@ -1698,14 +2496,17 @@
 
 (implement-library-type-user-info)
 
-(define-prim (##user-info user)
-  (let ((result (##os-user-info user)))
+(define-prim (##user-info
+              user
+              #!optional
+              (raise-os-exception? #t))
+  (let* ((ui (macro-make-user-info #f #f #f #f #f))
+         (result (##os-user-info ui user)))
     (if (##fixnum? result)
-        (##raise-os-exception #f result user-info user)
-        (begin
-          (##structure-type-set! result (macro-type-user-info))
-          (##subtype-set! result (macro-subtype-structure))
-          result))))
+        (if raise-os-exception?
+            (##raise-os-exception #f result user-info user)
+            result)
+        result)))
 
 (define-prim (user-info user)
   (macro-force-vars (user)
@@ -1728,13 +2529,11 @@
 (implement-library-type-group-info)
 
 (define-prim (##group-info group)
-  (let ((result (##os-group-info group)))
+  (let* ((gi (macro-make-group-info #f #f #f))
+         (result (##os-group-info gi group)))
     (if (##fixnum? result)
         (##raise-os-exception #f result group-info group)
-        (begin
-          (##structure-type-set! result (macro-type-group-info))
-          (##subtype-set! result (macro-subtype-structure))
-          result))))
+        result)))
 
 (define-prim (group-info group)
   (macro-force-vars (group)
@@ -1788,7 +2587,9 @@
 
 
 (define ##path-resolve-hook #f)
-(set! ##path-resolve-hook #f)
+
+(define-prim (##path-resolve-hook-set! x)
+  (set! ##path-resolve-hook x))
 
 (define-prim (##path-resolve path)
   (let ((pr-hook ##path-resolve-hook))
@@ -1806,7 +2607,9 @@
   (##path-expand path))
 
 (define ##path-unresolve-hook #f)
-(set! ##path-unresolve-hook #f)
+
+(define-prim (##path-unresolve-hook-set! x)
+  (set! ##path-unresolve-hook x))
 
 (define-prim (##path-unresolve path)
   (let ((pu-hook ##path-unresolve-hook))
@@ -1824,7 +2627,9 @@
   path)
 
 (define ##path-expand-hook #f)
-(set! ##path-expand-hook #f)
+
+(define-prim (##path-expand-hook-set! x)
+  (set! ##path-expand-hook x))
 
 (define-prim (##path-expand
               path
@@ -1946,20 +2751,25 @@
         (##raise-os-exception #f code path-expand path origin))
 
       (define (expand-in-instdir relpath instdir-name)
-        (let ((dir (##os-path-gambcdir-map-lookup instdir-name)))
+        (let ((dir (##os-path-gambitdir-map-lookup instdir-name)))
           (cond ((##fixnum? dir)
                  (err dir))
                 (dir
-                 (expand relpath dir))
+                 (let ((expanded-dir
+                        (##path-expand-in-initial-current-directory dir)))
+                   (expand relpath
+                           expanded-dir)))
                 (else
-                 (let ((dir (##os-path-gambcdir)))
-                   (cond ((##fixnum? dir)
-                          (err dir))
-                         ((##fx= 0 (##string-length instdir-name))
-                          (expand relpath dir))
-                         (else
-                          (expand relpath
-                                  (expand instdir-name dir)))))))))
+                 (let ((dir (##os-path-gambitdir)))
+                   (if (##fixnum? dir)
+                       (err dir)
+                       (let ((expanded-dir
+                              (##path-expand-in-initial-current-directory dir)))
+                         (expand relpath
+                                 (if (##fx= 0 (##string-length instdir-name))
+                                     expanded-dir
+                                     (expand instdir-name
+                                             expanded-dir))))))))))
 
       (let ((t-end (tilde-end)))
         (if (##fx< 0 t-end)
@@ -1987,11 +2797,11 @@
                       relpath
                       instdir-name)))
                   (else
-                   (let ((info (##os-user-info (##substring p 1 t-end))))
+                   (let ((info (##user-info (##substring p 1 t-end) #f)))
                      (prepend-directory
                       (if (##fixnum? info)
                           info
-                          (##vector-ref info 4)) ;; home dir
+                          (macro-user-info-home info))
                       t-end))))
 
             (let* ((vol-end
@@ -2008,6 +2818,9 @@
 
     (expand path (if (##eq? origin (macro-absent-obj)) #f origin))))
 
+(define-prim (##path-expand-in-initial-current-directory path)
+  (##path-expand path ##initial-current-directory))
+
 (define-prim (path-expand
               path
               #!optional
@@ -2018,6 +2831,14 @@
           (##path-expand path)
           (macro-check-string origin 2 (path-expand path origin)
             (##path-expand path origin))))))
+
+(define-prim (##path-join parts dir)
+  (let loop ((lst parts)
+             (result dir))
+    (if (##pair? lst)
+        (loop (##cdr lst)
+              (##path-expand (##car lst) result))
+        result)))
 
 (define-prim (##path-normalize
               path
@@ -2057,7 +2878,7 @@
              allow-relative?
              origin
              raise-os-exception?)
-            path)
+            p)
         (if (or (##eq? allow-relative? (macro-absent-obj))
                 (##not allow-relative?))
             p
@@ -2274,9 +3095,73 @@
 
 ;;;----------------------------------------------------------------------------
 
+(define-prim (##executable-path)
+  (let ((path (##os-executable-path)))
+    (if (##fixnum? path)
+        (##raise-os-exception
+         #f
+         path
+         executable-path)
+        (##path-normalize path))))
+
+(define-prim (executable-path)
+  (##executable-path))
+
+;;;----------------------------------------------------------------------------
+
 ;;; Filesystem operations.
 
-(define-prim (##create-directory-or-fifo prim path-or-settings)
+(define-prim (##create-temporary-directory
+              path-or-settings
+              #!optional
+              (raise-os-exception? #t))
+
+  (define (fail)
+    (##fail-check-string-or-settings 1 create-temporary-directory path-or-settings))
+
+  (##make-psettings
+   (macro-direction-inout)
+   '(path:
+     permissions:)
+   (cond ((##string? path-or-settings)
+          (##list 'path: path-or-settings))
+         (else
+          path-or-settings))
+   fail
+   (lambda (psettings)
+     (let ((path
+            (macro-psettings-path psettings)))
+       (if (##not (##string? path))
+           (fail)
+           (let ((pid (##os-getpid))
+                 (permissions (##psettings->permissions psettings #o777)))
+             (let loop ((i 0))
+               (let* ((resolved-path
+                       (##path-resolve
+                        (##string-append path
+                                         (##number->string pid)
+                                         (if (##fx= i 0)
+                                             ""
+                                             (##number->string i)))))
+                      (code
+                       (##os-create-directory resolved-path permissions)))
+                 (if (##fx< code 0)
+                     (if (##fx= code ##err-code-EEXIST)
+                         (loop (##fx- i 1))
+                         (if raise-os-exception?
+                             (##raise-os-exception #f code create-temporary-directory path-or-settings)
+                             code))
+                     resolved-path)))))))))
+
+(define-prim (create-temporary-directory path-or-settings)
+  (macro-force-vars (path-or-settings)
+    (##create-temporary-directory path-or-settings)))
+
+(define-prim (##create-directory-or-fifo
+              prim
+              path-or-settings
+              #!optional
+              (raise-os-exception? #t))
 
   (define (fail)
     (##fail-check-string-or-settings 1 prim path-or-settings))
@@ -2308,18 +3193,42 @@
                        (##os-create-directory resolved-path permissions)
                        (##os-create-fifo resolved-path permissions))))
              (if (##fx< code 0)
-                 (##raise-os-exception #f code prim path-or-settings)
+                 (if raise-os-exception?
+                     (##raise-os-exception #f code prim path-or-settings)
+                     code)
                  (##void))))))))
+
+(define-prim (##create-directory
+              path-or-settings
+              #!optional
+              (raise-os-exception? #t))
+  (##create-directory-or-fifo
+   create-directory
+   path-or-settings
+   raise-os-exception?))
 
 (define-prim (create-directory path-or-settings)
   (macro-force-vars (path-or-settings)
-    (##create-directory-or-fifo create-directory path-or-settings)))
+    (##create-directory path-or-settings)))
+
+(define-prim (##create-fifo
+              path-or-settings
+              #!optional
+              (raise-os-exception? #t))
+  (##create-directory-or-fifo
+   create-fifo
+   path-or-settings
+   raise-os-exception?))
 
 (define-prim (create-fifo path-or-settings)
   (macro-force-vars (path-or-settings)
-    (##create-directory-or-fifo create-fifo path-or-settings)))
+    (##create-fifo path-or-settings)))
 
-(define-prim (##create-link old-path new-path)
+(define-prim (##create-link
+              old-path
+              new-path
+              #!optional
+              (raise-os-exception? #t))
   (let* ((resolved-old-path
           (##path-resolve old-path))
          (resolved-new-path
@@ -2327,7 +3236,9 @@
          (code
           (##os-create-link resolved-old-path resolved-new-path)))
     (if (##fx< code 0)
-        (##raise-os-exception #f code create-link old-path new-path)
+        (if raise-os-exception?
+            (##raise-os-exception #f code create-link old-path new-path)
+            code)
         (##void))))
 
 (define-prim (create-link old-path new-path)
@@ -2336,7 +3247,11 @@
       (macro-check-string new-path 2 (create-link old-path new-path)
         (##create-link old-path new-path)))))
 
-(define-prim (##create-symbolic-link old-path new-path)
+(define-prim (##create-symbolic-link
+              old-path
+              new-path
+              #!optional
+              (raise-os-exception? #t))
   (let* ((resolved-old-path
           (##path-resolve old-path))
          (resolved-new-path
@@ -2344,7 +3259,9 @@
          (code
           (##os-create-symbolic-link resolved-old-path resolved-new-path)))
     (if (##fx< code 0)
-        (##raise-os-exception #f code create-symbolic-link old-path new-path)
+        (if raise-os-exception?
+            (##raise-os-exception #f code create-symbolic-link old-path new-path)
+            code)
         (##void))))
 
 (define-prim (create-symbolic-link old-path new-path)
@@ -2353,17 +3270,22 @@
       (macro-check-string new-path 2 (create-symbolic-link old-path new-path)
         (##create-symbolic-link old-path new-path)))))
 
-(define-prim (##delete-directory path)
+(define-prim (##delete-directory
+              path
+              #!optional
+              (raise-os-exception? #t))
   (let* ((resolved-path
           (##path-resolve path))
          (code
           (##os-delete-directory resolved-path)))
     (if (##fx< code 0)
-        (##raise-os-exception
-         #f
-         code
-         delete-directory
-         path)
+        (if raise-os-exception?
+            (##raise-os-exception
+             #f
+             code
+             delete-directory
+             path)
+            code)
         (##void))))
 
 (define-prim (delete-directory path)
@@ -2371,7 +3293,12 @@
     (macro-check-string path 1 (delete-directory path)
       (##delete-directory path))))
 
-(define-prim (##rename-file old-path new-path)
+(define-prim (##rename-file
+              old-path
+              new-path
+              #!optional
+              (replace? (macro-absent-obj))
+              (raise-os-exception? #t))
   (let* ((resolved-old-path
           (##path-resolve old-path))
          (resolved-new-path
@@ -2379,23 +3306,35 @@
          (code
           (##os-rename-file
            resolved-old-path
-           resolved-new-path)))
+           resolved-new-path
+           (##not (##eq? replace? #f))))) ;; default is replace? = #t
     (if (##fx< code 0)
-        (##raise-os-exception
-         #f
-         code
-         rename-file
-         old-path
-         new-path)
+        (if raise-os-exception?
+            (##raise-os-exception
+             #f
+             code
+             rename-file
+             old-path
+             new-path
+             replace?)
+            code)
         (##void))))
 
-(define-prim (rename-file old-path new-path)
-  (macro-force-vars (old-path new-path)
-    (macro-check-string old-path 1 (rename-file old-path new-path)
-      (macro-check-string new-path 2 (rename-file old-path new-path)
-        (##rename-file old-path new-path)))))
+(define-prim (rename-file
+              old-path
+              new-path
+              #!optional
+              (replace? (macro-absent-obj)))
+  (macro-force-vars (old-path new-path replace?)
+    (macro-check-string old-path 1 (rename-file old-path new-path replace?)
+      (macro-check-string new-path 2 (rename-file old-path new-path replace?)
+        (##rename-file old-path new-path replace?)))))
 
-(define-prim (##copy-file old-path new-path)
+(define-prim (##copy-file
+              old-path
+              new-path
+              #!optional
+              (raise-os-exception? #t))
   (let* ((resolved-old-path
           (##path-resolve old-path))
          (resolved-new-path
@@ -2405,12 +3344,14 @@
            resolved-old-path
            resolved-new-path)))
     (if (##fx< code 0)
-        (##raise-os-exception
-         #f
-         code
-         copy-file
-         old-path
-         new-path)
+        (if raise-os-exception?
+            (##raise-os-exception
+             #f
+             code
+             copy-file
+             old-path
+             new-path)
+            code)
         (##void))))
 
 (define-prim (copy-file old-path new-path)
@@ -2419,17 +3360,22 @@
       (macro-check-string new-path 2 (copy-file old-path new-path)
         (##copy-file old-path new-path)))))
 
-(define-prim (##delete-file path)
+(define-prim (##delete-file
+              path
+              #!optional
+              (raise-os-exception? #t))
   (let* ((resolved-path
           (##path-resolve path))
          (code
           (##os-delete-file resolved-path)))
     (if (##fx< code 0)
-        (##raise-os-exception
-         #f
-         code
-         delete-file
-         path)
+        (if raise-os-exception?
+            (##raise-os-exception
+             #f
+             code
+             delete-file
+             path)
+            code)
         (##void))))
 
 (define-prim (delete-file path)
@@ -2437,10 +3383,79 @@
     (macro-check-string path 1 (delete-file path)
       (##delete-file path))))
 
+(define-prim (##delete-file-or-directory
+              path
+              #!optional
+              (recursive? (macro-absent-obj))
+              (raise-os-exception? #t))
+  (let ((rec? (if (##eq? recursive? (macro-absent-obj)) #f recursive?)))
+
+    (define (del-dir-content dir-path)
+      (##open-directory-aux
+       #f
+       (lambda (dir-port)
+         (if (##fixnum? dir-port)
+             dir-port
+             (let loop ()
+               (let ((filename (##read dir-port)))
+                 (if (##eof-object? filename)
+                     (begin
+                       (##close-port dir-port)
+                       #f)
+                     (let ((result (del (##path-expand filename dir-path))))
+                       (if result
+                           (begin
+                             (##close-port dir-port)
+                             result)
+                           (loop))))))))
+       open-directory
+       (##list path: dir-path
+               ignore-hidden: 'dot-and-dot-dot)))
+
+    (define (del path)
+      (let ((info (##file-info-aux path #f)))
+        (if (##fixnum? info)
+            info
+            (case (macro-file-info-type info)
+              ((directory)
+               (or (and rec?
+                        (del-dir-content path))
+                   (let ((result (##delete-directory path #f)))
+                     (if (##fixnum? result)
+                         result
+                         #f))))
+              (else
+               (let ((result (##delete-file path #f)))
+                 (if (##fixnum? result)
+                     result
+                     #f)))))))
+
+    (let ((result (del path)))
+      (if result
+          (if raise-os-exception?
+              (##raise-os-exception
+               #f
+               result
+               delete-file-or-directory
+               path
+               recursive?)
+              result)
+          (##void)))))
+
+(define-prim (delete-file-or-directory
+              path
+              #!optional
+              (recursive? (macro-absent-obj)))
+  (macro-force-vars (path recursive?)
+    (macro-check-string path 1 (delete-file-or-directory path recursive?)
+      (if (##eq? recursive? (macro-absent-obj))
+          (##delete-file-or-directory path)
+          (##delete-file-or-directory path recursive?)))))
+
 (define-prim (##directory-files
               #!optional
               (path-or-settings (macro-absent-obj)))
-  (##open-directory
+  (##open-directory-aux
    #t
    (lambda (port)
      (let ((files (##read-all port ##read)))
@@ -2454,6 +3469,52 @@
               (path-or-settings (macro-absent-obj)))
   (macro-force-vars (path-or-settings)
     (##directory-files path-or-settings)))
+
+;;;----------------------------------------------------------------------------
+
+(define (##string->c-id str #!optional (allow-upper? #t))
+  (let ((len (##string-length str)))
+    (if (##fx= len 0)
+        "_"
+        (let loop1 ((i (##fx- len 1))
+                    (lst '()))
+          (if (##fx>= i 0)
+              (let ((c (##string-ref str i)))
+                (cond ((##char=? c #\_)
+                       (loop1 (##fx- i 1)
+                              (##cons c (##cons c lst))))
+                      ((if (##fx= i 0)
+                           (##c-id-initial? c allow-upper?)
+                           (##c-id-subsequent? c allow-upper?))
+                       (loop1 (##fx- i 1)
+                              (##cons c lst)))
+                      (else
+                       (let ((n (##char->integer c)))
+                         (if (##fx= n 0)
+                             (loop1 (##fx- i 1)
+                                    (##cons #\_ (##cons #\0 (##cons #\_ lst))))
+                             (let loop2 ((n n)
+                                         (lst (##cons #\_ lst)))
+                               (if (##fx> n 0)
+                                   (loop2 (##fxarithmetic-shift-right n 4)
+                                          (##cons
+                                           (##string-ref "0123456789abcdef"
+                                                         (##fxand n 15))
+                                           lst))
+                                   (loop1 (##fx- i 1)
+                                          (##cons #\_ lst)))))))))
+              (##list->string lst))))))
+
+(define (##c-id-initial? c allow-upper?) ;; c is an ASCII letter or _
+  (let ((n (##char->integer c)))
+    (or (and (##fx>= n 97) (##fx<= n 122))
+        (##fx= n 95)
+        (and allow-upper? (##fx>= n 65) (##fx<= n 90)))))
+
+(define (##c-id-subsequent? c allow-upper?) ;; c is an ASCII letter, _ or 0..9
+  (or (##c-id-initial? c allow-upper?)
+      (let ((n (##char->integer c)))
+        (and (##fx>= n 48) (##fx<= n 57)))))
 
 ;;;----------------------------------------------------------------------------
 
@@ -2933,31 +3994,31 @@
 ;;
 ;; (define-runtime-macro (six.label identifier stat)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.goto expr)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.switch expr stat)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.case expr stat)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.break)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.continue)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.return . expr)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.clause expr)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.x:-y x y)
 ;;   `(void))
-;; 
+;;
 ;; (define-runtime-macro (six.!)
 ;;   `(void))
 
@@ -2968,13 +4029,14 @@
 (define-prim (##object->encoding obj)
   (let* ((hi (##type-cast obj (macro-type-fixnum)))
          (lo (##type obj)))
-    (##+ (##* (if (##fx< hi 0) (##- hi ##bignum.2*min-fixnum) hi)
-              4)
+    (##+ (##arithmetic-shift
+          (if (##fx< hi 0) (##- hi ##bignum.2*min-fixnum) hi)
+          2)
          lo)))
 
 (define-prim (##encoding->object encoding)
-  (let* ((hi (##quotient encoding 4))
-         (lo (##modulo encoding 4))
+  (let* ((hi (##arithmetic-shift encoding -2))
+         (lo (##bitwise-and encoding 3))
          (x (if (##fixnum? hi) hi (##+ hi ##bignum.2*min-fixnum))))
     (##type-cast x lo)))
 

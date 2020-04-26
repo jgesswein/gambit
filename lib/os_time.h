@@ -1,6 +1,6 @@
 /* File: "os_time.h" */
 
-/* Copyright (c) 1994-2015 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2017 by Marc Feeley, All Rights Reserved. */
 
 #ifndef ___OS_TIME_H
 #define ___OS_TIME_H
@@ -62,7 +62,6 @@ typedef struct ___time_struct
 
 
 /*---------------------------------------------------------------------------*/
-
 
 typedef struct ___time_module_struct
   {
@@ -167,6 +166,10 @@ extern void ___time_get_current_time
    ___P((___time *tim),
         ());
 
+extern ___U64 ___time_get_monotonic_time ___PVOID;
+
+extern ___U64 ___time_get_monotonic_time_frequency ___PVOID;
+
 extern ___F64 ___time_to_seconds
    ___P((___time tim),
         ());
@@ -182,7 +185,9 @@ extern void ___process_times
          ___F64 *real),
         ());
 
-extern ___F64 ___set_heartbeat_interval
+extern ___F64 ___get_heartbeat_interval ___PVOID;
+
+extern void ___set_heartbeat_interval
    ___P((___F64 seconds),
         ());
 
@@ -261,14 +266,6 @@ extern void ___process_times
 extern ___SCMOBJ ___setup_heartbeat_interrupt_handling ___PVOID;
 
 extern void ___cleanup_heartbeat_interrupt_handling ___PVOID;
-
-extern void ___disable_heartbeat_interrupts ___PVOID;
-
-extern void ___enable_heartbeat_interrupts ___PVOID;
-
-extern ___F64 ___set_heartbeat_interval
-   ___P((___F64 seconds),
-        ());
 
 
 /*---------------------------------------------------------------------------*/

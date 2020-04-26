@@ -20,7 +20,7 @@
 @rem because the C compiler runs out of memory while compiling _num.c
 @rem and _io.c .
 
-set COMP_GEN=cl -nologo -Oityb1 -G5s -MT -c -I..\include -D___SYS_TYPE_CPU=\"i686\" -D___SYS_TYPE_VENDOR=\"pc\" -D___SYS_TYPE_OS=\"visualc\"
+set COMP_GEN=cl -nologo -Oityb1 -Zi -GS -RTC1 -MT -D_CRT_SECURE_NO_DEPRECATE -c -I..\include -D___SYS_TYPE_CPU=\"i686\" -D___SYS_TYPE_VENDOR=\"pc\" -D___SYS_TYPE_OS=\"visualc\"
 
 if not "%1%" == "" (
 set COMP_GEN=%COMP_GEN% -D___GAMBCDIR=\"%1%\"
@@ -35,20 +35,43 @@ set COMP_APP=%COMP_GEN% -D___SINGLE_HOST
 @rem We can't rely on sed being available so we generate gambit.h
 @rem from gambit.h.in by prefixing it with the needed declarations.
 
-echo #ifndef ___VOIDSTAR_WIDTH                > include\gambit.h
-echo #define ___VOIDSTAR_WIDTH ___LONG_WIDTH >> include\gambit.h
-echo #endif                                  >> include\gambit.h
-echo #ifndef ___MAX_CHR                      >> include\gambit.h
-echo #define ___MAX_CHR 0x10ffff             >> include\gambit.h
-echo #endif                                  >> include\gambit.h
-type include\gambit.h.in                     >> include\gambit.h
+echo #ifndef ___VOIDSTAR_WIDTH                 > include\gambit.h
+echo #define ___VOIDSTAR_WIDTH ___LONG_WIDTH  >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #ifndef ___MAX_CHR                       >> include\gambit.h
+echo #define ___MAX_CHR 0x10ffff              >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #ifndef ___SINGLE_VM                     >> include\gambit.h
+echo #ifndef ___MULTIPLE_VMS                  >> include\gambit.h
+echo #define ___SINGLE_VM                     >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #ifndef ___SINGLE_THREADED_VMS           >> include\gambit.h
+echo #ifndef ___MULTIPLE_THREADED_VMS         >> include\gambit.h
+echo #define ___SINGLE_THREADED_VMS           >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #ifndef ___USE_POSIX_THREADS             >> include\gambit.h
+echo #ifndef ___USE_WIN32_THREADS             >> include\gambit.h
+echo #define ___USE_NO_THREAD_SYSTEM          >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #ifndef ___NO_THREAD_LOCAL_STORAGE_CLASS >> include\gambit.h
+echo #ifndef ___THREAD_LOCAL_STORAGE_CLASS    >> include\gambit.h
+echo #define ___NO_THREAD_LOCAL_STORAGE_CLASS >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+echo #ifndef ___BOOL                          >> include\gambit.h
+echo #define ___BOOL int                      >> include\gambit.h
+echo #endif                                   >> include\gambit.h
+type include\gambit.h.in                      >> include\gambit.h
 
 cd lib
 
 %COMP_LIB_PR% main.c
 %COMP_LIB_PR% setup.c
 %COMP_LIB_PR% mem.c
-%COMP_LIB_PR% os.c
+%COMP_LIB_PR% os_setup.c
 %COMP_LIB_PR% os_base.c
 %COMP_LIB_PR% os_time.c
 %COMP_LIB_PR% os_shell.c
@@ -56,6 +79,7 @@ cd lib
 %COMP_LIB_PR% os_dyn.c
 %COMP_LIB_PR% os_tty.c
 %COMP_LIB_PR% os_io.c
+%COMP_LIB_PR% os_thread.c
 %COMP_LIB_PR% c_intf.c
 
 %COMP_LIB_PR% _kernel.c
@@ -70,7 +94,7 @@ cd lib
 
 %COMP_LIB_PR% _gambc.c
 
-lib -out:libgambc.lib main.obj setup.obj mem.obj os.obj os_base.obj os_time.obj os_shell.obj os_files.obj os_dyn.obj os_tty.obj os_io.obj c_intf.obj _kernel.obj _system.obj _num.obj _std.obj _eval.obj _io.obj _nonstd.obj _thread.obj _repl.obj _gambc.obj
+lib -out:libgambc.lib main.obj setup.obj mem.obj os_setup.obj os_base.obj os_time.obj os_shell.obj os_files.obj os_dyn.obj os_tty.obj os_io.obj os_thread.obj c_intf.obj _kernel.obj _system.obj _num.obj _std.obj _eval.obj _io.obj _nonstd.obj _thread.obj _repl.obj _gambc.obj
 
 cd ..
 
@@ -102,7 +126,10 @@ cd gsc
 %COMP_LIB% _asm.c
 %COMP_LIB% _x86.c
 %COMP_LIB% _codegen.c
-%COMP_LIB% _t-univ.c
+%COMP_LIB% _t-univ-1.c
+%COMP_LIB% _t-univ-2.c
+%COMP_LIB% _t-univ-3.c
+%COMP_LIB% _t-univ-4.c
 %COMP_LIB% _t-c-1.c
 %COMP_LIB% _t-c-2.c
 %COMP_LIB% _t-c-3.c
@@ -111,7 +138,7 @@ cd gsc
 %COMP_APP% _gsc.c
 %COMP_APP% _gsc_.c
 
-cl -Fegsc.exe ..\lib\libgambc.lib _host.obj _utils.obj _source.obj _parms.obj _env.obj _ptree1.obj _ptree2.obj _gvm.obj _back.obj _front.obj _prims.obj _assert.obj _asm.obj _x86.obj _codegen.obj _t-univ.obj _t-c-1.obj _t-c-2.obj _t-c-3.obj _gsclib.obj _gambcgsc.obj _gsc.obj _gsc_.obj Kernel32.Lib User32.Lib Gdi32.Lib WS2_32.Lib
+cl -Fegsc.exe ..\lib\libgambc.lib _host.obj _utils.obj _source.obj _parms.obj _env.obj _ptree1.obj _ptree2.obj _gvm.obj _back.obj _front.obj _prims.obj _assert.obj _asm.obj _x86.obj _codegen.obj _t-univ-1.obj _t-univ-2.obj _t-univ-3.obj _t-univ-4.obj _t-c-1.obj _t-c-2.obj _t-c-3.obj _gsclib.obj _gambcgsc.obj _gsc.obj _gsc_.obj Kernel32.Lib User32.Lib Gdi32.Lib WS2_32.Lib
 
 cd ..
 
@@ -146,23 +173,23 @@ echo echo gcc.exe, wcl386.exe and cl.exe were not found in the PATH.  Make sure 
 echo exit 1 >> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_gcc.exe>> gsc-cc-o.bat
-echo cd "%GSC_CC_O_C_FILENAME_DIR%">> gsc-cc-o.bat
-echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -mieee-fp -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
+echo cd "%%GSC_CC_O_C_FILENAME_DIR%%">> gsc-cc-o.bat
+echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
 echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_wcl386.exe>> gsc-cc-o.bat
-echo cd "%GSC_CC_O_C_FILENAME_DIR%">> gsc-cc-o.bat
+echo cd "%%GSC_CC_O_C_FILENAME_DIR%%">> gsc-cc-o.bat
 echo wcl386.exe -w0 -zp4 -zq -obetir -bm -3r -bt=nt -mf -bd -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -l=nt_dll -fe="%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
 echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_cl.exe>> gsc-cc-o.bat
-echo cd "%GSC_CC_O_C_FILENAME_DIR%">> gsc-cc-o.bat
+echo cd "%%GSC_CC_O_C_FILENAME_DIR%%">> gsc-cc-o.bat
 echo cl.exe -nologo -Oityb1 -MT -D_CRT_SECURE_NO_DEPRECATE -LD -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -Fe"%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
 echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :use_build_time_c_compiler>> gsc-cc-o.bat
-echo cd "%GSC_CC_O_C_FILENAME_DIR%">> gsc-cc-o.bat
-echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -mieee-fp -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
+echo cd "%%GSC_CC_O_C_FILENAME_DIR%%">> gsc-cc-o.bat
+echo gcc.exe -mno-cygwin -Wall -W -Wno-unused -O1 -fno-math-errno -fschedule-insns2 -fno-trapping-math -fno-strict-aliasing -fwrapv -fno-common -shared -I"%%GSC_CC_O_GAMBCDIR_INCLUDE%%" -D___DYNAMIC -D___SINGLE_HOST -o "%%GSC_CC_O_OBJ_FILENAME%%" %%GSC_CC_O_CC_OPTIONS%% %%GSC_CC_O_LD_OPTIONS_PRELUDE%% "%%GSC_CC_O_C_FILENAME_BASE%%" %%GSC_CC_O_LD_OPTIONS%%>> gsc-cc-o.bat
 echo goto end>> gsc-cc-o.bat
 echo.>> gsc-cc-o.bat
 echo :end>> gsc-cc-o.bat

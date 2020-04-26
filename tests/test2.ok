@@ -804,7 +804,6 @@
 ;;; (Argument 1) CHARACTER expected: (char-downcase 'a)
 ;;; (Argument 1) CHARACTER expected: (char-downcase "a")
 (make-string 0) => ""
-(make-string 3) => "\0\0\0"
 ;;; CALL EXPRESSION ("???") IS WRONG: (make-string 536870911)
 ;;; (Argument 1) Out of range: (make-string 12345678901234567890)
 ;;; (Argument 1) Out of range: (make-string -1)
@@ -1076,16 +1075,16 @@
 ;;; (Argument 1) PROCEDURE expected: (map #f '(1 4 9))
 (map '#<procedure #3 +> '() '()) => ()
 (map '#<procedure #3 +> '(1 2 3) '(0 2 6)) => (1 4 9)
-;;; (Argument 3) List is not of proper length: (map '#<procedure #3 +> '(1 2 3) '(0 2))
-;;; (Argument 3) List is not of proper length: (map '#<procedure #3 +> '(1 2) '(0 2 6))
+(map '#<procedure #3 +> '(1 2 3) '(0 2)) => (1 4)
+(map '#<procedure #3 +> '(1 2) '(0 2 6)) => (1 4)
 ;;; (Argument 2) LIST expected: (map '#<procedure #3 +> #f '())
 ;;; (Argument 3) LIST expected: (map '#<procedure #3 +> '() #f)
 ;;; (Argument 2) LIST expected: (map '#<procedure #3 +> '(1 . #f) '(0 . #f))
 ;;; (Argument 1) PROCEDURE expected: (map #f '(1 2 3) '(0 2 6))
 (map '#<procedure #3 +> '() '() '()) => ()
 (map '#<procedure #3 +> '(1 2 3) '(0 2 6) '(10 100 1000)) => (11 104 1009)
-;;; (Argument 3) List is not of proper length: (map '#<procedure #3 +> '(1 2 3) '(0 2) '(10 100 1000))
-;;; (Argument 3) List is not of proper length: (map '#<procedure #3 +> '(1 2) '(0 2 6) '(10 100 1000))
+(map '#<procedure #3 +> '(1 2 3) '(0 2) '(10 100 1000)) => (11 104)
+(map '#<procedure #3 +> '(1 2) '(0 2 6) '(10 100 1000)) => (11 104)
 ;;; (Argument 2) LIST expected: (map '#<procedure #3 +> #f '() '())
 ;;; (Argument 3) LIST expected: (map '#<procedure #3 +> '() #f '())
 ;;; (Argument 4) LIST expected: (map '#<procedure #3 +> '() '() #f)
@@ -1097,18 +1096,18 @@
 ;;; (Argument 2) LIST expected: (for-each '#<procedure #4 sqrt> '(1 . #f))
 ;;; (Argument 1) PROCEDURE expected: (for-each #f '(1 4 9))
 (for-each '#<procedure #3 +> '() '()) => #!void
-(for-each '#<procedure #3 +> '(1 2 3) '(0 2 6)) => 9
-;;; (Argument 3) List is not of proper length: (for-each '#<procedure #3 +> '(1 2 3) '(0 2))
-;;; (Argument 3) List is not of proper length: (for-each '#<procedure #3 +> '(1 2) '(0 2 6))
+(for-each '#<procedure #3 +> '(1 2 3) '(0 2 6)) => #!void
+(for-each '#<procedure #3 +> '(1 2 3) '(0 2)) => #!void
+(for-each '#<procedure #3 +> '(1 2) '(0 2 6)) => #!void
 ;;; (Argument 2) LIST expected: (for-each '#<procedure #3 +> #f '())
 ;;; (Argument 3) LIST expected: (for-each '#<procedure #3 +> '() #f)
 ;;; (Argument 2) LIST expected: (for-each '#<procedure #3 +> '(1 . #f) '(0 . #f))
 ;;; (Argument 1) PROCEDURE expected: (for-each #f '(1 2 3) '(0 2 6))
 (for-each '#<procedure #3 +> '() '() '()) => #!void
-(for-each '#<procedure #3 +> '(1 2 3) '(0 2 6) '(10 100 1000)) => 1009
-;;; (Argument 3) List is not of proper length: (for-each '#<procedure #3 +> '(1 2 3) '(0 2) '(10 100 1000))
-;;; (Argument 3) List is not of proper length: (for-each '#<procedure #3 +> '(1 2 3) '(0 2) '(10 100 1000))
-;;; (Argument 3) List is not of proper length: (for-each '#<procedure #3 +> '(1 2) '(0 2 6) '(10 100 1000))
+(for-each '#<procedure #3 +> '(1 2 3) '(0 2 6) '(10 100 1000)) => #!void
+(for-each '#<procedure #3 +> '(1 2 3) '(0 2) '(10 100 1000)) => #!void
+(for-each '#<procedure #3 +> '(1 2 3) '(0 2) '(10 100 1000)) => #!void
+(for-each '#<procedure #3 +> '(1 2) '(0 2 6) '(10 100 1000)) => #!void
 ;;; (Argument 2) LIST expected: (for-each '#<procedure #3 +> #f '() '())
 ;;; (Argument 3) LIST expected: (for-each '#<procedure #3 +> '() #f '())
 ;;; (Argument 4) LIST expected: (for-each '#<procedure #3 +> '() '() #f)
@@ -1142,8 +1141,8 @@
 ;;; (Argument 1) OUTPUT PORT expected: (close-output-port '#<input-port #6 (stdin)>)
 ;;; (Argument 1) OUTPUT PORT expected: (close-output-port #f)
 (read) => 1
-;;; (Argument 1) INPUT PORT expected: (read '#<output-port #7 (stdout)>)
-;;; (Argument 1) INPUT PORT expected: (read #f)
+;;; (Argument 1) Object INPUT PORT expected: (read '#<output-port #7 (stdout)>)
+;;; (Argument 1) Object INPUT PORT expected: (read #f)
 (read-char) => #\space
 ;;; (Argument 1) Character INPUT PORT expected: (read-char '#<output-port #7 (stdout)>)
 ;;; (Argument 1) Character INPUT PORT expected: (read-char #f)
@@ -1158,18 +1157,18 @@
 ;;; (Argument 1) Character INPUT PORT expected: (char-ready? #f)
 "abc"(write "abc") => #!void
 "abc"(write "abc" '#<output-port #7 (stdout)>) => #!void
-;;; (Argument 2) OUTPUT PORT expected: (write "abc" '#<input-port #6 (stdin)>)
-;;; (Argument 2) OUTPUT PORT expected: (write "abc" #f)
+;;; (Argument 2) Object OUTPUT PORT expected: (write "abc" '#<input-port #6 (stdin)>)
+;;; (Argument 2) Object OUTPUT PORT expected: (write "abc" #f)
 abc(display "abc") => #!void
 abc(display "abc" '#<output-port #7 (stdout)>) => #!void
-;;; (Argument 2) OUTPUT PORT expected: (display "abc" '#<input-port #6 (stdin)>)
-;;; (Argument 2) OUTPUT PORT expected: (display "abc" #f)
+;;; (Argument 2) Character OUTPUT PORT expected: (display "abc" '#<input-port #6 (stdin)>)
+;;; (Argument 2) Character OUTPUT PORT expected: (display "abc" #f)
 
 (newline) => #!void
 
 (newline '#<output-port #7 (stdout)>) => #!void
-;;; (Argument 1) OUTPUT PORT expected: (newline '#<input-port #6 (stdin)>)
-;;; (Argument 1) OUTPUT PORT expected: (newline #f)
+;;; (Argument 1) Object OUTPUT PORT expected: (newline '#<input-port #6 (stdin)>)
+;;; (Argument 1) Object OUTPUT PORT expected: (newline #f)
 A(write-char #\A) => #!void
 ;;; (Argument 1) CHARACTER expected: (write-char 123)
 A(write-char #\A '#<output-port #7 (stdout)>) => #!void
@@ -1189,8 +1188,8 @@ A(write-char #\A '#<output-port #7 (stdout)>) => #!void
 (cdr-command-line) => ("-f" "error.scm")
 (shell-command "echo hello > newfile1") => 0
 (create-directory "newdir1") => #!void
-;;; #<os-exception #8>: (create-directory "newdir1")
-;;; #<os-exception #9>: (create-directory "newfile1")
+;;; File exists: (create-directory "newdir1")
+;;; File exists: (create-directory "newfile1")
 (rename-file "newdir1" "newdir2") => #!void
 ;;; No such file or directory: (rename-file "newdir1" "newdir2")
 (rename-file "newfile1" "newdir2/aaa") => #!void
@@ -1208,13 +1207,11 @@ A(write-char #\A '#<output-port #7 (stdout)>) => #!void
 (file-type "newdir2") => directory
 (file-type "newdir2/bbb") => regular
 ;;; No such file or directory: (file-type "notexist")
-(file-size "error.scm") => 65891
-(file-size "newdir2/bbb") => 65891
+(file-size "error.scm") => 66222
+(file-size "newdir2/bbb") => 66222
 ;;; No such file or directory: (file-size "notexist")
-;;; #<os-exception #10>: (delete-directory "newdir2")
+;;; #<os-exception #8>: (delete-directory "newdir2")
 (delete-file "newdir2/aaa") => #!void
 (delete-file "newdir2/bbb") => #!void
 ;;; No such file or directory: (delete-file "newdir2/ccc")
 (delete-directory "newdir2") => #!void
-(open-process '(path: "sort" arguments: ("input") eol-encoding: cr-lf)) => #<input-output-port #11 (process "sort" "input")>
-(read-all-open-process) => (brown dog fox jumps lazy over quick the the)

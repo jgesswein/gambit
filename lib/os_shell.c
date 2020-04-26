@@ -1,6 +1,6 @@
-/* File: "os_shell.c", Time-stamp: <2013-12-04 18:23:40 feeley> */
+/* File: "os_shell.c" */
 
-/* Copyright (c) 1994-2009 by Marc Feeley, All Rights Reserved. */
+/* Copyright (c) 1994-2019 by Marc Feeley, All Rights Reserved. */
 
 /*
  * This module implements the operating system specific routines
@@ -8,9 +8,10 @@
  */
 
 #define ___INCLUDED_FROM_OS_SHELL
-#define ___VERSION 407005
+#define ___VERSION 409003
 #include "gambit.h"
 
+#include "os_setup.h"
 #include "os_base.h"
 #include "os_shell.h"
 #include "os_files.h"
@@ -73,7 +74,7 @@ ___UCS_2STRING *value;)
 
   while (*p1 != '\0')
     {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
       if (*p1 > 255)
         return ___FIX(___IMPL_LIMIT_ERR);
 #endif
@@ -117,7 +118,7 @@ ___UCS_2STRING *value;)
               len++;
 
             v = ___CAST(___UCS_2STRING,
-                        ___alloc_mem (sizeof (___UCS_2) * (len+1)));
+                        ___ALLOC_MEM(sizeof (___UCS_2) * (len+1)));
 
             if (v == 0)
               return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -135,7 +136,7 @@ ___UCS_2STRING *value;)
 #else
 
   {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
 
     char *cvalue_ptr = 0;
     char cname[GETENV_NAME_STATIC_SIZE];
@@ -144,8 +145,8 @@ ___UCS_2STRING *value;)
     if (name_len >= GETENV_NAME_STATIC_SIZE)
       {
         cname_ptr = ___CAST(char*,
-                            ___alloc_mem (sizeof (*cname_ptr)
-                                          * (name_len+1)));
+                            ___ALLOC_MEM(sizeof (*cname_ptr)
+                                         * (name_len+1)));
 
         if (cname_ptr == 0)
           return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -182,7 +183,7 @@ ___UCS_2STRING *value;)
 #ifdef USE_GetEnvironmentVariable
 
     {
-      ___CHAR_TYPE(___GETENV_CE_SELECT) cvalue[GETENV_VALUE_STATIC_SIZE];
+      ___CHAR_TYPE(___ENVIRON_CE_SELECT) cvalue[GETENV_VALUE_STATIC_SIZE];
       int n;
 
       cvalue_ptr = cvalue;
@@ -194,8 +195,8 @@ ___UCS_2STRING *value;)
 
       if (n >= GETENV_VALUE_STATIC_SIZE)
         {
-          cvalue_ptr = ___CAST(___CHAR_TYPE(___GETENV_CE_SELECT)*,
-                               ___alloc_mem (sizeof (*cvalue_ptr) * n));
+          cvalue_ptr = ___CAST(___CHAR_TYPE(___ENVIRON_CE_SELECT)*,
+                               ___ALLOC_MEM(sizeof (*cvalue_ptr) * n));
 
           if (cvalue_ptr != 0)
             n = GetEnvironmentVariable
@@ -218,7 +219,7 @@ ___UCS_2STRING *value;)
             len++;
 
           v = ___CAST(___UCS_2STRING,
-                      ___alloc_mem (sizeof (___UCS_2) * (len+1)));
+                      ___ALLOC_MEM(sizeof (___UCS_2) * (len+1)));
 
           if (v == 0)
             e = ___FIX(___HEAP_OVERFLOW_ERR);
@@ -236,15 +237,15 @@ ___UCS_2STRING *value;)
 #ifdef USE_GetEnvironmentVariable
 
       if (cvalue_ptr != cvalue)
-        ___free_mem (cvalue_ptr);
+        ___FREE_MEM(cvalue_ptr);
     }
 
 #endif
 
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
 
     if (cname_ptr != cname)
-      ___free_mem (cname_ptr);
+      ___FREE_MEM(cname_ptr);
 
 #endif
   }
@@ -277,7 +278,7 @@ ___UCS_2STRING value;)
 
   while (*p1 != '\0')
     {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
       if (*p1 > 255)
         return ___FIX(___IMPL_LIMIT_ERR);
 #endif
@@ -291,7 +292,7 @@ ___UCS_2STRING value;)
 
   while (*p1 != '\0')
     {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
       if (*p1 > 255)
         return ___FIX(___IMPL_LIMIT_ERR);
 #endif
@@ -312,7 +313,7 @@ ___UCS_2STRING value;)
     char *p2;
 
     char *name_value = ___CAST(char*,
-                               ___alloc_mem (name_len + value_len + 2));
+                               ___ALLOC_MEM(name_len + value_len + 2));
 
     if (name_value == 0)
       return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -375,12 +376,12 @@ ___UCS_2STRING value;)
 
         new_environ =
           ___CAST(char**,
-                  ___alloc_mem ((n + ___shell_mod.environ_unused_at_end)
-                                * sizeof (char*)));
+                  ___ALLOC_MEM((n + ___shell_mod.environ_unused_at_end)
+                               * sizeof (char*)));
 
         if (new_environ == 0)
           {
-            ___free_mem (name_value);
+            ___FREE_MEM(name_value);
             return ___FIX(___HEAP_OVERFLOW_ERR);
           }
 
@@ -396,7 +397,7 @@ ___UCS_2STRING value;)
         ___shell_mod.environ_unused_at_end--;
 
         if (___shell_mod.environ_was_extended)
-          ___free_mem (old_environ);
+          ___FREE_MEM(old_environ);
 
         ___shell_mod.environ_was_extended = 1;
       }
@@ -405,7 +406,7 @@ ___UCS_2STRING value;)
 #else
 
   {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
 
     char *cname_ptr;
     char *cvalue_ptr;
@@ -417,8 +418,8 @@ ___UCS_2STRING value;)
     else
       {
         cname_ptr = ___CAST(char*,
-                            ___alloc_mem (sizeof (*cname_ptr)
-                                          * (name_len+1)));
+                            ___ALLOC_MEM(sizeof (*cname_ptr)
+                                         * (name_len+1)));
 
         if (cname_ptr == 0)
           return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -434,13 +435,13 @@ ___UCS_2STRING value;)
     else
       {
         cvalue_ptr = ___CAST(char*,
-                             ___alloc_mem (sizeof (*cvalue_ptr)
-                                           * (value_len+1)));
+                             ___ALLOC_MEM(sizeof (*cvalue_ptr)
+                                          * (value_len+1)));
 
         if (cvalue_ptr == 0)
           {
             if (cname_ptr != cname)
-              ___free_mem (cname_ptr);
+              ___FREE_MEM(cname_ptr);
 
             return ___FIX(___HEAP_OVERFLOW_ERR);
           }
@@ -472,13 +473,13 @@ ___UCS_2STRING value;)
 
 #endif
 
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
 
     if (cvalue_ptr != cvalue)
-      ___free_mem (cvalue_ptr);
+      ___FREE_MEM(cvalue_ptr);
 
     if (cname_ptr != cname)
-      ___free_mem (cname_ptr);
+      ___FREE_MEM(cname_ptr);
 
 #endif
   }
@@ -507,7 +508,7 @@ ___UCS_2STRING name;)
 
   while (*p1 != '\0')
     {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
       if (*p1 > 255)
         return ___FIX(___IMPL_LIMIT_ERR);
 #endif
@@ -555,7 +556,7 @@ ___UCS_2STRING name;)
 #else
 
   {
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
 
     char *cname_ptr;
     char cname[UNSETENV_NAME_STATIC_SIZE];
@@ -565,8 +566,8 @@ ___UCS_2STRING name;)
     else
       {
         cname_ptr = ___CAST(char*,
-                            ___alloc_mem (sizeof (*cname_ptr)
-                                          * (name_len+1)));
+                            ___ALLOC_MEM(sizeof (*cname_ptr)
+                                         * (name_len+1)));
 
         if (cname_ptr == 0)
           return ___FIX(___HEAP_OVERFLOW_ERR);
@@ -608,10 +609,10 @@ ___UCS_2STRING name;)
 
 #endif
 
-#if ENV_CHAR_BYTES == 1
+#ifdef ___ENVIRON_NAME_LATIN1
 
     if (cname_ptr != cname)
-      ___free_mem (cname_ptr);
+      ___FREE_MEM(cname_ptr);
 
 #endif
   }
@@ -656,7 +657,7 @@ ___SCMOBJ name;)
             ___release_scmobj (result);
 
           if (cvalue != 0)
-            ___free_mem (cvalue);
+            ___FREE_MEM(cvalue);
         }
 
       ___release_string (cname);
@@ -807,6 +808,65 @@ ___SCMOBJ ___os_environ ___PVOID
 /* Shell command. */
 
 
+#define ___USE_system
+
+#ifdef TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE == 1
+#undef ___USE_system
+#endif
+#endif
+
+
+#if 1
+
+___SCMOBJ ___os_shell_command
+   ___P((___SCMOBJ cmd),
+        (cmd)
+___SCMOBJ cmd;)
+{
+  ___SCMOBJ e;
+
+#ifdef ___USE_system
+
+  char *ccmd;
+
+  if ((e = ___SCMOBJ_to_NONNULLCHARSTRING
+             (___PSA(___PSTATE)
+              cmd,
+              &ccmd,
+              1))
+      == ___FIX(___NO_ERR))
+    {
+      int code;
+      ___mask_all_interrupts_state all_interrupts;
+
+      ___mask_all_interrupts_begin (&all_interrupts);
+
+      code = system (ccmd);
+
+      if (code == -1)
+        e = err_code_from_errno ();
+      else
+        e = ___FIX(code & ___MAX_FIX);
+
+      ___mask_all_interrupts_end (&all_interrupts);
+
+      ___release_string (ccmd);
+    }
+
+#else
+
+  e = ___UNIMPL_ERR;
+
+#endif
+
+  return e;
+}
+
+#else
+
+/* old interface */
+
 ___SCMOBJ ___os_shell_command
    ___P((___SCMOBJ cmd,
          ___SCMOBJ dir),
@@ -859,7 +919,9 @@ ___SCMOBJ dir;)
                 e = err_code_from_errno ();
               else
                 {
-                  ___disable_os_interrupts ();
+                  ___mask_all_interrupts_state all_interrupts;
+
+                  ___mask_all_interrupts_begin (&all_interrupts);
 
                   code = system (ccmd);
 
@@ -868,7 +930,7 @@ ___SCMOBJ dir;)
                   else
                     e = ___FIX(code & ___MAX_FIX);
 
-                  ___enable_os_interrupts ();
+                  ___mask_all_interrupts_end (&all_interrupts);
 
                   chdir (old_dir); /* ignore error */
                 }
@@ -1001,6 +1063,8 @@ ___SCMOBJ dir;)
   return e;
 }
 
+#endif
+
 
 /*---------------------------------------------------------------------------*/
 
@@ -1009,7 +1073,7 @@ ___SCMOBJ dir;)
 
 ___SCMOBJ ___setup_shell_module ___PVOID
 {
-  if (!___shell_mod.setup)
+  if (___shell_mod.refcount++ == 0)
     {
 #ifdef USE_environ
 
@@ -1017,27 +1081,22 @@ ___SCMOBJ ___setup_shell_module ___PVOID
       ___shell_mod.environ_was_extended = 0;
 
 #endif
-
-      ___shell_mod.setup = 1;
-      return ___FIX(___NO_ERR);
     }
 
-  return ___FIX(___UNKNOWN_ERR);
+  return ___FIX(___NO_ERR);
 }
 
 
 void ___cleanup_shell_module ___PVOID
 {
-  if (___shell_mod.setup)
+  if (--___shell_mod.refcount == 0)
     {
 #ifdef USE_environ
 
       if (___shell_mod.environ_was_extended)
-        ___free_mem (environ);
+        ___FREE_MEM(environ);
 
 #endif
-
-      ___shell_mod.setup = 0;
     }
 }
 

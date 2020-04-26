@@ -2,9 +2,57 @@
 
 ;;; File: "_kernel#.scm"
 
-;;; Copyright (c) 1994-2014 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 ;;;============================================================================
+
+;;; Representation of modules.
+
+(##define-macro (macro-make-module module-ref module-descr)
+  `(##vector ,module-ref 0 ,module-descr))
+
+(##define-macro (macro-module-module-ref module)
+  `(##vector-ref ,module 0))
+
+(##define-macro (macro-module-stage module)
+  `(##vector-ref ,module 1))
+
+(##define-macro (macro-module-stage-set! module x)
+  `(##vector-set! ,module 1 ,x))
+
+(##define-macro (macro-module-module-descr module)
+  `(##vector-ref ,module 2))
+
+(##define-macro (macro-module-descr-supply-modules module-descr)
+  `(##vector-ref ,module-descr 0))
+
+(##define-macro (macro-module-descr-demand-modules module-descr)
+  `(##vector-ref ,module-descr 1))
+
+(##define-macro (macro-module-descr-meta-info module-descr)
+  `(##vector-ref ,module-descr 2))
+
+(##define-macro (macro-module-descr-flags module-descr)
+  `(##vector-ref ,module-descr 3))
+
+(##define-macro (macro-module-descr-flags-set! module-descr x)
+  `(##vector-set! ,module-descr 3 ,x))
+
+(##define-macro (macro-module-descr-thunk module-descr)
+  `(##vector-ref ,module-descr 4))
+
+(##define-macro (macro-module-descr-thunk-set! module-descr x)
+  `(##vector-set! ,module-descr 4 ,x))
+
+(##define-macro (macro-module-descr-module-struct module-descr)
+  `(##vector-ref ,module-descr 5))
+
+(##define-macro (macro-module-descr-module-struct-set! module-descr x)
+  `(##vector-set! ,module-descr 5 ,x))
+
+(##define-macro (macro-module-last-init-stage) 2)
+
+;;;----------------------------------------------------------------------------
 
 ;;; Representation of exceptions.
 
@@ -32,10 +80,10 @@
   constructor: #f
   opaque:
 
-  (operator  unprintable: read-only:)
-  (arguments unprintable: read-only:)
-  (code      unprintable: read-only:)
-  (rte       unprintable: read-only:)
+  (operator  unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+  (code      unprintable: read-only: no-functional-setter:)
+  (rte       unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception wrong-number-of-arguments-exception
@@ -43,8 +91,18 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+)
+
+(define-library-type-of-exception wrong-number-of-values-exception
+  id: A090C430-D98F-431E-97EE-2846052FBBE0
+  constructor: #f
+  opaque:
+
+  (vals unprintable: read-only: no-functional-setter:)
+  (code unprintable: read-only: no-functional-setter:)
+  (rte  unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception keyword-expected-exception
@@ -52,8 +110,8 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception unknown-keyword-argument-exception
@@ -61,8 +119,8 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception cfun-conversion-exception
@@ -70,10 +128,10 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
-  (code      unprintable: read-only:)
-  (message   unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+  (code      unprintable: read-only: no-functional-setter:)
+  (message   unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception sfun-conversion-exception
@@ -81,14 +139,20 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
-  (code      unprintable: read-only:)
-  (message   unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+  (code      unprintable: read-only: no-functional-setter:)
+  (message   unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception multiple-c-return-exception
   id: 73c66686-a08f-4c7c-a0f1-5ad7771f242a
+  constructor: #f
+  opaque:
+)
+
+(define-library-type-of-exception wrong-processor-c-return-exception
+  id: 828142df-e9a5-4ed8-a467-2f4833525b3e
   constructor: #f
   opaque:
 )
@@ -98,8 +162,8 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception type-exception
@@ -107,10 +171,10 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
-  (arg-num   unprintable: read-only:)
-  (type-id   unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+  (arg-num   unprintable: read-only: no-functional-setter:)
+  (type-id   unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception os-exception
@@ -118,10 +182,10 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
-  (message   unprintable: read-only:)
-  (code      unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+  (message   unprintable: read-only: no-functional-setter:)
+  (code      unprintable: read-only: no-functional-setter:)
 )
 
 (define-library-type-of-exception no-such-file-or-directory-exception
@@ -129,8 +193,35 @@
   constructor: #f
   opaque:
 
-  (procedure unprintable: read-only:)
-  (arguments unprintable: read-only:)
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+)
+
+(define-library-type-of-exception file-exists-exception
+  id: DD464B90-C0B2-437F-99AA-C6B411016D09
+  constructor: #f
+  opaque:
+
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+)
+
+(define-library-type-of-exception permission-denied-exception
+  id: db6b7b55-594c-41e2-9268-05c6977db53e
+  constructor: #f
+  opaque:
+
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
+)
+
+(define-library-type-of-exception module-not-found-exception
+  id: CA9CA020-600A-4516-AA78-CBE91EC8BE14
+  constructor: #f
+  opaque:
+
+  (procedure unprintable: read-only: no-functional-setter:)
+  (arguments unprintable: read-only: no-functional-setter:)
 )
 
 ;;;----------------------------------------------------------------------------
@@ -158,48 +249,56 @@
 (##define-macro (macro-debug-settings-error-quit)          2)
 (##define-macro (macro-debug-settings-error-shift)         5)
 
-(##define-macro (macro-debug-settings-repl-mask)           384)
-(##define-macro (macro-debug-settings-repl-ide)            0)
-(##define-macro (macro-debug-settings-repl-console)        1)
-(##define-macro (macro-debug-settings-repl-stdio)          2)
-(##define-macro (macro-debug-settings-repl-remote)         3)
+(##define-macro (macro-debug-settings-repl-mask)           896)
+(##define-macro (macro-debug-settings-repl-console)        0)
+(##define-macro (macro-debug-settings-repl-stdio)          1)
+(##define-macro (macro-debug-settings-repl-stdio-and-err)  2)
+(##define-macro (macro-debug-settings-repl-client)         3)
 (##define-macro (macro-debug-settings-repl-shift)          7)
 
-(##define-macro (macro-debug-settings-user-intr-mask)      1536)
+(##define-macro (macro-debug-settings-user-intr-mask)      3072)
 (##define-macro (macro-debug-settings-user-intr-repl)      0)
 (##define-macro (macro-debug-settings-user-intr-defer)     1)
 (##define-macro (macro-debug-settings-user-intr-quit)      2)
-(##define-macro (macro-debug-settings-user-intr-shift)     9)
+(##define-macro (macro-debug-settings-user-intr-shift)     10)
 
 (##define-macro (macro-debug-settings-level settings)
-  `(##fxarithmetic-shift-right
+  `(##fxwraplogical-shift-right
     (##fxand ,settings
              (macro-debug-settings-level-mask))
     (macro-debug-settings-level-shift)))
 
 (##define-macro (macro-debug-settings-uncaught settings)
-  `(##fxarithmetic-shift-right
+  `(##fxwraplogical-shift-right
     (##fxand ,settings
              (macro-debug-settings-uncaught-mask))
     (macro-debug-settings-uncaught-shift)))
 
 (##define-macro (macro-debug-settings-error settings)
-  `(##fxarithmetic-shift-right
+  `(##fxwraplogical-shift-right
     (##fxand ,settings
              (macro-debug-settings-error-mask))
     (macro-debug-settings-error-shift)))
 
 (##define-macro (macro-debug-settings-repl settings)
-  `(##fxarithmetic-shift-right
+  `(##fxwraplogical-shift-right
     (##fxand ,settings
              (macro-debug-settings-repl-mask))
     (macro-debug-settings-repl-shift)))
 
 (##define-macro (macro-debug-settings-user-intr settings)
-  `(##fxarithmetic-shift-right
+  `(##fxwraplogical-shift-right
     (##fxand ,settings
              (macro-debug-settings-user-intr-mask))
     (macro-debug-settings-user-intr-shift)))
+
+;;;----------------------------------------------------------------------------
+
+;;; Module install mode.
+
+(##define-macro (macro-module-install-mode-ask-never)     0)
+(##define-macro (macro-module-install-mode-ask-when-repl) 1)
+(##define-macro (macro-module-install-mode-ask-always)    2)
 
 ;;;----------------------------------------------------------------------------
 
@@ -210,7 +309,7 @@
 (##define-macro (macro-terminal-settings-enable-line-edit) 16)
 
 (##define-macro (macro-terminal-settings-encoding settings)
-  `(##fxarithmetic-shift-right
+  `(##fxwraplogical-shift-right
     (##fxand ,settings
              (macro-terminal-settings-encoding-mask))
     (macro-terminal-settings-encoding-shift)))

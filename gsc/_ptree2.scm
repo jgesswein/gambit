@@ -2,7 +2,7 @@
 
 ;;; File: "_ptree2.scm"
 
-;;; Copyright (c) 1994-2011 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2020 by Marc Feeley, All Rights Reserved.
 
 (include "fixnum.scm")
 
@@ -26,11 +26,18 @@
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 (define (normalize-program ptrees)
-  (let* ((lst1 (expand-primitive-calls ptrees))
-         (lst2 (assignment-convert lst1))
-         (lst3 (beta-reduce lst2))
-         (lst4 (lambda-lift lst3)))
-    lst4))
+  (let* ((lst ptrees)
+         (lst (expand-primitive-calls lst))
+         (lst (assignment-convert lst))
+         (lst (remove-dead-definitions lst))
+         (lst (beta-reduce lst))
+         (lst (remove-dead-definitions lst))
+         (lst (lambda-lift lst)))
+
+    (if (null? lst) ;; must return at least one ptree
+        (list (new-cst (expression->source void-object #f) (node-env (car ptrees))
+                void-object))
+        lst)))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -156,177 +163,198 @@
   (map epc lst))
 
 (define (epc ptree)
-
-  (cond ((or (cst? ptree)
-             (set? ptree)
-             (def? ptree) ; guaranteed to be a toplevel definition
-             (tst? ptree)
-             (conj? ptree)
-             (disj? ptree)
-             (prc? ptree)
-             (fut? ptree))
+  (cond ((ref? ptree)
+         (epc-ref ptree))
+        ((app? ptree)
+         (epc-app ptree))
+        (else
          (node-children-set! ptree
            (map epc
                 (node-children ptree)))
-         ptree)
+         ptree)))
 
-        ((ref? ptree)
-         (let ((proc (global-proc-obj ptree)))
-           (if proc
-             (let ((proc-node
-                    (new-cst (node-source ptree) (node-env ptree)
-                      proc)))
-               (delete-ptree ptree)
-               proc-node)
-             ptree)))
+(define (epc-ref ptree)
+  (let ((proc (global-proc-obj ptree)))
+    (if proc
+        (let ((proc-node
+               (new-cst (node-source ptree) (node-env ptree)
+                 proc)))
+          (delete-ptree ptree)
+          proc-node)
+        ptree)))
 
-        ((app? ptree)
-         (let* ((oper
-                 (app-oper ptree))
-                (args
-                 (map epc (app-args ptree)))
-                (new-oper
-                 (cond ((ref? oper)
-                        (let ((var (ref-var oper)))
-                          (if (global? var)
-                            (let* ((name
-                                    (var-name var))
-                                   (proc
-                                    (target.prim-info name))
-                                   (spec
-                                    (specialize-proc proc args (node-env oper)))
-                                   (source
-                                    (node-source ptree))
-                                   (env
-                                    (node-env ptree)))
+(define (epc-app ptree)
+  (let* ((oper
+          (app-oper ptree))
+         (args
+          (map epc (app-args ptree)))
+         (new-oper
+          (cond ((ref? oper)
+                 (let ((var (ref-var oper)))
+                   (if (global? var)
+                     (let* ((name
+                             (var-name var))
+                            (proc
+                             (target.prim-info name))
+                            (spec
+                             (specialize-proc proc args (node-env oper)))
+                            (source
+                             (node-source ptree))
+                            (env
+                             (node-env ptree)))
 
-                              (define (generate-spec-call vars)
-                                (new-call source (add-not-inline-primitives env)
-                                  (new-cst source env
-                                    spec)
-                                  (gen-var-refs source env vars)))
+                       (define (generate-spec-call vars dead-end?)
+                         (gen-call-maybe-dead-end source env
+                           (new-cst source env
+                             spec)
+                           (gen-var-refs source env vars)
+                           dead-end?))
 
-                              (define (generate-original-call vars)
-                                (new-call source (add-not-inline-primitives env)
-                                  (new-ref (node-source oper) (node-env oper)
-                                    var)
-                                  (gen-var-refs source env vars)))
+                       (define (generate-original-call vars dead-end?)
+                         (gen-call-maybe-dead-end source env
+                           (new-ref
+                            (node-source oper)
+                            (remove-std-ext-rt-bindings (node-env oper))
+                            var)
+                           (gen-var-refs source env vars)
+                           dead-end?))
 
-                              (define (generate-run-time-binding-test gen-body)
-                                (let ((vars (gen-temp-vars source args)))
-                                  (gen-prc source env
-                                    vars
-                                    (new-tst source env
-                                      (gen-eq-proc source env
-                                        (new-ref
-                                          (node-source oper)
-                                          (node-env oper)
-                                          var)
-                                        proc)
-                                      (gen-body vars)
-                                      (generate-original-call vars)))))
+                       (define (generate-run-time-binding-test gen-body)
+                         (let ((vars (gen-temp-vars source args)))
+                           (gen-prc source env
+                             vars
+                             (new-tst source env
+                               (gen-eq-proc source env
+                                 (new-ref
+                                   (node-source oper)
+                                   (node-env oper)
+                                   var)
+                                 proc)
+                               (gen-body vars #f)
+                               (generate-original-call vars #f)))))
 
-                              (if (and spec
-                                       (inline-primitive? name env)
-                                       (or ((proc-obj-inlinable? spec) env)
-                                           ((proc-obj-expandable? spec) env)))
-                                (let* ((std?
-                                        (standard-proc-obj proc
-                                                           name
-                                                           (node-env oper)))
-                                       (rtb?
-                                        (run-time-binding? name
-                                                           (node-env oper)))
-                                       (new-oper
-                                        (if (not ((proc-obj-expandable? spec) env))
+                       (if (and spec
+                                (inline-primitive? name env)
+                                (or (not (eq? spec proc))
+                                    ((proc-obj-inlinable? spec) env)
+                                    ((proc-obj-expandable? spec) env)))
+                         (let* ((std?
+                                 ;; true iff it is OK to assume that the
+                                 ;; global variable "name" is bound to its
+                                 ;; predefined procedure
+                                 (standard-proc-obj proc
+                                                    name
+                                                    (node-env oper)))
+                                (rtb?
+                                 ;; true iff the binding of the global
+                                 ;; variable "name" should be checked at
+                                 ;; run time
+                                 (and (not std?)
+                                      (run-time-binding? name
+                                                         (node-env oper))))
+                                (use-original-call?
+                                 ;; true iff the original call should be
+                                 ;; used for the out-of-line case (this
+                                 ;; makes it possible to share the code
+                                 ;; generated for each branch)
+                                 rtb?)
+                                (new-oper
+                                 (if (not ((proc-obj-expandable? spec) env))
 
-                                          (cond (std?
+                                     ;; the specialized procedure does not
+                                     ;; have an expansion, so just call
+                                     ;; the specialized procedure
+
+                                     (cond (std?
+                                            (new-cst source env
+                                              spec))
+                                           (rtb?
+                                            (generate-run-time-binding-test
+                                             generate-spec-call))
+                                           (else
+                                            #f))
+
+                                     ;; the specialized procedure has an
+                                     ;; expansion so use it if "name" has
+                                     ;; a standard binding or a run time
+                                     ;; binding declaration
+
+                                     (and (or std?
+                                              rtb?)
+                                        (let ((x
+                                               ((proc-obj-expand spec)
+                                                ptree
+                                                oper
+                                                args
+                                                (if use-original-call?
+                                                  generate-original-call
+                                                  generate-spec-call)
+                                                (and (and rtb?
+                                                          use-original-call?)
+                                                     (lambda ()
+                                                       (gen-eq-proc source env
+                                                         (new-ref
+                                                           (node-source oper)
+                                                           (node-env oper)
+                                                           var)
+                                                         proc))))))
+                                          (if x
+                                            (if (and rtb?
+                                                     (not use-original-call?))
+                                              (generate-run-time-binding-test
+                                               (lambda (vars dead-end?)
+                                                 (gen-call-maybe-dead-end
+                                                  source
+                                                  env
+                                                  x
+                                                  (gen-var-refs source env vars)
+                                                  dead-end?)))
+                                              x)
+                                            (and std?
                                                  (new-cst source env
-                                                   spec))
-                                                (rtb?
-                                                 (generate-run-time-binding-test
-                                                  generate-spec-call))
-                                                (else
-                                                 #f))
+                                                   spec))))))))
+                           (if new-oper
+                               (begin
+                                 (delete-ptree oper)
+                                 (epc new-oper))
+                               (epc oper)))
+                         (epc oper)))
+                     (epc oper))))
 
-                                          (and (or std?
-                                                   rtb?)
-                                               (let ((x
-                                                      ((proc-obj-expand spec)
-                                                       ptree
-                                                       oper
-                                                       args
-                                                       (if (eq? proc spec)
-                                                         generate-original-call
-                                                         generate-spec-call)
-                                                       (and (not std?)
-                                                            (eq? proc spec)
-                                                            (lambda ()
-                                                              (gen-eq-proc source env
-                                                                (new-ref
-                                                                  (node-source oper)
-                                                                  (node-env oper)
-                                                                  var)
-                                                                proc))))))
-                                                 (if x
-                                                   (if (and (not std?)
-                                                            (not (eq? proc spec)))
-                                                     (generate-run-time-binding-test
-                                                      (lambda (vars)
-                                                        (new-call source env
-                                                          x
-                                                          (gen-var-refs source env vars))))
-                                                     x)
-                                                   (and std?
-                                                        (new-cst source env
-                                                          spec))))))))
-                                  (if new-oper
-                                    (begin
-                                      (delete-ptree oper)
-                                      (epc new-oper))
-                                    (epc oper)))
-                                (epc oper)))
-                            (epc oper))))
+                ((and (cst? oper)
+                      (proc-obj? (cst-val oper)))
+                 (let* ((proc
+                         (cst-val oper))
+                        (spec
+                         (specialize-proc proc args (node-env oper)))
+                        (source
+                         (node-source ptree))
+                        (env
+                         (node-env ptree))
+                        (x
+                         (and spec
+                              (inline-primitive? (proc-obj-name spec) env)
+                              ((proc-obj-expandable? spec) env)
+                              ((proc-obj-expand spec)
+                               ptree
+                               oper
+                               args
+                               (lambda (vars dead-end?)
+                                 (gen-call-maybe-dead-end source env
+                                   (new-cst source env
+                                     spec)
+                                   (gen-var-refs source env vars)))
+                               #f))))
+                   (epc (or x oper))))
 
-                       ((and (cst? oper)
-                             (proc-obj? (cst-val oper)))
-                        (let* ((proc
-                                (cst-val oper))
-                               (spec
-                                (specialize-proc proc args (node-env oper)))
-                               (source
-                                (node-source ptree))
-                               (env
-                                (node-env ptree))
-                               (x
-                                (and spec
-                                     (inline-primitive? (proc-obj-name spec) env)
-                                     ((proc-obj-expandable? spec) env)
-                                     ((proc-obj-expand spec)
-                                      ptree
-                                      oper
-                                      args
-                                      (lambda (vars)
-                                        (new-call
-                                         source
-                                         (add-not-inline-primitives env)
-                                         (new-cst source env
-                                           spec)
-                                         (gen-var-refs source env vars)))
-                                      #f))))
-                          (epc (or x oper))))
+                (else
+                 (epc oper)))))
 
-                       (else
-                        (epc oper)))))
+    (node-children-set! ptree
+      (cons new-oper
+            args))
 
-           (node-children-set! ptree
-             (cons new-oper
-                   args))
-
-           ptree))
-
-        (else
-         (compiler-internal-error "epc, unknown parse tree node type"))))
+    ptree))
 
 (define (gen-prc source env params body)
   (new-prc source env #f #f params '() #f #f body))
@@ -374,15 +402,33 @@
     prim
     (gen-var-refs source env vars)))
 
+(define (gen-call-prim-vars-notsafe source env prim vars)
+  (gen-call-prim-vars source (add-not-safe env) prim vars))
+
 (define (gen-call-prim source env prim args)
-  (new-call source (add-not-safe env)
+  (gen-call-maybe-dead-end source env
     (new-cst source env
       (target.prim-info prim))
+    args
+    #f))
+
+(define (gen-call-prim-notsafe source env prim args)
+  (gen-call-prim source (add-not-safe env) prim args))
+
+(define (gen-call-maybe-dead-end source env proc args dead-end?)
+  (new-call source (add-not-inline-primitives (if dead-end? (add-dead-end-calls env) env))
+    proc
     args))
 
+(define (dead-end-calls? env)
+  (declaration-value 'dead-end-calls #f #f env))
+
+(define (add-dead-end-calls env)
+  (env-declare env (list 'dead-end-calls #t)))
+
 (define (gen-eq-proc source env arg proc)
-  (gen-call-prim source env
-    '##eq?;;;;;;;;;;
+  (gen-call-prim-notsafe source env
+    **eq?-sym
     (list
      arg
      (new-cst source env
@@ -422,7 +468,7 @@
                (if x
                  (let ((source (node-source ptree)))
                    (var-refs-set! var (ptset-remove (var-refs var) ptree))
-                   (gen-call-prim source (node-env ptree)
+                   (gen-call-prim-notsafe source (node-env ptree)
                      **unbox-sym
                      (list (new-ref source (node-env ptree) (cdr x)))))
                  ptree)))))
@@ -437,7 +483,7 @@
                (new-set source (node-env ptree)
                  var
                  val))
-             (gen-call-prim source (node-env ptree)
+             (gen-call-prim-notsafe source (node-env ptree)
                **set-box!-sym
                (list (new-ref source (node-env ptree) (cdr (assq var mut)))
                      val)))))
@@ -508,7 +554,7 @@
                ptree
                cloned-mut-parms
                (map (lambda (var)
-                      (gen-call-prim (var-source var) (node-env ptree)
+                      (gen-call-prim-notsafe (var-source var) (node-env ptree)
                         **box-sym
                         (list (new-ref (var-source var)
                                        (node-env ptree)
@@ -555,12 +601,12 @@
                 (loop (cdr l1)
                       (cdr l2)
                       (cons var* new-vars)
-                      (cons (gen-call-prim src env
+                      (cons (gen-call-prim-notsafe src env
                               **box-sym
                               (list (new-cst src env void-object)))
                             new-vals)
                       (new-seq src env
-                        (gen-call-prim src env
+                        (gen-call-prim-notsafe src env
                           **set-box!-sym
                           (list (new-ref src env var*)
                                 (ac val mut)))
@@ -569,7 +615,7 @@
                 (loop (cdr l1)
                       (cdr l2)
                       (cons var* new-vars)
-                      (cons (gen-call-prim src env
+                      (cons (gen-call-prim-notsafe src env
                               **box-sym
                               (list (ac val mut)))
                             new-vals)
@@ -595,6 +641,129 @@
            (var-boxed?-set! cloned-var (var-boxed? var))
            cloned-var))
        vars))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;;
+;; Removal of dead definitions:
+;; ---------------------------
+
+;; (remove-dead-definitions ptrees) takes a list of parse-trees and
+;; removes all top-level definitions that are not live.  The liveness of
+;; top-level definitions is related to the liveness of global variables.
+;;
+;; For a top-level expression expr that is not a global variable
+;; definition, the free variables of expr are live global variables.
+;;
+;; A top-level definition (define var expr) is live iff at that
+;; definition the declaration (optimize-dead-definitions var) is not in
+;; effect or, the global variable var is live and there isn't a top-level
+;; definition of var later in the program or there is a set! of var in
+;; a live part of the program.  If the definition is live then var and
+;; the free variables of expr are live global variables.
+
+(define (remove-dead-definitions ptrees)
+
+  (define (mutated-globals ptree)
+    ;; returns set of all mutated global variables in ptree
+    (let ((mg (varset-union-multi
+               (map mutated-globals
+                    (node-children ptree)))))
+      (if (set? ptree)
+          (let ((var (set-var ptree)))
+            (if (global? var)
+                (varset-adjoin mg var)
+                mg))
+          mg)))
+
+  (define (dead-defs-fixpoint live mutated possibly-dead-defs)
+    (let loop ((rev-lst (reverse possibly-dead-defs))
+               (live live)
+               (mutated mutated)
+               (remaining-possibly-dead-defs '())
+               (changed? #f))
+      (if (pair? rev-lst)
+          (let* ((x (car rev-lst))
+                 (defined-later? (car x))
+                 (ptree (cdr x))
+                 (var (def-var ptree)))
+            (if (and (varset-member? var live)
+                     (or (not defined-later?)
+                         (varset-member? var mutated)))
+                (loop (cdr rev-lst)
+                      (varset-union live (free-variables ptree))
+                      (varset-union mutated (mutated-globals ptree))
+                      remaining-possibly-dead-defs
+                      #t)
+                (loop (cdr rev-lst)
+                      live
+                      mutated
+                      (cons x remaining-possibly-dead-defs)
+                      changed?)))
+          (if changed?
+              ;; repeat when set of remaining-possibly-dead-defs changed
+              (dead-defs-fixpoint live
+                                  mutated
+                                  remaining-possibly-dead-defs)
+              ;; remaining-possibly-dead-defs are really dead
+              (list->ptset (map cdr remaining-possibly-dead-defs))))))
+
+  (define (dead-defs)
+    (let loop ((rev-lst (reverse ptrees)) ;; visit definitions in reverse order
+               (later-defs (varset-empty))
+               (live (varset-empty))
+               (mutated (varset-empty))
+               (possibly-dead-defs '()))
+      (if (pair? rev-lst)
+          (let ((ptree (car rev-lst)))
+            (if (def? ptree)
+                (let* ((var
+                        (def-var ptree))
+                       (defined-later?
+                         (varset-member? var later-defs))
+                       (certainly-live-def?
+                        (or
+                         ;; this definition isn't marked for optimization
+                         (not (optimize-dead-definitions?
+                               (var-name var)
+                               (node-env ptree)))
+                         ;; var certainly live and no following def of this var
+                         (and (varset-member? var live)
+                              (not defined-later?)))))
+                  (if certainly-live-def?
+                      (loop (cdr rev-lst)
+                            (varset-adjoin later-defs var)
+                            (varset-union live (free-variables ptree))
+                            (varset-union mutated (mutated-globals ptree))
+                            possibly-dead-defs)
+                      (loop (cdr rev-lst)
+                            (varset-adjoin later-defs var)
+                            live
+                            mutated
+                            (cons (cons defined-later? ptree)
+                                  possibly-dead-defs))))
+                (loop (cdr rev-lst)
+                      later-defs
+                      (varset-union live (free-variables ptree))
+                      (varset-union mutated (mutated-globals ptree))
+                      possibly-dead-defs)))
+          (dead-defs-fixpoint live
+                              mutated
+                              possibly-dead-defs))))
+
+  (let ((dead (dead-defs)))
+    (if (ptset-empty? dead)
+
+        ;; no defs to remove so return the same list of parse trees...
+        ;; (allows using eq? on resulting list)
+        ptrees
+
+        (keep (lambda (ptree)
+                (if (ptset-member? ptree dead)
+                    (begin
+                      (delete-ptree ptree)
+                      #f)
+                    #t))
+              ptrees))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
@@ -862,9 +1031,14 @@
             reason
             expansion-limit))
 
-      (new-call (node-source ptree) (node-env ptree)
-        (br oper substs 'need expansion-limit)
-        (map (lambda (arg) (br arg substs 'need expansion-limit)) args))))
+      (let ((call
+             (new-call (node-source ptree) (node-env ptree)
+               (br oper substs 'need expansion-limit)
+               (map (lambda (arg) (br arg substs 'need expansion-limit))
+                    args))))
+        (if (br-let? call)
+            (br-let call substs reason expansion-limit)
+            call))))
 
 (define (br-let ptree substs reason expansion-limit)
   (let* ((proc
@@ -1059,6 +1233,9 @@
 
         ((set? ptree) ; variable guaranteed to be a global variable
          #f)
+
+        ((def? ptree) ; variable guaranteed to be a global variable
+         (side-effects-impossible? (def-val ptree)))
 
         ((tst? ptree)
          (and (side-effects-impossible? (tst-pre ptree))
@@ -1374,54 +1551,82 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
-;; (parse-tree->expression ptree) returns the Scheme expression corresponding to
-;; the parse tree 'ptree'.
+;; (parse-tree->expression ptree [location-table [annotations]]) returns
+;; the Scheme expression corresponding to the parse tree 'ptree' and, if
+;; location-table is supplied, it accumulates in that table the
+;; correspondence between generated expressions and the source-code
+;; location.
 
-(define (parse-tree->expression ptree)
-  (se ptree '() (list 0)))
+(define (parse-tree->expression ptree . rest)
+  (let* ((loc-table (and (pair? rest) (car rest)))
+         (annotations? (and (pair? rest) (pair? (cdr rest)) (cadr rest))))
+    (se ptree '() (list 0) (vector loc-table annotations?))))
 
-(define (se ptree env num)
+(define (se ptree env num ctx)
 
   (cond ((cst? ptree)
          (let ((val (cst-val ptree)))
-           (se-constant val)))
+           (se-constant val ptree ctx)))
 
         ((ref? ptree)
-         (se-var->id (ref-var ptree) env))
+         (se-gen
+          (se-var->id (ref-var ptree) env)
+          ptree
+          ctx))
 
         ((set? ptree)
-         (list set!-sym
-               (se-var->id (set-var ptree) env)
-               (se (set-val ptree) env num)))
+         (se-gen
+          (list set!-sym
+                (se-var->id (set-var ptree) env)
+                (se (set-val ptree) env num ctx))
+          ptree
+          ctx))
 
         ((def? ptree)
-         (list define-sym
-               (se-var->id (def-var ptree) env)
-               (se (def-val ptree) env num)))
+         (se-gen
+          (list define-sym
+                (se-var->id (def-var ptree) env)
+                (se (def-val ptree) env num ctx))
+          ptree
+          ctx))
 
         ((tst? ptree)
-         (list if-sym (se (tst-pre ptree) env num)
-                      (se (tst-con ptree) env num)
-                      (se (tst-alt ptree) env num)))
+         (se-gen
+          (list if-sym (se (tst-pre ptree) env num ctx)
+                       (se (tst-con ptree) env num ctx)
+                       (se (tst-alt ptree) env num ctx))
+          ptree
+          ctx))
 
         ((conj? ptree)
-         (list and-sym (se (conj-pre ptree) env num)
-                       (se (conj-alt ptree) env num)))
+         (se-gen
+          (list and-sym (se (conj-pre ptree) env num ctx)
+                        (se (conj-alt ptree) env num ctx))
+          ptree
+          ctx))
 
         ((disj? ptree)
-         (list or-sym (se (disj-pre ptree) env num)
-                      (se (disj-alt ptree) env num)))
+         (se-gen
+          (list or-sym (se (disj-pre ptree) env num ctx)
+                       (se (disj-alt ptree) env num ctx))
+          ptree
+          ctx))
 
         ((prc? ptree)
          (let ((new-env (se-rename ptree env num)))
-           (list lambda-sym
-                 (se-parameters (prc-parms ptree)
-                                (prc-opts ptree)
-                                (prc-keys ptree)
-                                (prc-rest? ptree)
-                                new-env
-                                num)
-                 (se (prc-body ptree) new-env num))))
+           (se-gen
+            (list lambda-sym
+                  (se-parameters (prc-parms ptree)
+                                 (prc-opts ptree)
+                                 (prc-keys ptree)
+                                 (prc-rest? ptree)
+                                 new-env
+                                 num
+                                 ptree
+                                 ctx)
+                  (se (prc-body ptree) new-env num ctx))
+            ptree
+            ctx)))
 
         ((app? ptree)
          (let ((oper (app-oper ptree))
@@ -1429,34 +1634,85 @@
            (if (and (prc? oper) ; applying a lambda-expr is like a 'let'
                     (prc-req-and-opt-parms-only? oper)
                     (= (length (prc-parms oper)) (length args)))
-             (let ((new-env (se-rename oper env num)))
-               (list
-                 (if (varset-intersects?
+               (let ((recursive?
+                      (varset-intersects?
                        (list->varset (prc-parms oper))
-                       (varset-union-multi (map bound-free-variables args)))
-                   letrec-sym
-                   let-sym)
-                 (se-bindings (prc-parms oper) args new-env num)
-                 (se (prc-body oper) new-env num)))
-             (map (lambda (x) (se x env num)) (cons oper args)))))
+                       (varset-union-multi (map bound-free-variables args)))))
+                 (if (and use-begin-when-possible-in-expression?
+                          (not recursive?)
+                          (= (length args) 1)
+                          (not (varset-member?
+                                (car (prc-parms oper))
+                                (bound-free-variables (prc-body oper)))))
+
+                     (let* ((expr1 (se (car args) env num ctx))
+                            (expr2 (se (prc-body oper) env num ctx)))
+                       (se-gen
+                        (cons begin-sym
+                              (cons expr1
+                                    (if (and (pair? expr2)
+                                             (eq? (car expr2) begin-sym))
+                                        (cdr expr2)
+                                        (list expr2))))
+                        ptree
+                        ctx))
+
+                     (let ((new-env (se-rename oper env num)))
+                       (se-gen
+                        (list (if recursive?
+                                  letrec-sym
+                                  let-sym)
+                              (se-bindings (prc-parms oper) args new-env num ctx)
+                              (se (prc-body oper) new-env num ctx))
+                        ptree
+                        ctx))))
+
+               (let ((call
+                      (se-gen
+                       (map (lambda (x) (se x env num ctx))
+                            (cons oper args))
+                       ptree
+                       ctx)))
+                 (if (vector-ref ctx 1)
+                     (cons (if (safe? (node-env ptree)) 'SAFE 'NOT-SAFE) call)
+                     call)))))
 
         ((fut? ptree)
-         (list future-sym (se (fut-val ptree) env num)))
+         (se-gen
+          (list future-sym (se (fut-val ptree) env num ctx))
+          ptree
+          ctx))
 
         (else
          (compiler-internal-error "se, unknown parse tree node type"))))
 
-(define use-actual-primitives-in-expression? #t)
+(define (se-gen expr ptree ctx)
+  (let ((loc-table (vector-ref ctx 0)))
+    (if loc-table
+        (let ((src (node-source ptree)))
+          (let ((locat (source-locat src)))
+            (table-set! loc-table expr locat))))
+    expr))
 
-(define (se-constant val)
-  (if (self-evaluating? val)
-    val
-    (list quote-sym
-          (if (proc-obj? val)
+(define use-actual-primitives-in-expression? #f)
+(set! use-actual-primitives-in-expression? #t)
+
+(define use-begin-when-possible-in-expression? #f)
+(set! use-begin-when-possible-in-expression? #t)
+
+(define (se-constant val ptree ctx)
+  (se-gen
+   (cond ((proc-obj? val)
+          (let ((name (string->symbol (proc-obj-name val))))
             (if use-actual-primitives-in-expression?
-              (eval (string->symbol (proc-obj-name val)))
-              (list '*primitive* (proc-obj-name val)))
-            val))))
+                (list quote-sym (eval name))
+                (list 'PRIM name))))
+         ((self-evaluating? val)
+          val)
+         (else
+          (list quote-sym val)))
+   ptree
+   ctx))
 
 (define (se-var->id var env)
   (let ((id (let ((x (assq var env)))
@@ -1468,9 +1724,10 @@
 ;;                    (number->string (##object->serial-number var))))
     id))
 
-(define use-dotted-rest-parameter-when-possible? #t)
+(define use-dotted-rest-parameter-when-possible? #f)
+(set! use-dotted-rest-parameter-when-possible? #t)
 
-(define (se-parameters parms opts keys rest? env num)
+(define (se-parameters parms opts keys rest? env num ptree ctx)
 
   (define (se-required parms n)
     (if (= n 0)
@@ -1486,7 +1743,7 @@
               (if (null? opts)
                 (se-rest-and-keys parms)
                 (let ((parm (se-var->id (car parms) env)))
-                  (cons (list parm (se-constant (car opts)))
+                  (cons (list parm (se-constant (car opts) ptree ctx))
                         (loop (cdr parms) (cdr opts)))))))))
 
   (define (se-rest-and-keys parms)
@@ -1513,7 +1770,7 @@
               (if (null? keys)
                 tail
                 (let ((parm (se-var->id (car parms) env)))
-                  (cons (list parm (se-constant (cdr (car keys))))
+                  (cons (list parm (se-constant (cdr (car keys)) ptree ctx))
                         (loop (cdr parms) (cdr keys)))))))))
 
   (se-required parms
@@ -1522,11 +1779,11 @@
                   (if keys (length keys) 0)
                   (if rest? 1 0))))
 
-(define (se-bindings vars vals env num)
+(define (se-bindings vars vals env num ctx)
   (if (null? vars)
     '()
-    (cons (list (se-var->id (car vars) env) (se (car vals) env num))
-          (se-bindings (cdr vars) (cdr vals) env num))))
+    (cons (list (se-var->id (car vars) env) (se (car vals) env num ctx))
+          (se-bindings (cdr vars) (cdr vals) env num ctx))))
 
 (define (se-rename proc env num)
   (let* ((parms
@@ -1578,8 +1835,8 @@
 
 ;; C-interface stuff:
 
-(define (c-interface-begin module-name)
-  (set! c-interface-module-name module-name)
+(define (c-interface-begin module-ref)
+  (set! c-interface-module-ref module-ref)
   (set! c-interface-proc-count 0)
   (set! c-interface-obj-count 0)
   (set! c-interface-types scheme-to-c-notation)
@@ -1598,7 +1855,7 @@
                         (reverse c-interface-procs)
                         (reverse c-interface-inits)
                         (reverse c-interface-objs))))
-    (set! c-interface-module-name #f)
+    (set! c-interface-module-ref #f)
     (set! c-interface-proc-count #f)
     (set! c-interface-obj-count #f)
     (set! c-interface-types #f)
@@ -1612,7 +1869,7 @@
     (set! c-interface-objs #f)
     i))
 
-(define c-interface-module-name #f)
+(define c-interface-module-ref #f)
 (define c-interface-proc-count #f)
 (define c-interface-obj-count #f)
 (define c-interface-types #f)
@@ -1646,11 +1903,18 @@
     (cons initialization-code-string c-interface-inits))
   #f)
 
-(define (add-c-obj obj)
-  (set! c-interface-obj-count (+ c-interface-obj-count 1))
-  (set! c-interface-objs
-    (cons obj c-interface-objs))
-  #f)
+(define (add-c-obj name obj)
+  (let ((name
+         (or name
+             (string-append
+              c-id-prefix
+              "C_OBJ_"
+              (number->string c-interface-obj-count)))))
+    (if (not (assoc name c-interface-objs))
+        (begin
+          (set! c-interface-obj-count (+ c-interface-obj-count 1))
+          (set! c-interface-objs (cons (cons name obj) c-interface-objs))))
+    name))
 
 (define (make-c-intf decls procs inits objs) (vector decls procs inits objs))
 (define (c-intf-decls c-intf)        (vector-ref c-intf 0))
@@ -1677,8 +1941,8 @@
 (define (c-proc-arity x)       (vector-ref x 3))
 (define (c-proc-body x)        (vector-ref x 4))
 
-(define (**c-define-type-expr? source)
-  (and (match **c-define-type-sym -3 source)
+(define (**c-define-type-expr? source env)
+  (and (match **c-define-type-sym -3 source env)
        (or (let ((len (length (source-code source))))
              (and (or (= len 3) (= len 6))
                   (proper-c-type-definition? source)))
@@ -1751,8 +2015,8 @@
               (source-code (cadddr (cdr code)))
               (source-code (cadddr (cddr code)))))))
 
-(define (**c-declare-expr? source)
-  (and (match **c-declare-sym 2 source)
+(define (**c-declare-expr? source env)
+  (and (match **c-declare-sym 2 source env)
        (let ((code (source-code source)))
          (or (string? (source-code (cadr code)))
              (pt-syntax-error
@@ -1762,8 +2026,8 @@
 (define (c-declaration-body source)
   (cadr (source-code source)))
 
-(define (**c-initialize-expr? source)
-  (and (match **c-initialize-sym 2 source)
+(define (**c-initialize-expr? source env)
+  (and (match **c-initialize-sym 2 source env)
        (let ((code (source-code source)))
          (or (string? (source-code (cadr code)))
              (pt-syntax-error
@@ -1773,8 +2037,8 @@
 (define (c-initialization-body source)
   (cadr (source-code source)))
 
-(define (**c-lambda-expr? source)
-  (and (match **c-lambda-sym 4 source)
+(define (**c-lambda-expr? source env)
+  (and (match **c-lambda-sym 4 source env)
        (let ((code (source-code source)))
          (if (not (string? (source-code (cadddr code))))
            (pt-syntax-error
@@ -1783,7 +2047,7 @@
            (check-c-function-type (cadr code) (caddr code) #f)))))
 
 (define (**c-define-expr? source env)
-  (and (match **c-define-sym -7 source)
+  (and (match **c-define-sym -7 source env)
        (proper-c-definition? source env)))
 
 (define (proper-c-definition? source env)
@@ -2089,16 +2353,13 @@
            (if (false-object? tag)
              (string-append c-id-prefix "FAL")
              (let* ((tag-list (if (symbol-object? tag) (list tag) tag))
-                    (x (object-pos-in-list tag-list c-interface-objs)))
-               (string-append
-                c-id-prefix
-                "C_OBJ_"
-                (number->string
-                 (if x
-                   (- (- c-interface-obj-count x) 1)
-                   (let ((n c-interface-obj-count))
-                     (add-c-obj tag-list)
-                     n))))))))
+                    (name (and (symbol-object? (car tag-list))
+                               (string-append
+                                c-id-prefix
+                                "C_TAG_"
+                                (scheme-id->c-id
+                                 (symbol->string (car tag-list)))))))
+               (add-c-obj name tag-list)))))
       (if to-scmobj?
 
         (string-append
@@ -2241,9 +2502,9 @@
 
 (define nl-str (string #\newline))
 
-(define (c-preproc-define id val body)
+(define (c-preproc-define id params val body)
   (string-append
-    "#define " id " " val nl-str
+    "#define " id params " " val nl-str
     body
     "#undef " id nl-str))
 
@@ -2310,10 +2571,12 @@
                c-id-prefix "END_SFUN_COPY_" tail))
             (c-preproc-define
              (string-append c-id "_voidstar")
+             ""
              (string-append c-id-prefix "SFUN_CAST(void*," c-id ")")
              body))
           (c-preproc-define
            c-id
+           ""
            (string-append
             c-id-prefix
             (if (vector-ref indirect-access 1)
@@ -2358,12 +2621,13 @@
             sfun?
             numbered-typ
             (if (scmobj-type? typ)
-              (c-preproc-define to from body)
+              (c-preproc-define to "" from body)
               (c-convert-representation sfun? sfun? typ from to i body)))))
     (if sfun?
       decl
       (c-preproc-define
         from
+        ""
         (string-append
           c-id-prefix
           "CFUN_ARG("
@@ -2422,6 +2686,8 @@
     (c-preproc-define
 
       (string-append c-id-prefix "NARGS")
+
+      ""
 
       (number->string (length param-typs))
 
@@ -2496,32 +2762,33 @@
                     (if sfun? "END_SFUN" "END_CFUN"))
                   nl-str
                   (if sfun?
-                    (string-append "return " c-id ";" nl-str)
+                    (string-append "return " c-id ";" nl-str) ;
                     ""))))
-           (if indirect-access-result
+               (if indirect-access-result
 
-             (c-preproc-define
-              c-id
-              (string-append
-               c-id-prefix
-               (if sfun? "SFUN_CAST_AND_DEREF(" "CFUN_CAST_AND_DEREF(")
-               (c-type-decl result-typ "*")
-               ","
-               (if (vector-ref indirect-access-result 1)
-                   ""
-                   "&")
-               c-id "_voidstar)")
-              body)
+                   (c-preproc-define
+                    c-id
+                    ""
+                    (string-append
+                     c-id-prefix
+                     (if sfun? "SFUN_CAST_AND_DEREF(" "CFUN_CAST_AND_DEREF(")
+                     (c-type-decl result-typ "*")
+                     ","
+                     (if (vector-ref indirect-access-result 1)
+                         ""
+                         "&")
+                     c-id "_voidstar)")
+                    body)
 
-             body))))))
+                   body))))))
 
 (define (comma-separated strs)
   (if (null? strs)
-    ""
-    (string-append
-      (car strs)
-      (apply string-append
-             (map (lambda (s) (string-append "," s)) (cdr strs))))))
+      ""
+      (string-append
+       (car strs)
+       (apply string-append
+              (map (lambda (s) (string-append "," s)) (cdr strs))))))
 
 (define (c-type-decl typ inner)
 
@@ -2531,21 +2798,21 @@
   (define (prefix-inner str)
     (if (and (> (string-length inner) 0)
              (c-id-subsequent? (string-ref inner 0)))
-      (string-append str " " inner)
-      (string-append str inner)))
+        (string-append str " " inner)
+        (string-append str inner)))
 
   (let ((t (source-code typ)))
     (cond ((pair? t)
            (let ((head (source-code (car t))))
              (cond ((eq? head struct-sym)
                     (prefix-inner
-                      (string-append "struct " (source-code (cadr t)))))
+                     (string-append "struct " (source-code (cadr t)))))
                    ((eq? head union-sym)
                     (prefix-inner
-                      (string-append "union " (source-code (cadr t)))))
+                     (string-append "union " (source-code (cadr t)))))
                    ((eq? head type-sym)
                     (prefix-inner
-                      (source-code (cadr t))))
+                     (source-code (cadr t))))
                    ((or (eq? head pointer-sym)
                         (eq? head nonnull-pointer-sym))
                     (c-type-decl (cadr t)
@@ -2554,9 +2821,9 @@
                         (eq? head nonnull-function-sym))
                     (c-type-decl (caddr t)
                                  (string-append
-                                   "(*" inner ") "
-                                   (c-param-list-with-types
-                                     (source-code (cadr t))))))
+                                  "(*" inner ") "
+                                  (c-param-list-with-types
+                                   (source-code (cadr t))))))
                    (else
                     (err)))))
           ((string? t)
@@ -2564,81 +2831,81 @@
           ((symbol-object? t)
            (let ((x (assq t c-interface-types)))
              (if x
-               (let ((def (cdr x)))
-                 (case (vector-ref def 0)
-                   ((c-type)
-                    (prefix-inner (vector-ref def 1)))
-                   (else
-                    (c-type-decl (vector-ref def 1) inner))))
-               (err))))
+                 (let ((def (cdr x)))
+                   (case (vector-ref def 0)
+                     ((c-type)
+                      (prefix-inner (vector-ref def 1)))
+                     (else
+                      (c-type-decl (vector-ref def 1) inner))))
+                 (err))))
           (else
            (err)))))
 
 (define (c-param-list-with-types typs)
   (if (null? typs)
-    (string-append c-id-prefix "PVOID")
-    (string-append
-      c-id-prefix
-      "P(("
-      (comma-separated (map (lambda (typ) (c-type-decl typ "")) typs))
-      "),())")))
+      (string-append c-id-prefix "PVOID")
+      (string-append
+       c-id-prefix
+       "P(("
+       (comma-separated (map (lambda (typ) (c-type-decl typ "")) typs))
+       "),())")))
 
 (define (c-param-id numbered-typ)
   (c-argument #f numbered-typ))
 
 (define (c-param-list-with-ids numbered-typs)
   (if (null? numbered-typs)
-    (string-append c-id-prefix "PVOID")
-    (string-append
-      c-id-prefix
-      "P(("
-      (comma-separated
+      (string-append c-id-prefix "PVOID")
+      (string-append
+       c-id-prefix
+       "P(("
+       (comma-separated
         (map (lambda (t) (c-type-decl (car t) (c-param-id t)))
              numbered-typs))
-      "),("
-      (comma-separated (map c-param-id numbered-typs))
-      ")"
-      (apply string-append
-             (map (lambda (t)
-                    (string-append
-                     nl-str
-                     (c-type-decl (car t) (c-param-id t))
-                     ";"))
-                  numbered-typs))
-      ")")))
+       "),("
+       (comma-separated (map c-param-id numbered-typs))
+       ")"
+       (apply string-append
+              (map (lambda (t)
+                     (string-append
+                      nl-str
+                      (c-type-decl (car t) (c-param-id t))
+                      ";"))
+                   numbered-typs))
+       ")")))
 
 (define (c-function-decl param-typs result-typ id scope body)
   (let ((numbered-typs (number-from-1 param-typs)))
     (let ((function-decl
            (c-type-decl result-typ
                         (string-append
-                          id
-                          " "
-                          (if body
-                            (c-param-list-with-ids numbered-typs)
-                            (c-param-list-with-types param-typs))))))
+                         id
+                         " "
+                         (if body
+                             (c-param-list-with-ids numbered-typs)
+                             (c-param-list-with-types param-typs))))))
       (if body
-        (string-append
-          scope " "
-          function-decl nl-str
-          "{" nl-str body "}" nl-str)
-        (string-append
-          function-decl ";" nl-str)))))
+          (string-append
+           scope " "
+           function-decl nl-str
+           "{" nl-str body "}" nl-str)
+          (string-append
+           function-decl ";" nl-str)))))
 
 (define (c-function param-typs result-typ proc-name c-defined? scope)
   (let ((proc-val
          (if c-defined?
-           (string-append
-            c-id-prefix "MLBL(" c-id-prefix "C_LBL_" proc-name ")")
-           (string-append
-            c-id-prefix "FAL"))))
+             (string-append
+              c-id-prefix "MLBL(" c-id-prefix "C_LBL_" proc-name ")")
+             (string-append
+              c-id-prefix "FAL"))))
 
     (define (make-body set-result-code cleanup?)
       (string-append
-        c-id-prefix "BEGIN_SFUN_BODY" nl-str
-        (let convert ((numbered-typs (number-from-1 param-typs)))
-          (if (null? numbered-typs)
-            (string-append
+       c-id-prefix "BEGIN_SFUN_BODY" nl-str
+       (let convert ((numbered-typs (number-from-1 param-typs)))
+         (if (null? numbered-typs)
+             (string-append
               c-id-prefix
               (cond ((void-type? result-typ)
                      "SFUN_CALL_VOID")
@@ -2647,8 +2914,8 @@
                     (else
                      "SFUN_CALL"))
               nl-str)
-            (let ((numbered-typ (car numbered-typs)))
-              (string-append
+             (let ((numbered-typ (car numbered-typs)))
+               (string-append
                 c-id-prefix
                 "SFUN_ARG("
                 (number->string (cdr numbered-typ))
@@ -2656,8 +2923,8 @@
                 (c-argument #t numbered-typ)
                 ")" nl-str
                 (convert (cdr numbered-typs))))))
-        set-result-code
-        c-id-prefix "END_SFUN_BODY" nl-str))
+       set-result-code
+       c-id-prefix "END_SFUN_BODY" nl-str))
 
     (add-c-decl
      (c-function-decl param-typs
@@ -2689,10 +2956,10 @@
                     "converter"
                     (number->string i))))
              (set! c-interface-converter-count
-               (+ i 1))
+                   (+ i 1))
              (set! c-interface-converters
-               (cons (cons function-c-type converter)
-                     c-interface-converters))
+                   (cons (cons function-c-type converter)
+                         c-interface-converters))
              (c-function
               param-typs
               result-typ
@@ -2705,109 +2972,132 @@
   (c-function param-typs result-typ proc-name #t scope))
 
 (define (strip-param-typs param-typs)
-  param-typs);;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  param-typs) ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (build-c-lambda param-typs result-typ proc-name)
   (let* ((index
-           (number->string c-interface-proc-count))
+          (number->string c-interface-proc-count))
          (scheme-name
-           (string-append module-prefix c-interface-module-name "#" index))
+          (string-append (symbol->string c-interface-module-ref) "#" index))
          (c-name
-           (string-append c-id-prefix (scheme-id->c-id scheme-name)))
+          (string-append c-id-prefix (scheme-id->c-id scheme-name)))
          (arity
-           (length param-typs))
+          (length param-typs))
          (stripped-param-typs
-           (strip-param-typs param-typs)))
+          (strip-param-typs param-typs)))
 
     (define (make-body set-result-code cleanup?)
       (string-append
-        c-id-prefix
-        (if cleanup? "BEGIN_CFUN_BODY_CLEANUP" "BEGIN_CFUN_BODY")
-        nl-str
-        (c-preproc-define-default-empty
-          (string-append c-id-prefix "AT_END")
-          (string-append
-           (if (valid-c-or-c++-function-id? proc-name)
-             (let ((c-id
-                    (c-result #f #f))
-                   (indirect-access-result
-                    (type-accessed-indirectly? result-typ))
-                   (call
-                    (string-append
-                     proc-name "("
-                     (comma-separated
-                      (map c-param-id (number-from-1 stripped-param-typs)))
-                     ")")))
-               (cond ((void-type? result-typ)
-                      (string-append
-                       c-id-prefix
-                       "CFUN_CALL_VOID("
-                       call
-                       ")"))
-                     (indirect-access-result
-                      (if (vector-ref indirect-access-result 1)
-                        (string-append
-                         c-id-prefix
-                         "CFUN_CALL_"
-                         (vector-ref indirect-access-result 0)
-                         "("
-                         (vector-ref indirect-access-result 1)
-                         ","
-                         c-id "_voidstar,"
-                         call
-                         ")")
-                        (string-append
-                         c-id-prefix
-                         "CFUN_CALL_"
-                         (vector-ref indirect-access-result 0)
-                         "("
-                         c-id "_voidstar,"
-                         call
-                         ")")))
-                     (else
-                      (string-append
-                       c-id-prefix
-                       "CFUN_CALL("
-                       c-id ","
-                       call
-                       ")"))))
-             proc-name)
-           nl-str))
-        set-result-code
-        c-id-prefix
-        (if cleanup? "END_CFUN_BODY_CLEANUP" "END_CFUN_BODY")
-        nl-str))
+       c-id-prefix
+       (if cleanup? "BEGIN_CFUN_BODY_CLEANUP" "BEGIN_CFUN_BODY")
+       nl-str
+       (c-preproc-define-default-empty
+        (string-append c-id-prefix "AT_END")
+        (let ((c-id
+               (c-result #f #f))
+              (indirect-access-result
+               (type-accessed-indirectly? result-typ)))
+
+          (define (assign-result result)
+            (cond ((void-type? result-typ)
+                   (string-append result ";"))
+                  (indirect-access-result
+                   (if (vector-ref indirect-access-result 1)
+                       (string-append
+                        c-id-prefix
+                        "CFUN_ASSIGN_"
+                        (vector-ref indirect-access-result 0)
+                        "("
+                        (vector-ref indirect-access-result 1)
+                        ","
+                        c-id "_voidstar,"
+                        result
+                        ")")
+                       (string-append
+                        c-id-prefix
+                        "CFUN_ASSIGN_"
+                        (vector-ref indirect-access-result 0)
+                        "("
+                        c-id "_voidstar,"
+                        result
+                        ")")))
+                  (else
+                   (string-append
+                    c-id-prefix
+                    "CFUN_ASSIGN("
+                    c-id ","
+                    result
+                    ")"))))
+
+          (if (valid-c-or-c++-function-id? proc-name)
+
+              (string-append
+               (assign-result
+                (string-append
+                 proc-name "("
+                 (comma-separated
+                  (map c-param-id (number-from-1 stripped-param-typs)))
+                 ")"))
+               nl-str)
+
+              (let ((end-of-code
+                     (string-append c-id-prefix
+                                    "return_"
+                                    (scheme-id->c-id scheme-name))))
+                (if (void-type? result-typ)
+                    (c-preproc-define
+                     (string-append c-id-prefix "return")
+                     ""
+                     (string-append
+                      "goto " end-of-code)
+                     (string-append
+                      proc-name nl-str
+                      end-of-code ":;" nl-str))
+                    (c-preproc-define
+                     (string-append c-id-prefix "return")
+                     (string-append "(" c-id-prefix "val" ")")
+                     (string-append
+                      "do { " (assign-result (string-append c-id-prefix "val"))
+                      " goto " end-of-code "; } while (0)")
+                     (string-append
+                      proc-name nl-str
+                      end-of-code ":;" nl-str)))))))
+
+       set-result-code
+       c-id-prefix
+       (if cleanup? "END_CFUN_BODY_CLEANUP" "END_CFUN_BODY")
+       nl-str))
 
     (add-c-proc
-      (make-c-proc scheme-name
-                   c-name
-                   arity
-                   (c-make-function #f
-                                    stripped-param-typs
-                                    result-typ
-                                    make-body)))
+     (make-c-proc scheme-name
+                  c-name
+                  arity
+                  (c-make-function #f
+                                   stripped-param-typs
+                                   result-typ
+                                   make-body)))
     scheme-name))
 
 (define (scheme-id->c-id s)
   (let loop1 ((i (- (string-length s) 1)) (lst '()))
     (if (>= i 0)
-      (let ((c (string-ref s i)))
-        (cond ((char=? c #\_)
-               (loop1 (- i 1) (cons c (cons c lst))))
-              ((c-id-subsequent? c)
-               (loop1 (- i 1) (cons c lst)))
-              (else
-               (let ((n (character->unicode c)))
-                 (if (= n 0)
-                   (loop1 (- i 1) (cons #\_ (cons #\0 (cons #\_ lst))))
-                   (let loop2 ((n n) (lst (cons #\_ lst)))
-                     (if (> n 0)
-                       (loop2 (quotient n 16)
-                              (cons (string-ref "0123456789abcdef"
-                                                (modulo n 16))
-                                    lst))
-                       (loop1 (- i 1) (cons #\_ lst)))))))))
-      (list->str lst))))
+        (let ((c (string-ref s i)))
+          (cond ((char=? c #\_)
+                 (loop1 (- i 1) (cons c (cons c lst))))
+                ((c-id-subsequent? c)
+                 (loop1 (- i 1) (cons c lst)))
+                (else
+                 (let ((n (character->unicode c)))
+                   (if (= n 0)
+                       (loop1 (- i 1) (cons #\_ (cons #\0 (cons #\_ lst))))
+                       (let loop2 ((n n) (lst (cons #\_ lst)))
+                         (if (> n 0)
+                             (loop2 (quotient n 16)
+                                    (cons (string-ref "0123456789abcdef"
+                                                      (modulo n 16))
+                                          lst))
+                             (loop1 (- i 1) (cons #\_ lst)))))))))
+        (list->str lst))))
 
 (define (c-id-initial? c) ; c is one of #\A..#\Z, #\a..#\z, #\_
   (let ((n (character->unicode c)))
